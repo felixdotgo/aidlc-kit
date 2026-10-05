@@ -1,6 +1,6 @@
 # Architecture
 
-`aidlc-workflow` is a single Node.js/TypeScript package that installs static AI-DLC workflow assets into another project. The package CLI is used for installation and human-authorised maintenance; an installed project runs the dependency-free workflow scripts locally.
+`aidlc-kit` is a single Node.js/TypeScript package that installs static AI-DLC workflow assets into another project. The package CLI is used for installation and human-authorised maintenance; an installed project runs the dependency-free workflow scripts locally.
 
 ## Source-to-consumer flow
 

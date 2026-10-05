@@ -1,6 +1,6 @@
 # Development guide
 
-This guide is for contributors to `@felixdotgo/aidlc-workflow`. It covers local setup, source ownership, and the rules that keep the package runtime and installed workflow behaviour aligned.
+This guide is for contributors to `@felixdotgo/aidlc-kit`. It covers local setup, source ownership, and the rules that keep the package runtime and installed workflow behaviour aligned.
 
 ## Requirements and dependencies
 
@@ -74,7 +74,7 @@ To test the package before release, create its `.tgz` archive and run the local 
 
 ```sh
 npm pack
-npx --package felixdotgo-aidlc-workflow-0.0.1.tgz -- aidlc-workflow init .
+npx --package felixdotgo-aidlc-kit-0.0.1.tgz -- aidlc-workflow init .
 ```
 
 `npx` runs the archive without publishing it. Run the command from the directory containing the archive. Use a disposable project instead of `.` if you do not want the command to write workflow files into the current directory.

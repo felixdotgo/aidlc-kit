@@ -1,4 +1,4 @@
-# Contributing to aidlc-workflow
+# Contributing to aidlc-kit
 
 This file is the short entry point for maintainers and contributors. Detailed guidance lives in [`docs/`](./docs/README.md) so that user setup, system operation, and repository development can evolve independently.
 

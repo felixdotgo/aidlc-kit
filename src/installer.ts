@@ -130,7 +130,7 @@ export const status = (root: string): string => {
 
 export const doctor = (root: string, strict = false): string => {
   const manifestPath = join(resolve(root), ".agents/aidlc/manifest.json");
-  if (!existsSync(manifestPath)) return "ERROR: .agents/aidlc/manifest.json is missing. Run npx @felixdotgo/aidlc-workflow init --yes.";
+  if (!existsSync(manifestPath)) return "ERROR: .agents/aidlc/manifest.json is missing. Run npx @felixdotgo/aidlc-kit init --yes.";
   let parsed: Record<string, unknown>;
   try { parsed = JSON.parse(readFileSync(manifestPath, "utf8")); } catch { return "ERROR: workflow manifest is invalid JSON."; }
   if (parsed.remoteUpdates || parsed.source !== "local-package-assets" || parsed.managedBy !== "aidlc-workflow") return "ERROR: workflow manifest violates local-only asset policy.";

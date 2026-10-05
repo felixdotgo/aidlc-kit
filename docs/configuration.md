@@ -42,10 +42,10 @@ Built-in topology profiles are:
 Arrays are stable-deduplicated. Command keys are last-wins, so a project can replace a profile command intentionally. Validate the resolved profile chain with:
 
 ```sh
-node /absolute/path/to/aidlc-workflow/dist/src/cli.js profile validate .
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow profile validate .
 ```
 
-The package is not yet published on npm. Build a repository checkout with `npm install` and `npm run build`, then replace `/absolute/path/to/aidlc-workflow` with that checkout path.
+This command uses the npm package at version `0.0.1`. To run from a source checkout instead, see the [development guide](./development.md).
 
 ## Rules, project data, and managed assets
 

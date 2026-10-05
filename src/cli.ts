@@ -11,13 +11,13 @@ import { packageVersion } from "./workflow.js";
 import { applyMcpSetup, planMcpSetup, type McpSetupOptions } from "./mcp-setup.js";
 
 const usage = `Usage:
-  npx @felixdotgo/aidlc-workflow init [path] [--agent <name[,name]> | --all] [--yes] [--dry-run] [--force]
-  npx @felixdotgo/aidlc-workflow upgrade [path] [--dry-run]
-  npx @felixdotgo/aidlc-workflow uninstall [path] [--yes] [--dry-run]
-  npx @felixdotgo/aidlc-workflow status [path]
-  npx @felixdotgo/aidlc-workflow doctor [path] [--strict]
-  npx @felixdotgo/aidlc-workflow profile validate [path]
-  npx @felixdotgo/aidlc-workflow mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--enable]`;
+  npx @felixdotgo/aidlc-kit init [path] [--agent <name[,name]> | --all] [--yes] [--dry-run] [--force]
+  npx @felixdotgo/aidlc-kit upgrade [path] [--dry-run]
+  npx @felixdotgo/aidlc-kit uninstall [path] [--yes] [--dry-run]
+  npx @felixdotgo/aidlc-kit status [path]
+  npx @felixdotgo/aidlc-kit doctor [path] [--strict]
+  npx @felixdotgo/aidlc-kit profile validate [path]
+  npx @felixdotgo/aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--enable]`;
 
 const interactive = (): boolean => Boolean(stdin.isTTY && stdout.isTTY);
 const prompts = async () => import("@inquirer/prompts");

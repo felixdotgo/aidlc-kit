@@ -36,7 +36,7 @@ AIDLC_TEST_PROJECT="$(mktemp -d /tmp/aidlc-project.XXXXXX)"
 
 npm run build
 npm pack --pack-destination "$AIDLC_PACK_DIR"
-tar -xzf "$AIDLC_PACK_DIR/felixdotgo-aidlc-workflow-0.0.1.tgz" -C "$AIDLC_EXTRACT_DIR"
+tar -xzf "$AIDLC_PACK_DIR/felixdotgo-aidlc-kit-0.0.1.tgz" -C "$AIDLC_EXTRACT_DIR"
 node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" init "$AIDLC_TEST_PROJECT" --agent codex --dry-run
 node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" init "$AIDLC_TEST_PROJECT" --agent codex --yes
 node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" status "$AIDLC_TEST_PROJECT"
@@ -80,3 +80,34 @@ Before an authorised release, complete:
 5. A review of the generated package contents and documentation links
 
 Publishing, tagging, committing, and pushing are separate human-authorised actions. A passing verification run is not delivery authority.
+
+## First npm publication
+
+The first release is `@felixdotgo/aidlc-kit@0.0.1`, with public access and the `latest` dist-tag. Complete the release checks and the project's human review gates before publishing.
+
+From the repository root, sign in to an npm account with permission to publish to the `@felixdotgo` scope and confirm the active account:
+
+```sh
+npm login --registry https://registry.npmjs.org
+npm whoami --registry https://registry.npmjs.org
+npm view @felixdotgo/aidlc-kit@0.0.1 version --registry https://registry.npmjs.org
+```
+
+An unpublished package normally returns `404` from `npm view`; that response does not establish scope ownership or publish permission. If `0.0.1` already exists, stop: npm versions cannot be overwritten. If `npm whoami` returns `401`, sign in again before publishing.
+
+After inspecting the local tarball and documentation, publish from the repository root:
+
+```sh
+npm publish --access public --tag latest --registry https://registry.npmjs.org
+```
+
+`prepublishOnly` runs the unit tests, lint, and evaluator release check before this command publishes. Complete any authentication or two-factor prompt from npm. The initial publication of a scoped package needs `--access public`; see the [npm scope documentation](https://docs.npmjs.com/cli/v11/using-npm/scope).
+
+Confirm the published version, dist-tag and artifact metadata:
+
+```sh
+npm view @felixdotgo/aidlc-kit@0.0.1 version dist.tarball dist.integrity --json --registry https://registry.npmjs.org
+npm view @felixdotgo/aidlc-kit dist-tags --json --registry https://registry.npmjs.org
+```
+
+Expect version `0.0.1`, a tarball URL and integrity value, and `latest` pointing to `0.0.1`. Git tags, GitHub releases, commits, and pushes require their own delivery authorisation.

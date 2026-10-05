@@ -1,27 +1,25 @@
-# aidlc-workflow
+# aidlc-kit
 
-`@felixdotgo/aidlc-workflow` installs a local AI-DLC workflow into an existing project. The workflow gives coding agents a shared task lifecycle, explicit human review gates, and project-owned state and rules. It is not yet published on npm.
+`@felixdotgo/aidlc-kit` installs a local AI-DLC workflow into an existing project. The workflow gives coding agents a shared task lifecycle, explicit human review gates, and project-owned state and rules.
 
 It is deliberately local-only: workflow assets are bundled with the package, `remoteUpdates` is `false`, and normal status checks never contact a registry.
 
 ## Requirements
 
-- Node.js 20 or newer.
+- Node.js 20.17 or newer.
 - An existing project directory.
 - Codex or Claude Code.
 
-## Pre-release quick start
+## Quick start
 
-Clone and build this repository first. Replace `/absolute/path/to/aidlc-workflow` below with the path to your checkout. Then preview the installation and apply it to the target project:
+Run these commands from your existing project's directory to preview the installation, then apply it:
 
 ```sh
-git clone https://github.com/felixdotgo/aidlc-workflow.git /absolute/path/to/aidlc-workflow
-cd /absolute/path/to/aidlc-workflow
-npm install
-npm run build
-node /absolute/path/to/aidlc-workflow/dist/src/cli.js init . --agent codex --dry-run
-node /absolute/path/to/aidlc-workflow/dist/src/cli.js init . --agent codex --yes
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow init . --agent codex --dry-run
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow init . --agent codex --yes
 ```
+
+`npx` may ask permission to download the package on first use. These examples pin version `0.0.1`. After installation, the project's lifecycle scripts run locally without `npx` or a registry connection.
 
 Use the adapter that matches the coding tool:
 
@@ -35,8 +33,8 @@ Use `--all` to install both supported adapters. Codex installs workspace-write s
 Confirm the installed project locally:
 
 ```sh
-node /absolute/path/to/aidlc-workflow/dist/src/cli.js status .
-node /absolute/path/to/aidlc-workflow/dist/src/cli.js doctor . --strict
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow status .
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow doctor . --strict
 ```
 
 ## Documentation

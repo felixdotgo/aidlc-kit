@@ -1,5 +1,5 @@
 {
-  "name": "@felixdotgo/aidlc-workflow",
+  "name": "@felixdotgo/aidlc-kit",
   "version": "0.0.1",
   "description": "Install a local, agent-adapted AI-DLC workflow into a project.",
   "keywords": [
@@ -10,13 +10,13 @@
     "codex",
     "developer-tools"
   ],
-  "homepage": "https://github.com/felixdotgo/aidlc-workflow#readme",
+  "homepage": "https://github.com/felixdotgo/aidlc-kit#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/felixdotgo/aidlc-workflow.git"
+    "url": "git+https://github.com/felixdotgo/aidlc-kit.git"
   },
   "bugs": {
-    "url": "https://github.com/felixdotgo/aidlc-workflow/issues"
+    "url": "https://github.com/felixdotgo/aidlc-kit/issues"
   },
   "author": "felixdotgo <nguyenthanhdat.js@gmail.com>",
   "license": "MIT",

@@ -1,6 +1,6 @@
 # Operating the workflow
 
-`aidlc-workflow` gives an agent a repeatable delivery lifecycle. It separates intent, design, implementation, and final review so a human explicitly approves the points where scope or risk changes.
+`aidlc-kit` gives an agent a repeatable delivery lifecycle. It separates intent, design, implementation, and final review so a human explicitly approves the points where scope or risk changes.
 
 ## Lifecycle at a glance
 
