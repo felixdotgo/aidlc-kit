@@ -13,7 +13,84 @@
     "context": { "type": "object", "required": ["maxChars"], "properties": { "maxChars": { "type": "integer", "minimum": 4000, "maximum": 128000 } } },
     "agentState": { "type": "object", "additionalProperties": { "enum": ["native", "scripted"] } },
     "tracker": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" }, "provider": { "enum": ["backlog"] }, "spaceUrl": { "type": "string", "format": "uri" }, "project": { "type": "string", "minLength": 1 }, "tokenEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }, "workflow": { "enum": ["waterfall", "scrum"] }, "mapping": { "type": "object", "properties": { "statuses": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 1 } }, "gateFieldId": { "type": "integer", "minimum": 1 } } } } },
-    "mcp": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" }, "endpoint": { "type": "string", "format": "uri" }, "workspace": { "type": "string", "minLength": 1 }, "tokenEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }, "pollMs": { "type": "integer", "minimum": 1000, "maximum": 3600000 }, "providers": { "type": "array", "items": { "enum": ["jira", "trello", "github-issues"] }, "uniqueItems": true } } }
+    "mcp": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" }, "endpoint": { "type": "string", "format": "uri" }, "workspace": { "type": "string", "minLength": 1 }, "tokenEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }, "pollMs": { "type": "integer", "minimum": 1000, "maximum": 3600000 }, "providers": { "type": "array", "items": { "enum": ["jira", "trello", "github-issues"] }, "uniqueItems": true } } },
+    "personalWork": {
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "provider": {
+          "const": "local"
+        },
+        "capture": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "preserveRawSource": {
+              "type": "boolean"
+            },
+            "autoReady": {
+              "type": "boolean"
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "doing": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "resumeContextChars": {
+              "type": "integer",
+              "minimum": 512,
+              "maximum": 128000
+            },
+            "searchItems": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "contextRecords": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "intakeMessages": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "enabled"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "provider"
+            ]
+          }
+        }
+      ]
+    }
   },
   "$defs": {
     "command": {

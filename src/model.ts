@@ -63,6 +63,7 @@ export interface ProjectConfig {
   context: { maxChars: number };
   agentState: Partial<Record<AgentId, StateMutationMode>>;
   tracker?: TrackerConfig;
+  personalWork?: import('./work/model.js').PersonalWorkConfig;
   mcp: McpConfig;
 }
 

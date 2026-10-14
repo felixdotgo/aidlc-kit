@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import type { AgentId, CommandSpec, McpConfig, Profile, ProjectConfig, RiskLevel, StateMutationMode, TrackerConfig } from "./model.js";
+import { validatePersonalWork } from './work/config.js';
 
 const profile = (id: Profile["topology"], markers: string[] = []): Profile => ({
   schemaVersion: 1,
@@ -132,6 +133,7 @@ export const loadProjectConfig = (root: string): ProjectConfig => {
     context: { maxChars },
     agentState,
     tracker: tracker(item.tracker),
+    personalWork: item.personalWork === undefined ? undefined : validatePersonalWork(item.personalWork),
     mcp: mcp(item.mcp)
   };
 };
@@ -172,6 +174,7 @@ export const resolveEffectiveConfig = (root: string, config: ProjectConfig) => {
     rules: { include: stable([...profiles.flatMap((item) => item.rules?.include ?? []), ...config.rules.include]) },
     risk: config.risk,
     context: config.context,
+    personalWork: config.personalWork,
     mcp: config.mcp
   };
 };

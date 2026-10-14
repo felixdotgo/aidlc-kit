@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { loadMemoryRegistry, nextAction, selectAgenticMemory } from "./store.mjs";
+import { validatePersonalWork } from '../../work/lib/config.mjs';
 
 const separator = process.platform === "win32" ? "\\" : "/";
 
@@ -144,7 +145,7 @@ const loadConfig = (root) => {
     specs: { roots: strings(object(item.specs ?? {}, "config.specs").roots ?? [], "config.specs.roots").map((entry) => safeRelative(entry, "config.specs.roots")) },
     commands: commands(item.commands, "config.commands"),
     rules: { include: strings(object(item.rules ?? {}, "config.rules").include ?? [], "config.rules.include").map((entry) => safeRelative(entry, "config.rules.include")) },
-    risk: { default: riskDefault }, context: { maxChars },
+    risk: { default: riskDefault }, context: { maxChars }, personalWork: item.personalWork === undefined ? undefined : validatePersonalWork(item.personalWork),
     mcp: item.mcp?.enabled === true ? { enabled: true, endpoint: typeof item.mcp.endpoint === "string" ? item.mcp.endpoint : undefined, workspace: typeof item.mcp.workspace === "string" ? item.mcp.workspace : undefined, tokenEnv: typeof item.mcp.tokenEnv === "string" ? item.mcp.tokenEnv : undefined, pollMs: Number.isInteger(item.mcp.pollMs) ? item.mcp.pollMs : undefined, providers: Array.isArray(item.mcp.providers) ? item.mcp.providers.filter((provider) => ["jira", "trello", "github-issues"].includes(provider)) : [] } : { enabled: false }
   };
 };
