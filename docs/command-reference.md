@@ -1,5 +1,9 @@
 # Command reference
 
+## Installed personal-work utility
+
+`node .agents/aidlc/scripts/work.mjs <operation> --root <project>` accepts JSON on stdin and emits a JSON success/error envelope. Operations: `init` (no options), `preflight` (no options), `repair` (optional `ref`), `search` (`query`, `authoritative`), `get`/`restore` (`ref`), `create` (`item`), `update` (`ref`, `patch`), `comment` (`ref`, `context`), `move` (`ref`, `status`, optional `intent`, `waitingReason`, `automatic`), `intake` (`messages`), `checkpoint` (`ref`, `checkpoint`), `link` (`ref`, `taskId`, `intent:"implement"`). Mutations also require `idempotencyKey`. A reference contains `provider`, `id`, `url`. Use the installed schemas and [canonical utility contracts](./personal-work-orchestration.md); no operation grants gate approval.
+
 All package commands operate on local files. The examples run version `0.0.1` through npm; `npx` may ask permission to fetch that package on first use. Replace `.` with the target project path when needed. For a source checkout, see the [development guide](./development.md).
 
 ## `init`

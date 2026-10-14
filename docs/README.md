@@ -9,6 +9,7 @@ Use this page to choose the guide that matches your role and next task.
 3. Use [Configuration](./configuration.md) to configure project rules, profiles, and Codex/Claude permissions.
 4. Keep [Command reference](./command-reference.md) nearby for safe CLI usage.
 5. Read [AI-DLC Coordination service](./coordination-service.md) before enabling remote canonical state.
+6. Use [Personal work orchestration](./personal-work-orchestration.md) for optional capture, checkpoints, restore, and local setup.
 
 ## For contributors and maintainers
 
@@ -27,5 +28,6 @@ Use this page to choose the guide that matches your role and next task.
 | [Testing and release](./testing-and-release.md) | Maintainers | Test strategy, evaluator, package smoke test, and release checks. |
 | [Architecture](./architecture.md) | Contributors | Boundaries, dependency direction, and source-to-consumer flow. |
 | [AI-DLC Coordination service](./coordination-service.md) | Operators | Opt-in service deployment, state authority, and credential safety. |
+| [Personal work orchestration](./personal-work-orchestration.md) | Operators | Private local storage, utility flows, repair, backup, and verification. |
 
 When a public command, configuration field, or installed layout changes, update the relevant guide and its validation in the same change.

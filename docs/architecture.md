@@ -1,5 +1,7 @@
 # Architecture
 
+Personal work uses a dependency-free ESM runtime under assets/aidlc/work/lib and TypeScript contracts under src/work. It journals private work under .agents/data/work, separate from lifecycle state and task artifacts. Same-host processes serialize writes; derived projections can be rebuilt. Thin skills delegate to canonical playbooks. No remote work adapter or service work tools are included. See [Personal work orchestration](./personal-work-orchestration.md).
+
 `aidlc-kit` is a single Node.js/TypeScript package that installs static AI-DLC workflow assets into another project. The package CLI is used for installation and human-authorised maintenance; an installed project runs the dependency-free workflow scripts locally.
 
 ## Source-to-consumer flow

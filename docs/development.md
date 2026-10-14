@@ -8,6 +8,7 @@ This guide is for contributors to `@felixdotgo/aidlc-kit`. It covers local setup
 - npm installs the repository development dependencies.
 - `@inquirer/prompts` is the runtime dependency for interactive CLI prompts; installed lifecycle scripts remain dependency-free.
 - Development uses TypeScript and `@types/node` as declared in `package.json`.
+- Installed personal-work utilities and their filesystem acceptance tests are JavaScript (`.mjs`), using Node.js built-ins without Python or third-party runtime dependencies. The optional coordination service retains its separate npm dependencies.
 
 ```sh
 npm install
@@ -29,6 +30,8 @@ dist/                        Generated TypeScript and bundled assets; do not han
 ```
 
 The asset build copies `assets/aidlc/` and `skills/` into `dist/assets/.agents/`. At install time, the package writes the workflow to a consumer project's `.agents/aidlc/` and `.agents/skills/` locations. Always state which of these three layouts—source, bundle, or installed project—you mean in code or documentation.
+
+The personal-work runtime is installed with workflow assets and is independent of the optional coordination service.
 
 ## Local commands
 

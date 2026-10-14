@@ -1,5 +1,9 @@
 # Testing and release
 
+## Local personal-work verification
+
+Run `npm run test:personal-work` for real filesystem verification. Packed installation smoke tests and aggregate checks remain required. See [local verification](./personal-work-orchestration.md#verification).
+
 Use the smallest relevant verification while developing, then complete the repository checks before a release review.
 
 ## Standard verification

@@ -1,5 +1,7 @@
 # Configuration
 
+Optional personalWork enables private local capture/checkpoint/restore separately from lifecycle/MCP settings. Use {enabled:true,provider:"local"}; no credentials or target mappings are required. See [Personal work setup](./personal-work-orchestration.md#setup). Omission or enabled:false disables utilities.
+
 Each installed project owns its workflow configuration at `.agents/config.json`. It selects topology profiles, specification roots, safe verification commands, and local rules without changing the package-managed kernel. The package supports only Codex and Claude Code.
 
 ## Minimal configuration
