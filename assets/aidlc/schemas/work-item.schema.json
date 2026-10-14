@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12000
+    },
+    "expectedOutcome": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12000
+    },
+    "nextAction": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12000
+    },
+    "status": {
+      "enum": [
+        "INBOX",
+        "READY",
+        "DOING",
+        "WAITING",
+        "DONE"
+      ]
+    },
+    "priority": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 12000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "project": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 12000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "aidlcTaskId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 12000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "due": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "$ref": "source-envelope.schema.json"
+      }
+    },
+    "dedupe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "externalIds",
+        "threadIds",
+        "references",
+        "keywords"
+      ],
+      "properties": {
+        "externalIds": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          }
+        },
+        "threadIds": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          }
+        },
+        "references": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "title",
+    "summary",
+    "expectedOutcome",
+    "nextAction",
+    "status",
+    "priority",
+    "project",
+    "aidlcTaskId",
+    "due",
+    "sources",
+    "dedupe"
+  ]
+}
