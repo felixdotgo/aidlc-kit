@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import {workItem} from "./work-fixture.js";
 import { packageVersion } from "../../src/workflow.js";
 
 test("packed tarball initializes a clean local project without a registry install", () => {
@@ -28,6 +29,29 @@ test("packed tarball initializes a clean local project without a registry instal
     assert.equal(JSON.parse(readFileSync(join(project, ".agents", "data", "state", "aidlc-state.json"), "utf8")).schemaVersion, 4);
     assert.ok(existsSync(join(project, ".agents", "data", "lessons", "index.json")));
     assert.ok(existsSync(join(project, ".agents", "aidlc", "scripts", "gate-view.mjs")));
+    for (const operation of ['intake', 'checkpoint', 'restore']) {
+      assert.ok(existsSync(join(project, '.agents', 'skills', `work-${operation}`, 'SKILL.md')));
+      assert.ok(existsSync(join(project, '.agents', 'aidlc', 'work', `${operation}.md`)));
+    }
+    assert.ok(existsSync(join(project, '.agents', 'aidlc', 'scripts', 'work.mjs')));
+    assert.ok(existsSync(join(project, '.agents', 'aidlc', 'schemas', 'work-item.schema.json')));
+    const utility = spawnSync(process.execPath, [join(project, '.agents', 'aidlc', 'scripts', 'work.mjs'), 'preflight', '--root', project], {encoding: 'utf8', input: '{}'});
+    assert.equal(utility.status, 1); assert.match(utility.stderr, /WORK_DISABLED/);
+    const workScript=join(project,'.agents','aidlc','scripts','work.mjs');
+    const localInit=spawnSync(process.execPath,[workScript,'init','--root',project],{encoding:'utf8',input:'{}'});
+    assert.equal(localInit.status,0,localInit.stderr);assert.equal(JSON.parse(localInit.stdout).result.provider,'local');
+    const localCheck=spawnSync(process.execPath,[workScript,'preflight','--root',project],{encoding:'utf8',input:'{}'});
+    assert.equal(localCheck.status,0,localCheck.stderr);
+    const createdWork=spawnSync(process.execPath,[workScript,'create','--root',project],{encoding:'utf8',input:JSON.stringify({item:workItem(),idempotencyKey:'installed-create'})});
+    assert.equal(createdWork.status,0,createdWork.stderr);
+    const ref=JSON.parse(createdWork.stdout).result.ref;
+    assert.ok(existsSync(join(project,'.agents','data','work',ref.id,'events.jsonl')));
+    for(const name of ['asana.mjs','trello.mjs'])assert.equal(existsSync(join(project,'.agents','aidlc','work','lib',name)),false);
+    assert.equal(existsSync(join(extracted,'package','dist','services','aidlc-coordination','src','work-tools.mjs')),false);
+    const claudeProject=join(root,'claude-project');mkdirSync(claudeProject);
+    const claudeInit=spawnSync(process.execPath,[join(extracted,'package','dist','src','cli.js'),'init',claudeProject,'--agent','claude','--yes'],{encoding:'utf8'});
+    assert.equal(claudeInit.status,0,claudeInit.stderr);
+    for(const operation of ['intake','checkpoint','restore'])assert.ok(existsSync(join(claudeProject,'.claude','skills',`work-${operation}`,'SKILL.md')));
     const cli = join(extracted, "package", "dist", "src", "cli.js");
     assert.ok(existsSync(join(extracted, "package", "docs", "architecture.md")));
     const status = spawnSync(process.execPath, [cli, "status", project], { cwd: root, encoding: "utf8" });

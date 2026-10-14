@@ -12,6 +12,7 @@ const instruction = (agent: string, adapter: AgentId) => [
   `# AI-DLC for ${agent}`,
   "",
   "Treat every requested feature, bug fix, or project change as an AI-DLC task. Keep read-only explanations and inspections off-workflow.",
+  "Personal-work capture, checkpoint, and restore are utility requests: use work-intake, work-checkpoint, and work-restore under `.agents/skills`, following `.agents/aidlc/work/conventions.md`. Only explicit implementation selection starts or resumes the lifecycle; local work statuses never approve gates.",
   "",
   "Read `.agents/aidlc/orchestrator.md`. Use bounded `state.mjs task list` or `task find --query <text>`; never read or dump lifecycle files directly.",
   "",
@@ -72,7 +73,11 @@ export const adapters: readonly Adapter[] = [
       ...(["clarify:Confirm requirements", "plan:Approve plan", "build:Review implementation", "wrap:none", "index:none"] as const).map((entry) => {
         const [phase, gate] = entry.split(":");
         return adapterFile("claude", `.claude/skills/aidlc-${phase}/SKILL.md`, claudeSkill(phase, gate));
-      })
+      }),
+      ...(['intake', 'checkpoint', 'restore'] as const).map(operation => adapterFile('claude', `.claude/skills/work-${operation}/SKILL.md`, [
+        '---', `name: work-${operation}`, `description: Personal-work ${operation} utility using local runtime capabilities, separate from AI-DLC lifecycle phases.`, '---', '',
+        `Read \`.agents/aidlc/work/${operation}.md\` and \`.agents/aidlc/work/conventions.md\`. Follow the canonical utility contract; do not infer gate approval from local work status.`, ''
+      ].join('\n')))
     ]
   },
   {

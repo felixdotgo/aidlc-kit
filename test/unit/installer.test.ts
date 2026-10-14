@@ -150,6 +150,15 @@ test("official adapters carry the human-only upgrade boundary", () => {
       assert.deepEqual(JSON.parse(file.content), { permissions: { allow: ["Bash(node .agents/aidlc/scripts/*)"] } });
       continue;
     }
+    if (file.path.startsWith(".claude/skills/work-")) {
+      const operation = file.path.split("/")[2].slice("work-".length);
+      assert.ok(["intake", "checkpoint", "restore"].includes(operation));
+      assert.ok(file.content.includes(`.agents/aidlc/work/${operation}.md`));
+      assert.match(file.content, /\.agents\/aidlc\/work\/conventions\.md/);
+      assert.match(file.content, /do not infer gate approval/);
+      assert.doesNotMatch(file.content, /state\.mjs gate approve/);
+      continue;
+    }
     assert.match(file.content, /Never query npm/);
     assert.match(file.content, /Workflow install\/upgrade operations are human-only/);
     assert.match(file.content, /Project-configured build, test, and lint commands remain allowed/);
@@ -177,7 +186,7 @@ test("official adapters carry the human-only upgrade boundary", () => {
   const codexAgents = adapters.find((adapter) => adapter.id === "codex")?.files().find((file) => file.path === "AGENTS.md")?.content;
   assert.match(codexAgents ?? "", /Run every `node \.agents\/aidlc\/scripts\/\.\.\.` lifecycle command in a separate exec call/);
   assert.match(codexAgents ?? "", /never join lifecycle commands with shell operators such as `&`, `&&`, `;`, or `\|`/);
-  for (const file of adapters.find((adapter) => adapter.id === "claude")?.files() ?? []) if (file.path.includes(".claude/skills/")) assert.match(file.content, /allowed-tools: Bash\(node \.agents\/aidlc\/scripts\/\*\)/);
+  for (const file of adapters.find((adapter) => adapter.id === "claude")?.files() ?? []) if (file.path.startsWith(".claude/skills/aidlc-")) assert.match(file.content, /allowed-tools: Bash\(node \.agents\/aidlc\/scripts\/\*\)/);
   for (const skill of ["skills/aidlc-plan/SKILL.md", "skills/aidlc-build/SKILL.md"]) assert.doesNotMatch(readFileSync(resolve(skill), "utf8"), /review checklist/i);
 });
 

@@ -4,6 +4,8 @@ This file is the compact kernel contract. Project customization lives under `.ag
 
 ## Turn routing
 
+Personal-work capture, checkpoint and restore requests route to `work-intake`, `work-checkpoint` and `work-restore` utility skills. Read `work/conventions.md`; these are not lifecycle phases and do not automatically create implementation tasks. Explicit implementation selection returns to normal lifecycle routing below.
+
 1. Use `node .agents/aidlc/scripts/state.mjs task list` (or `task find --query <text>`) for bounded routing. Never read or dump the canonical store directly. Use `task show <task-id>` only after selecting one task.
 2. Resolve `node .agents/aidlc/scripts/state.mjs task next <task-id>` for an existing task; do not infer the next action from prose alone.
 3. Classify the request as `NEW`, `RESUME`, `SWITCH`, or `OFF-WORKFLOW`.
