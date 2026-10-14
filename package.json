@@ -38,7 +38,8 @@
     "test": "npm run build && node --test dist/test/unit/*.test.js",
     "lint": "tsc --noEmit -p tsconfig.json",
     "release:check": "node dist/dev/evaluator/release-check.js .agents/project/release-eval.json --adapters codex",
-    "prepublishOnly": "npm test && npm run lint && npm run release:check"
+    "prepublishOnly": "npm test && npm run lint && npm run release:check",
+    "test:personal-work": "npm run build && node --test dist/test/unit/work-*.test.js"
   },
   "engines": {
     "node": ">=20.17"
