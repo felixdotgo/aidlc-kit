@@ -1,5 +1,7 @@
 # Local personal work
 
+[Hướng dẫn setup và sử dụng bằng tiếng Việt](./personal-work-orchestration.vi.md).
+
 Capture messages, save investigation context, and resume after interruption with a private local store. Installed utilities use JavaScript and Node.js built-ins. No account, API key, token, network connection or extra runtime dependency is needed.
 
 ## Setup

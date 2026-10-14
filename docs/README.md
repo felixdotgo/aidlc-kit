@@ -10,6 +10,7 @@ Use this page to choose the guide that matches your role and next task.
 4. Keep [Command reference](./command-reference.md) nearby for safe CLI usage.
 5. Read [AI-DLC Coordination service](./coordination-service.md) before enabling remote canonical state.
 6. Use [Personal work orchestration](./personal-work-orchestration.md) for optional capture, checkpoints, restore, and local setup.
+7. Đọc [hướng dẫn personal work bằng tiếng Việt](./personal-work-orchestration.vi.md) để cập nhật `.agents`, setup local và sử dụng các skill `work-*`.
 
 ## For contributors and maintainers
 
@@ -29,5 +30,6 @@ Use this page to choose the guide that matches your role and next task.
 | [Architecture](./architecture.md) | Contributors | Boundaries, dependency direction, and source-to-consumer flow. |
 | [AI-DLC Coordination service](./coordination-service.md) | Operators | Opt-in service deployment, state authority, and credential safety. |
 | [Personal work orchestration](./personal-work-orchestration.md) | Operators | Private local storage, utility flows, repair, backup, and verification. |
+| [Personal work — tiếng Việt](./personal-work-orchestration.vi.md) | Người dùng | Cập nhật workflow, setup local, ví dụ skill/CLI và xử lý lỗi. |
 
 When a public command, configuration field, or installed layout changes, update the relevant guide and its validation in the same change.
