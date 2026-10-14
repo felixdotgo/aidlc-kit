@@ -11,6 +11,15 @@ node .agents/aidlc/scripts/work.mjs init --root . < /dev/null
 node .agents/aidlc/scripts/work.mjs preflight --root . < /dev/null
 ```
 
+In a source checkout of this repository, use the source runtime instead:
+
+```sh
+node assets/aidlc/scripts/work.mjs init --root . < /dev/null
+node assets/aidlc/scripts/work.mjs preflight --root . < /dev/null
+```
+
+This runs local work directly from the checkout. Installed projects use the first pair of commands; managed workflow updates follow the normal human maintenance process.
+
 Both commands should return `"ok":true`. Init creates `.agents/data/work/` and enables local work in `.agents/config.json`, preserving other settings. Repeating init retains the same store identity. Init takes no input options; an empty input means `{}`. Existing provider configuration is replaced by local defaults. Copy any settings you want to retain before initialization.
 
 The minimum configuration is:
