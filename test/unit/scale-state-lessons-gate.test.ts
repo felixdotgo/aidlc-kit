@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { formatGateView } from "../../src/gate.js";
 import type { LessonRecord, TaskState, WorkflowState } from "../../src/model.js";
-import { lessonStateDigest, listTaskSummaries, loadTask, rebuildLessonIndex, renderViews, saveState, searchLessons } from "../../src/state.js";
+import { lessonStateDigest, listTaskSummaries, loadTask, rebuildLessonIndex, renderViews, renderWorkplan, saveState, searchLessons } from "../../src/state.js";
 
 const terminalTask = (index: number, lesson?: LessonRecord): TaskState => {
   const id = `2026-${String(index).padStart(4, "0")}-terminal`;
@@ -141,4 +141,36 @@ test("gate renderer is portable, deterministic, and emits one action line", () =
   assert.match(plain, /^\[IMPORTANT\]/); assert.equal(plain.match(/ACTION REQUIRED/g)?.length, 1);
   const json = JSON.parse(formatGateView(task, diagnostics, "json"));
   assert.equal(json.gate, "G0_confirm"); assert.equal(json.task.title.includes("\n"), false);
+});
+
+test("review names stay English across gates, formats, and packaged runtime", async () => {
+  // @ts-ignore -- dependency-free runtime parity is checked against the bundled ESM core.
+  const runtime = await import("../../services/aidlc-coordination/src/lifecycle-core.mjs");
+  const steps = [
+    ["clarify", "G0_confirm", "Confirm requirements"],
+    ["plan", "G1_review", "Approve plan"],
+    ["build", "G2_codereview", "Review implementation"]
+  ] as const;
+  for (const language of ["en", "vi"] as const) for (const [phase, gate, name] of steps) {
+    const task: TaskState = { ...terminalTask(0), phase, gate, status: "blocked_on_user", language };
+    for (const format of ["markdown", "plain", "json"] as const) {
+      const output = formatGateView(task, [], format);
+      assert.equal(runtime.formatGateView(task, [], format), output);
+      if (format === "json") {
+        const view = JSON.parse(output);
+        assert.equal(view.schemaVersion, 1);
+        assert.equal(view.gate, gate);
+        assert.equal(view.title, `Review step · ${name}`);
+      } else {
+        assert.ok(output.includes(`Review step · ${name}`));
+        assert.doesNotMatch(output, /GATE G[012]/);
+        assert.equal(output.match(/ACTION REQUIRED/g)?.length, 1);
+      }
+    }
+    const workplan = renderWorkplan(task);
+    assert.equal(runtime.renderWorkplan(task), workplan);
+    assert.match(workplan, /## 🧩 Decisions \(Approve plan/);
+    assert.match(workplan, /## 🧩 Tasks \(Review implementation/);
+    assert.doesNotMatch(workplan, /Gate G[012]/);
+  }
 });

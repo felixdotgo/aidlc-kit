@@ -1,9 +1,9 @@
 ---
 name: aidlc-build
-description: "AI-DLC phase 3 (Gate G2): after explicit G1 plan approval, implement the canonical work items, run the narrowest tests/lint, then run code-review. Triggers when the AI-DLC Orchestrator routes an approved post-G1 task to build. Ends at G2 for explicit user code review."
+description: "AI-DLC phase 3 (Review implementation): after explicit plan approval, implement the canonical work items, run the narrowest tests/lint, then run code-review. Triggers when the AI-DLC Orchestrator routes a task after plan approval to build. Ends at Review implementation for explicit user code review."
 ---
 
-# AI-DLC · Build (Gate G2) — adapter
+# AI-DLC · Build (Review implementation) — adapter
 
 This skill is a thin Claude Code adapter. The canonical playbook is tool-agnostic and lives in the repo:
 

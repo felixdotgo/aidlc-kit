@@ -2,8 +2,8 @@
 
 > Review artifact derived from `.agents/data/state/aidlc-state.json`. Resolve decisions and update progress with `node .agents/aidlc/scripts/state.mjs`, then run `node .agents/aidlc/scripts/render.mjs`.
 
-## 🧩 Decisions (Gate G1 — approve before build)
+## 🧩 Decisions (Approve plan — before implementation)
 - <generated decision state>
 
-## 🧩 Tasks (Gate G2 — build execution)
+## 🧩 Tasks (Review implementation — work items)
 - <generated task state>

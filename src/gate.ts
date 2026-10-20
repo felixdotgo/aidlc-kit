@@ -78,9 +78,9 @@ export type GateViewFormat = "markdown" | "plain" | "json";
 const oneLine = (value: string): string => value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").replace(/ACTION\s+REQUIRED/gi, "ACTION-REQUIRED").trim();
 const markdownText = (value: string): string => oneLine(value).replace(/([\\`*_{}\[\]()<>#+.!|>~])/g, "\\$1");
 const gateMeta: Record<Exclude<Gate, "none">, { icon: string; title: string; action: string }> = {
-  G0_confirm: { icon: "🟢", title: "GATE G0 · CONFIRM INTENT", action: "Reply `ok` to approve intent, or state changes." },
-  G1_review: { icon: "🔵", title: "GATE G1 · REVIEW PLAN", action: "Reply `approve` to start build, or state decision changes." },
-  G2_codereview: { icon: "🟣", title: "GATE G2 · REVIEW CODE", action: "Approve to wrap, or point out what to fix." }
+  G0_confirm: { icon: "🟢", title: "Review step · Confirm requirements", action: "Reply `ok` to confirm requirements, or state changes." },
+  G1_review: { icon: "🔵", title: "Review step · Approve plan", action: "Reply `approve` to approve the plan and start implementation, or state decision changes." },
+  G2_codereview: { icon: "🟣", title: "Review step · Review implementation", action: "Approve the implementation to complete the task, or point out what to fix." }
 };
 
 const artifactRows = (task: TaskState): Array<{ name: string; path: string }> => Object.entries(task.artifacts).flatMap(([name, path]) => path ? [{ name: oneLine(name), path: oneLine(path) }] : []);

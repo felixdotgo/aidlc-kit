@@ -1,4 +1,4 @@
-# AI-DLC · Clarify (G0)
+# AI-DLC · Clarify (Confirm requirements)
 
 Goal: confirm intent before discovery cost.
 
@@ -11,9 +11,9 @@ When independent, read-only index or ambiguity checks exist, use the shared orch
 5. Run `node .agents/aidlc/scripts/gate-check.mjs <task-id> --gate G0_confirm` and fix every structural error. Only after it passes, set the gate wait with `node .agents/aidlc/scripts/state.mjs task status <task-id> --status blocked_on_user`, then render only this task with `node .agents/aidlc/scripts/render.mjs <task-id>`.
 6. Run `node .agents/aidlc/scripts/gate-view.mjs <task-id>`, relay the output verbatim, and stop. Presenting the gate ends this turn.
 
-## ONLY in a later turn, after the user explicitly approves G0
+## ONLY in a later turn, after the user explicitly confirms the requirements at the Confirm requirements step
 
-Explicit approval is a user message that says yes to this gate (for example "ok", "approve", "duyệt"). Resolving questions or requesting changes is NOT approval. Then — and only then — run `node .agents/aidlc/scripts/state.mjs gate approve <task-id> --gate G0_confirm --source <the-user-approval-message>`, parse the returned `nextAction`, and execute its `run_phase` command before emitting any final response. Continue into `plan` until G1 or a real blocker; never invent approval. If the user instead requests changes, revise the intent while the task waits, or cancel the wait explicitly with `task status <task-id> --status active --mode audited --reason <what-changed> --source <the-user-message>`.
+Explicit approval is a user message that says yes to this gate (for example "ok", "approve"). Resolving questions or requesting changes is NOT approval. Then — and only then — run `node .agents/aidlc/scripts/state.mjs gate approve <task-id> --gate G0_confirm --source <the-user-approval-message>`, parse the returned `nextAction`, and execute its `run_phase` command before emitting any final response. Continue into `plan` until Approve plan or a real blocker; never invent approval. If the user instead requests changes, revise the intent while the task waits, or cancel the wait explicitly with `task status <task-id> --status active --mode audited --reason <what-changed> --source <the-user-message>`.
 
 Read-only questions remain off-workflow. The task language is set here and retained throughout the lifecycle.
 

@@ -1,6 +1,6 @@
 # AI-DLC · Wrap
 
-Precondition: the user approved G2 and canonical state contains passing G2 approval evidence.
+Precondition: the user approved the implementation at Review implementation and canonical state contains passing approval evidence for that step.
 
 Wrap is success-only and has NO human gate (`gate: none`): never set `blocked_on_user` here — the CLI rejects it. `closed` and `superseded` tasks are terminal at the phase where they stopped and never enter wrap or imply release success.
 

@@ -1,9 +1,9 @@
 ---
 name: aidlc-clarify
-description: "AI-DLC phase 1 (Gate G0): turn a raw request into a confirmed intent brief — restate the problem, map affected submodules + specs, list assumptions and open questions, fix scope. Cheap: reads only the AI-DLC index, no deep code dive. Triggers: a NEW feature/bug/change request when the AI-DLC Orchestrator routes to clarify. Ends by STOPPING for user confirmation (G0)."
+description: "AI-DLC phase 1 (Confirm requirements): turn a raw request into a confirmed intent brief — restate the problem, map affected submodules + specs, list assumptions and open questions, fix scope. Cheap: reads only the AI-DLC index, no deep code dive. Triggers: a NEW feature/bug/change request when the AI-DLC Orchestrator routes to clarify. Ends by STOPPING for user confirmation (Confirm requirements)."
 ---
 
-# AI-DLC · Clarify (Gate G0) — adapter
+# AI-DLC · Clarify (Confirm requirements) — adapter
 
 This skill is a thin Claude Code adapter. The canonical playbook is tool-agnostic and lives in the repo:
 

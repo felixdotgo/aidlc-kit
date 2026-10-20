@@ -28,7 +28,7 @@ Use CRITICS during clarify or plan only when risk is elevated, requirements are 
 
 ## CRITICS — adversarial review
 
-Before recording passing review evidence for G2, report these sections against the approved decisions, cited anchors, and task diff:
+Before recording passing review evidence for Review implementation, report these sections against the approved decisions, cited anchors, and task diff:
 
 1. **Criteria** — acceptance criteria, invariants, and exact spec anchors checked.
 2. **Risks** — regression, safety, compatibility, and unverified assumptions.
@@ -36,6 +36,6 @@ Before recording passing review evidence for G2, report these sections against t
 4. **Tests / evidence** — commands or inspections run, results, and residual gaps.
 5. **Improvements** — required fixes or explicitly deferred follow-ups, each tied to an issue.
 6. **Conclusion** — `pass`, `needs changes`, or `escalate`; a pass requires no unresolved critical/high issue.
-7. **Stop / escalate** — reopen G1 for a structural/spec conflict; otherwise defer to the human gate when authority is needed.
+7. **Stop / escalate** — reopen the Approve plan step for a structural/spec conflict; otherwise defer to the human gate when authority is needed.
 
-CRITICS is a review record, not approval. Only the state machine, recorded evidence, and human G2 approval advance the task.
+CRITICS is a review record, not approval. Only the state machine, recorded evidence, and human Review implementation approval advance the task.
