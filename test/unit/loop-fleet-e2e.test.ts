@@ -1,0 +1,75 @@
+import assert from "node:assert/strict";
+import { spawn, execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { delimiter, join, resolve } from "node:path";
+import test from "node:test";
+import { applyPlan, planInit } from "../../src/installer.js";
+import type { InitOptions } from "../../src/model.js";
+
+const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const port = async () => new Promise<number>((resolvePort) => { const server = createServer(); server.listen(0, "127.0.0.1", () => { const address = server.address(); const value = typeof address === "object" && address ? address.port : 0; server.close(() => resolvePort(value)); }); });
+const processResult = (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => new Promise<{ code: number | null; output: string }>((resolveResult, reject) => {
+  const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  child.stdout.on("data", (chunk) => { output += chunk; }); child.stderr.on("data", (chunk) => { output += chunk; });
+  child.once("error", reject); child.once("close", (code) => resolveResult({ code, output }));
+});
+const waitFor = async (probe: () => Promise<boolean>) => { for (let n = 0; n < 100; n++) { try { if (await probe()) return; } catch { /* startup */ } await new Promise((resolveWait) => setTimeout(resolveWait, 50)); } throw new Error("service did not become ready"); };
+
+test("real fleet CLI schedules a worker, integrates Git, records canonical completion, and publishes G2", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const temp = mkdtempSync(join(tmpdir(), "aidlc-fleet-e2e-"));
+  const leadRoot = join(temp, "lead"), workerRoot = join(temp, "worker"), bare = join(temp, "remote.git"), bin = join(temp, "bin"), db = join(temp, "fleet.db");
+  let service: ReturnType<typeof spawn> | undefined;
+  let serviceError = "";
+  try {
+    mkdirSync(leadRoot); mkdirSync(bin);
+    const options: InitOptions = { root: leadRoot, agents: ["codex"], all: false, dryRun: false, yes: true, force: false };
+    applyPlan(leadRoot, planInit(options));
+    mkdirSync(join(leadRoot, "src")); writeFileSync(join(leadRoot, "src/a.txt"), "seed\n");
+    git(temp, "init", "--bare", bare); git(leadRoot, "init"); git(leadRoot, "checkout", "-b", "feature/test"); git(leadRoot, "add", "."); git(leadRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-m", "seed"); git(leadRoot, "remote", "add", "origin", bare); git(leadRoot, "push", "-u", "origin", "feature/test");
+    git(temp, "clone", "-b", "feature/test", bare, workerRoot);
+    const taskId = "fleet-e2e";
+    const artifactDir = join(leadRoot, ".agents/data/tasks", taskId); mkdirSync(artifactDir, { recursive: true });
+    writeFileSync(join(artifactDir, "intent.md"), "# Intent\n\n## 📋 Problem\nTest\n## 🗺️ Affected areas\nroot\n## 💭 Assumptions\nnone\n## ❓ Open questions\nnone\n## 🎯 Scope\nTest\n");
+    writeFileSync(join(artifactDir, "design.md"), "# Design\n\n## 🧩 Solution per affected area\nroot\n## 📌 Spec traceability\nfixture\n## 🔗 Cross-service contracts\nnone\n## ⚠️ Risks / edge cases\nnone\n");
+    writeFileSync(join(artifactDir, "workplan.md"), "# Workplan\n\nT1\n");
+    git(leadRoot, "add", "-f", `.agents/data/tasks/${taskId}/intent.md`, `.agents/data/tasks/${taskId}/design.md`, `.agents/data/tasks/${taskId}/workplan.md`);
+    git(leadRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-m", "fixture artifacts");
+    git(leadRoot, "push", "origin", "feature/test"); git(workerRoot, "pull", "--ff-only");
+    const now = new Date().toISOString();
+    const task = { id: taskId, title: "Fleet e2e", type: "infra", phase: "build", gate: "G2_codereview", status: "active", language: "en", risk: "normal", areas: ["root"], branch: "feature/test", artifacts: { intent: `.agents/data/tasks/${taskId}/intent.md`, design: `.agents/data/tasks/${taskId}/design.md`, workplan: `.agents/data/tasks/${taskId}/workplan.md` }, decisions: [], tasks: [{ id: "T1", label: "Change file", status: "todo", ownedPaths: ["src/a.txt"] }], evidence: [{ kind: "approval", gate: "G0_confirm", result: "pass", source: "fixture", recordedAt: now }, { kind: "approval", gate: "G1_review", result: "pass", source: "fixture", recordedAt: now }], createdAt: now, updatedAt: now };
+    const { SqliteFleetRepository } = await import(resolve("services/aidlc-coordination/src/fleet.mjs"));
+    const { SqliteStateRepository } = await import(resolve("services/aidlc-coordination/src/repository.mjs"));
+    const fleet = new SqliteFleetRepository(db); const state = new SqliteStateRepository(db);
+    const workspace = "fleet-e2e";
+    await state.apply(workspace, 0, "seed-task", { type: "upsertTask", taskId, task }, leadRoot);
+    await fleet.apply(workspace, 0, "seed-lead", "lead", "lead", { type: "run_claim", taskId, leaseMs: 60000 });
+    await fleet.apply(workspace, 1, "seed-release", "lead", "lead", { type: "run_release", taskId, epoch: 1 });
+    state.close(); fleet.close();
+    const fake = join(bin, "codex");
+    writeFileSync(fake, `#!/usr/bin/env node\nconst fs=require('node:fs'),cp=require('node:child_process'),path=require('node:path');if(process.argv.includes('--version')){console.log('fake');process.exit(0)}const prompt=process.argv.at(-1);const worker=prompt.includes('Worker scope:');if(worker){fs.writeFileSync(path.join(process.cwd(),'src/a.txt'),'done\\n')}else{const cli=path.join(process.cwd(),'.agents/aidlc/scripts/remote-state.mjs');for(const args of [['evidence','add','${taskId}','--kind','test','--result','pass','--source','fixture'],['evidence','add','${taskId}','--kind','review','--result','pass','--source','fixture'],['task','status','${taskId}','--status','blocked_on_user']])cp.execFileSync(process.execPath,[cli,...args],{stdio:'pipe'})}console.log(JSON.stringify({type:'thread.started',thread_id:worker?'worker-session':'lead-session'}));console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:worker?'AI-DLC-ITEM-COMPLETE':'gate ready'}}));console.log(JSON.stringify({type:'turn.completed'}));\n`);
+    chmodSync(fake, 0o755);
+    const leadToken = "l".repeat(32), workerToken = "w".repeat(32), reviewerToken = "r".repeat(32);
+    const servicePort = await port(); const url = `http://127.0.0.1:${servicePort}/mcp`;
+    const serviceEnv = { ...process.env, MCP_FLEET_ENABLED: "1", MCP_FLEET_ALLOW_SQLITE_TEST: "1", MCP_STATE_DATABASE: "sqlite", MCP_STATE_SQLITE_PATH: db, MCP_STATE_HOST: "127.0.0.1", MCP_STATE_PORT: String(servicePort), MCP_FLEET_LEAD_TOKEN: leadToken, MCP_FLEET_REVIEWER_TOKEN: reviewerToken, MCP_FLEET_WORKER_TOKENS: JSON.stringify({ worker1: workerToken }) };
+    service = spawn(process.execPath, [resolve("services/aidlc-coordination/src/server.mjs")], { cwd: temp, env: serviceEnv, stdio: ["ignore", "ignore", "pipe"] });
+    service.stderr?.on("data", (chunk) => { serviceError += chunk; });
+    const { callTool } = await import(resolve("services/aidlc-coordination/src/fleet-client.mjs"));
+    await waitFor(async () => { if (service?.exitCode !== null) throw new Error(serviceError); return Boolean((await callTool({ url, token: leadToken, name: "fleet_get", args: { workspace } })).fleet); }).catch((error) => { throw new Error(`${error.message}: ${serviceError}`); });
+    const cli = resolve("dist/services/aidlc-coordination/src/fleet-run.mjs");
+    const shared = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, AIDLC_FLEET_URL: url, AIDLC_FLEET_WORKSPACE: workspace, AIDLC_FLEET_GIT_REMOTE: "origin", AIDLC_FLEET_POLL_MS: "1000" };
+    let coordinatorDone: { code: number | null; output: string } | undefined;
+    const coordinator = processResult(process.execPath, [cli, "coordinator", taskId, "--once"], { cwd: leadRoot, env: { ...shared, AIDLC_FLEET_TOKEN: leadToken, AIDLC_FLEET_PROJECT_ROOT: leadRoot, AIDLC_FLEET_WORKER_IDS: "worker1", AIDLC_FLEET_INTEGRATION_BRANCH: "feature/test" } }).then((result) => { coordinatorDone = result; return result; });
+    await waitFor(async () => { if (coordinatorDone) throw new Error(coordinatorDone.output); return Object.values((await callTool({ url, token: leadToken, name: "fleet_get", args: { workspace } })).fleet.jobs).length > 0; }).catch((error) => { throw new Error(`${error.message}: ${coordinatorDone?.output ?? ""}`); });
+    const worker = await processResult(process.execPath, [cli, "worker", "--once"], { cwd: workerRoot, env: { ...shared, AIDLC_FLEET_TOKEN: workerToken, AIDLC_FLEET_PROJECT_ROOT: workerRoot, AIDLC_FLEET_WORKER_ID: "worker1", AIDLC_FLEET_WORKTREES_ROOT: join(temp, "worktrees") } });
+    assert.equal(worker.code, 0, worker.output);
+    const lead = await coordinator; assert.equal(lead.code, 0, lead.output);
+    const canonical = await callTool({ url, token: leadToken, name: "task_get", args: { workspace, taskId, clientProjectRoot: leadRoot } });
+    assert.equal(canonical.task.tasks[0].status, "done"); assert.equal(canonical.nextAction.classification, "await_user");
+    const inbox = await callTool({ url, token: reviewerToken, name: "gate_inbox_get", args: { workspace } });
+    assert.ok(inbox.some((entry: any) => entry.taskId === taskId && entry.gate === "G2_codereview" && entry.integrationCommit === git(leadRoot, "rev-parse", "HEAD")));
+    assert.match(git(leadRoot, "show", "HEAD:src/a.txt"), /done/);
+  } finally { service?.kill("SIGTERM"); rmSync(temp, { recursive: true, force: true }); }
+});

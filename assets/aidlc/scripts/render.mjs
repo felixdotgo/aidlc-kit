@@ -1,6 +1,8 @@
 import { acquireStateLock, failEntry, loadState, loadTask, parseArguments, renderViews, rootOption, validateArguments } from "./lib/runtime.mjs";
+import { requireLocalAuthority } from "./lib/authority.mjs";
 
 try {
+  requireLocalAuthority();
   const raw = process.argv.slice(2);
   const parsed = parseArguments(raw, { valueOptions: ["--root"], booleanOptions: ["--all"] });
   validateArguments(parsed, { minPositionals: 0, maxPositionals: 1, booleanOptions: ["--all"], usage: "Usage: render.mjs <task-id> [--root <path>] | --all [--root <path>]" });

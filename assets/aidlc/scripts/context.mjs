@@ -1,6 +1,8 @@
 import { compileContext, failEntry, loadState, loadTask, option, parseArguments, rootOption, validateArguments } from "./lib/runtime.mjs";
+import { requireLocalAuthority } from "./lib/authority.mjs";
 
 try {
+  requireLocalAuthority();
   const raw = process.argv.slice(2);
   const parsed = parseArguments(raw, { valueOptions: ["--root", "--phase", "--mode", "--item", "--format"] });
   validateArguments(parsed, { minPositionals: 1, valueOptions: ["--phase", "--mode", "--item", "--format"], usage: "Usage: context.mjs <task-id> [--phase <phase>] [--mode <mode>] [--item <item-id>] [--format <format>] [--root <path>]" });

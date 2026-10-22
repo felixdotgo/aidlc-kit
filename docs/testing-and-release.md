@@ -1,5 +1,7 @@
 # Testing and release
 
+Loop changes should run the focused client assignment, graph, Git, remote-state, and `loop-*.test` fixtures, then lifecycle gate/conformance tests and package smoke. Verify in-conversation gate stop, later client resume, concurrent worker claims, lease expiry, exact-session recovery, Git scope checks, remote reviewer approval, and run bounds before aggregate `npm test` and `npm run lint`. Fleet persistence needs PostgreSQL integration coverage as well as in-memory/SQLite fixtures.
+
 Use the smallest relevant verification while developing, then complete the repository checks before a release review.
 
 ## Standard verification

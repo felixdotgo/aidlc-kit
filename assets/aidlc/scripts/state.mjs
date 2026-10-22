@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 import { acquireStateLock, approveAndAdvance, checkGate, closeTask, failEntry, handoffTask, listTaskSummaries, loadMemoryRegistry, loadState, loadTask, migrateState, nextAction, option, parseArguments, promoteAgenticMemory, rebuildLessonIndex, recordLesson, recordNoLessons, renderViews, reopenTask, retireAgenticMemory, rootOption, saveState, searchLessons, supersedeTask, transitionTask, validateArguments } from "./lib/runtime.mjs";
+import { readLiveLease } from "./lib/loop-lease.mjs";
+import { listFeatures, loadFeature, readyFeatureTasks, saveFeature } from "./lib/feature-store.mjs";
+import { readyTaskItems } from "./lib/store.mjs";
+import { requireLocalAuthority } from "./lib/authority.mjs";
 
 try {
+requireLocalAuthority();
 const raw = process.argv.slice(2);
-const valueOptions = ["--root", "--status", "--limit", "--cursor", "--query", "--title", "--type", "--language", "--risk", "--area", "--mode", "--reason", "--source", "--to", "--kind", "--successor", "--label", "--resolution", "--result", "--gate", "--detail", "--summary", "--prevention", "--example", "--promotion", "--guidance", "--phase", "--priority", "--source-task", "--source-lesson", "--approved-by", "--switch-from"];
+const valueOptions = ["--root", "--status", "--limit", "--cursor", "--query", "--title", "--type", "--language", "--risk", "--area", "--mode", "--reason", "--source", "--to", "--kind", "--successor", "--label", "--resolution", "--result", "--gate", "--detail", "--summary", "--prevention", "--example", "--promotion", "--guidance", "--phase", "--priority", "--source-task", "--source-lesson", "--approved-by", "--switch-from", "--feature", "--depends-on", "--branch", "--owns"];
 const parsed = parseArguments(raw, { valueOptions, booleanOptions: ["--include-archive"] });
 const args = parsed.positionals;
 const [group, action, rawId] = args;
@@ -14,7 +19,8 @@ const schemas = {
   "task list": { minPositionals: 2, valueOptions: ["--status", "--limit", "--cursor"], booleanOptions: ["--include-archive"] },
   "task find": { minPositionals: 2, valueOptions: ["--query", "--status", "--limit", "--cursor"], booleanOptions: ["--include-archive"], requiredOptions: ["--query"] },
   "task next": { minPositionals: 3 },
-  "task create": { minPositionals: 3, valueOptions: ["--title", "--type", "--language", "--risk", "--area", "--switch-from"], requiredOptions: ["--title"] },
+  "task ready": { minPositionals: 3 },
+  "task create": { minPositionals: 3, valueOptions: ["--title", "--type", "--language", "--risk", "--area", "--switch-from", "--feature", "--depends-on"], requiredOptions: ["--title"] },
   "task transition": { minPositionals: 3, valueOptions: ["--mode", "--reason", "--source", "--to"], requiredOptions: ["--mode", "--reason", "--source", "--to"], usage: "task transition requires --mode audited, --reason, --source, and --to" },
   "task archive": { minPositionals: 3, valueOptions: ["--reason", "--source"], requiredOptions: ["--reason", "--source"] },
   "task handoff": { minPositionals: 3, valueOptions: ["--kind", "--reason", "--source"], requiredOptions: ["--kind", "--reason", "--source"] },
@@ -22,7 +28,11 @@ const schemas = {
   "task supersede": { minPositionals: 3, valueOptions: ["--successor", "--reason", "--source"], requiredOptions: ["--successor", "--reason", "--source"] },
   "task reopen": { minPositionals: 3, valueOptions: ["--to", "--reason", "--source"], requiredOptions: ["--to", "--reason", "--source"] },
   "task status": { minPositionals: 3, valueOptions: ["--status", "--mode", "--reason", "--source"], requiredOptions: ["--status"] },
-  "task item": { minPositionals: 4, valueOptions: ["--status", "--label"], requiredOptions: ["--status"] },
+  "task item": { minPositionals: 4, valueOptions: ["--status", "--label", "--depends-on", "--owns"], requiredOptions: ["--status"] },
+  "feature create": { minPositionals: 3, valueOptions: ["--branch"], requiredOptions: ["--branch"] },
+  "feature show": { minPositionals: 3 },
+  "feature ready": { minPositionals: 3 },
+  "feature link": { minPositionals: 4, valueOptions: ["--depends-on"] },
   "decision set": { minPositionals: 4, valueOptions: ["--status", "--label", "--resolution"], requiredOptions: ["--status"] },
   "evidence add": { minPositionals: 3, valueOptions: ["--kind", "--result", "--gate", "--area", "--source", "--detail"], requiredOptions: ["--kind", "--result"] },
   "lesson record": { minPositionals: 4, valueOptions: ["--area", "--summary", "--prevention", "--example", "--promotion", "--source"] },
@@ -34,7 +44,7 @@ const schemas = {
   "memory retire": { minPositionals: 3, valueOptions: ["--reason", "--approved-by"], requiredOptions: ["--reason", "--approved-by"] },
   "gate approve": { minPositionals: 3, valueOptions: ["--gate", "--source"], requiredOptions: ["--gate", "--source"] }
 };
-const usage = "Usage: state.mjs state migrate | task create|show|list|find|next|status|item|transition|archive|handoff|close|supersede|reopen | decision set | evidence add | lesson record|none|search|rebuild | memory list|promote|retire | gate approve";
+const usage = "Usage: state.mjs state migrate | task create|show|list|find|next|ready|status|item|transition|archive|handoff|close|supersede|reopen | feature create|show|ready|link | decision set | evidence add | lesson record|none|search|rebuild | memory list|promote|retire | gate approve";
 const schema = schemas[`${group ?? ""} ${action ?? ""}`];
 if (!schema) throw new Error(usage);
 validateArguments(parsed, { ...schema, maxPositionals: schema.maxPositionals ?? schema.minPositionals, usage: schema.usage ?? usage });
@@ -69,6 +79,15 @@ const persist = (tasks, rebuildLessons = false) => {
 };
 const emit = (result, task) => console.log(JSON.stringify({ ok: true, ...(result === undefined ? {} : { result }), ...(warnings.length ? { warnings } : {}), ...(task ? { nextAction: nextAction(task, root) } : {}) }, null, 2));
 const respond = (task, result = {}) => emit({ task, ...result }, task);
+const requireFeaturePrerequisites = (task) => {
+  if (!task) throw new Error("Unknown active task");
+  if (!task.featureId) return;
+  const feature = loadFeature(root, task.featureId, state);
+  const member = feature?.tasks.find((entry) => entry.id === task.id);
+  if (!member) throw new Error(`Task is missing from feature manifest: ${task.id}`);
+  const waitingOn = member.dependsOn.filter((dependency) => (state.tasks[dependency] ?? state.archive?.[dependency])?.status !== "done");
+  if (waitingOn.length) throw new Error(`Feature prerequisites incomplete for ${task.id}: ${waitingOn.join(", ")}`);
+};
 
 if (group === "state" && action === "migrate") {
   emit(migrateState(root, state));
@@ -85,6 +104,31 @@ if (group === "state" && action === "migrate") {
   const task = loadTask(root, id, state);
   if (!task) throw new Error(`Unknown task: ${id}`);
   emit({ id: task.id, phase: task.phase, gate: task.gate, status: task.status }, task);
+} else if (group === "task" && action === "ready") {
+  const task = loadTask(root, id, state);
+  if (!task) throw new Error(`Unknown task: ${id}`);
+  emit({ id, ...readyTaskItems(task) }, task);
+} else if (group === "feature" && action === "create") {
+  if (loadFeature(root, id, state)) throw new Error(`Feature already exists: ${id}`);
+  emit(saveFeature(root, { schemaVersion: 1, id, integrationBranch: option(parsed, "--branch"), tasks: [] }, state));
+} else if (group === "feature" && action === "show") {
+  const feature = loadFeature(root, id, state);
+  if (!feature) throw new Error(`Unknown feature: ${id}`);
+  emit(feature);
+} else if (group === "feature" && action === "ready") {
+  const feature = loadFeature(root, id, state);
+  if (!feature) throw new Error(`Unknown feature: ${id}`);
+  emit(readyFeatureTasks(feature, state));
+} else if (group === "feature" && action === "link") {
+  const taskId = args[3]; const feature = loadFeature(root, id, state); const task = state.tasks[taskId];
+  if (!feature || !task) throw new Error(`Unknown feature or active task: ${id}/${taskId}`);
+  if (task.featureId && task.featureId !== id) throw new Error(`Task belongs to another feature: ${taskId}`);
+  if (listFeatures(root, state).some((other) => other.id !== id && other.tasks.some((entry) => entry.id === taskId))) throw new Error(`Task belongs to another feature: ${taskId}`);
+  const dependsOn = (option(parsed, "--depends-on") ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+  const entry = feature.tasks.find((item) => item.id === taskId);
+  if (entry) entry.dependsOn = dependsOn; else feature.tasks.push({ id: taskId, dependsOn });
+  saveFeature(root, feature, state);
+  task.featureId = id; task.updatedAt = now(); persist([task]); respond(task, { feature });
 } else if (group === "task" && action === "create") {
   const title = option(parsed, "--title");
   if (!id || !title) throw new Error("task create requires <task-id> and --title");
@@ -97,11 +141,14 @@ if (group === "state" && action === "migrate") {
   const unknownAcknowledgement = acknowledgedTokens.filter((ack) => !actionableByLowercase.has(ack.toLowerCase()));
   if (unknownAcknowledgement.length) throw new Error(`--switch-from must name only actionable task(s); not actionable: ${unknownAcknowledgement.join(", ")}`);
   const acknowledged = [...new Set(acknowledgedTokens.map((ack) => actionableByLowercase.get(ack.toLowerCase())))];
-  const stranded = actionable.filter((existing) => !acknowledged.includes(existing));
+  const featureId = option(parsed, "--feature");
+  const feature = featureId ? loadFeature(root, featureId, state) : undefined;
+  if (featureId && !feature) throw new Error(`Unknown feature: ${featureId}`);
+  const stranded = actionable.filter((existing) => !acknowledged.includes(existing) && (!feature || state.tasks[existing].featureId !== featureId));
   if (stranded.length) throw new Error(`Task create is blocked while other work is actionable: ${stranded.join(", ")}. With explicit user direction to switch, rerun with --switch-from ${actionable.join(",")}; acknowledged tasks keep their state and remain the resume target`);
   const recordedAt = now();
   const task = state.tasks[id] = {
-    id, title, type: option(parsed, "--type") ?? "infra", phase: "clarify", gate: "G0_confirm", status: "active",
+    id, title, featureId, type: option(parsed, "--type") ?? "infra", phase: "clarify", gate: "G0_confirm", status: "active",
     language: option(parsed, "--language") === "en" ? "en" : "vi", risk: option(parsed, "--risk") ?? "normal",
     areas: (option(parsed, "--area") ?? "root").split(",").map((area) => area.trim()).filter(Boolean), branch: "—",
     artifacts: { intent: `.agents/data/tasks/${id}/intent.md`, design: `.agents/data/tasks/${id}/design.md`, workplan: `.agents/data/tasks/${id}/workplan.md` },
@@ -112,17 +159,22 @@ if (group === "state" && action === "migrate") {
     prior.evidence.push({ kind: "diagnostic", result: "pass", source: `task create ${id}`, detail: `Switch acknowledged: created ${id} while ${prior.id} was actionable; ${prior.id} keeps its state — resume with task next ${prior.id}`, recordedAt });
     prior.updatedAt = recordedAt;
   }
+  if (feature) {
+    const dependsOn = (option(parsed, "--depends-on") ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+    feature.tasks.push({ id, dependsOn });
+    saveFeature(root, feature, state);
+  }
   persist([task, ...acknowledgedTasks]); respond(task);
 } else if (group === "task" && action === "transition") {
   const mode = option(parsed, "--mode"); const reason = option(parsed, "--reason"); const source = option(parsed, "--source");
   if (mode !== "audited" || !reason?.trim() || !source?.trim()) throw new Error("task transition requires --mode audited, --reason, and --source");
-  const from = state.tasks[id]?.phase; const target = option(parsed, "--to"); const task = transitionTask(state, id, target);
+  const from = state.tasks[id]?.phase; const target = option(parsed, "--to"); if (target === "done") requireFeaturePrerequisites(state.tasks[id]); const task = transitionTask(state, id, target);
   task.evidence.push({ kind: "diagnostic", result: "pass", source, detail: `Audited transition ${from} → ${target}: ${reason}`, recordedAt: now() });
   persist([task]); respond(task);
 } else if (group === "task" && action === "archive") {
   const reason = option(parsed, "--reason"); const source = option(parsed, "--source");
   if (!reason?.trim() || !source?.trim()) throw new Error("task archive requires --reason and --source");
-  const task = transitionTask(state, id, "done");
+  requireFeaturePrerequisites(state.tasks[id]); const task = transitionTask(state, id, "done");
   task.evidence.push({ kind: "diagnostic", result: "pass", source, detail: `Archive to done: ${reason}`, recordedAt: now() });
   persist([task], true); respond(task);
 } else if (group === "task" && action === "handoff") {
@@ -164,8 +216,11 @@ if (group === "state" && action === "migrate") {
   const itemId = args[3]; const task = state.tasks[id]; const status = option(parsed, "--status");
   if (!task || !itemId || !["todo", "in_progress", "done", "deferred"].includes(status)) throw new Error("task item requires active task id, item id, and valid --status");
   const item = task.tasks.find((entry) => entry.id === itemId);
-  if (item) { item.status = status; if (parsed.present.has("--label")) item.label = option(parsed, "--label"); }
-  else task.tasks.push({ id: itemId, label: option(parsed, "--label") ?? itemId, status });
+  const dependsOn = parsed.present.has("--depends-on") ? (option(parsed, "--depends-on") ?? "").split(",").map((entry) => entry.trim()).filter(Boolean) : undefined;
+  const ownedPaths = parsed.present.has("--owns") ? (option(parsed, "--owns") ?? "").split(",").map((entry) => entry.trim()).filter(Boolean) : undefined;
+  if (item) { item.status = status; if (parsed.present.has("--label")) item.label = option(parsed, "--label"); if (dependsOn) item.dependsOn = dependsOn; if (ownedPaths) item.ownedPaths = ownedPaths; }
+  else task.tasks.push({ id: itemId, label: option(parsed, "--label") ?? itemId, status, ...(dependsOn ? { dependsOn } : {}), ...(ownedPaths ? { ownedPaths } : {}) });
+  readyTaskItems(task);
   task.updatedAt = now(); persist([task]); respond(task);
 } else if (group === "decision" && action === "set") {
   const decisionId = args[3]; const task = state.tasks[id]; const status = option(parsed, "--status");
@@ -211,9 +266,10 @@ if (group === "state" && action === "migrate") {
 } else if (group === "gate" && action === "approve") {
   const gate = option(parsed, "--gate"); const source = option(parsed, "--source");
   if (!id || !gate || !source) throw new Error("gate approve requires active task id, --gate, and explicit --source");
+  if (readLiveLease(root, id)) throw new Error(`Gate approval is unavailable while loop runner owns ${id}; wait for the runner to stop at the human gate`);
   const outcome = approveAndAdvance(root, state, id, gate, source); persist([outcome.task]); emit({ task: outcome.task, idempotent: outcome.idempotent }, outcome.task);
 } else {
-  throw new Error("Usage: state.mjs state migrate | task create|show|list|find|next|status|item|transition|archive|handoff|close|supersede|reopen | decision set | evidence add | lesson record|none|search|rebuild | memory list|promote|retire | gate approve");
+  throw new Error(usage);
 }
 } finally {
   process.off("exit", releaseOnce);

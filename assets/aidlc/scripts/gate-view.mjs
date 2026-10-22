@@ -1,6 +1,8 @@
 import { checkGate, failEntry, formatGateView, loadState, option, parseArguments, rootOption, validateArguments } from "./lib/runtime.mjs";
+import { requireLocalAuthority } from "./lib/authority.mjs";
 
 try {
+  requireLocalAuthority();
   const raw = process.argv.slice(2);
   const parsed = parseArguments(raw, { valueOptions: ["--root", "--format"] });
   validateArguments(parsed, { minPositionals: 1, valueOptions: ["--format"], usage: "Usage: gate-view.mjs <task-id> [--format <format>] [--root <path>]" });

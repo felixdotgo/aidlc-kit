@@ -1,6 +1,8 @@
 import { failEntry, loadState, loadTask, nextAction, parseArguments, rootOption, validateArguments } from "./lib/runtime.mjs";
+import { requireLocalAuthority } from "./lib/authority.mjs";
 
 try {
+  requireLocalAuthority();
   const raw = process.argv.slice(2);
   const parsed = parseArguments(raw, { valueOptions: ["--root"], booleanOptions: ["--require-stop"] });
   validateArguments(parsed, { minPositionals: 1, booleanOptions: ["--require-stop"], usage: "Usage: task-next.mjs <task-id> [--root <path>] [--require-stop]" });

@@ -47,6 +47,8 @@ The installed kernel consists of contracts, templates, schemas, profiles, and de
 
 The state machine enforces the lifecycle; gates require explicit human approval; evidence is append-only. Installed scripts remain usable without an `aidlc-workflow` executable or a duplicate board file.
 
+The interactive loop runs inside the current Codex or Claude Code conversation. Native workers use local assignment records under `.agents/data/loop/`; those records hold claims and checkpoints while `.agents/data/state/` remains lifecycle authority. The optional headless fleet runner uses the coordination service's PostgreSQL state, fenced lead and worker claims, and Git commit handoff. Its assignment records are operational metadata; task phase, evidence, and gates stay in the canonical lifecycle state. Both hosts derive dispatch from task `nextAction` and dependency-ready work.
+
 Installed entry points share a strict dependency-free argv parser. Parsing and command-shape validation precede root discovery, lock acquisition, and state reads. Explicit roots are validated project directories; implicit roots use nearest-ancestor `.agents/aidlc/` discovery and never fall back to writing beneath an arbitrary working directory.
 
 ## Trust and safety boundaries

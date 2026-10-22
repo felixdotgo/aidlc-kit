@@ -71,9 +71,35 @@ node .agents/aidlc/scripts/state.mjs task list --limit 20
 node .agents/aidlc/scripts/state.mjs task find --query "<words>" --include-archive
 node .agents/aidlc/scripts/state.mjs task show <task-id>
 node .agents/aidlc/scripts/state.mjs task next <task-id>
+node .agents/aidlc/scripts/state.mjs task ready <task-id>
+node .agents/aidlc/scripts/state.mjs feature create <feature-id> --branch <integration-branch>
+node .agents/aidlc/scripts/state.mjs feature link <feature-id> <task-id> [--depends-on <task-id,...>]
+node .agents/aidlc/scripts/state.mjs feature ready <feature-id>
 node .agents/aidlc/scripts/task-next.mjs <task-id> --require-stop
 node .agents/aidlc/scripts/gate-view.mjs <task-id>
 ```
+
+The normal interactive loop runs in the current Codex or Claude Code conversation, using native agents and the installed lifecycle commands. The optional `loop.mjs` command is for unattended CLI execution:
+
+```sh
+node .agents/aidlc/scripts/loop.mjs run <task-id> --agent codex|claude [--max-turns N] [--turn-timeout-ms N] [--max-stall-turns N] [--root PATH]
+node .agents/aidlc/scripts/loop.mjs resume <task-id> [--max-turns N] [--turn-timeout-ms N] [--max-stall-turns N] [--root PATH]
+node .agents/aidlc/scripts/loop.mjs status <task-id> [--root PATH]
+```
+
+The defaults are 12 turns and 10 minutes per turn; two completed turns without observable progress stop the run. The runner never grants human approval. An interactive client can resume by reading `task next` and reconciling local assignment metadata; fleet execution uses fenced service leases and the remote canonical state.
+
+Fleet mode uses `remote-state.mjs` instead of local `state.mjs`. Set `AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, and `AIDLC_FLEET_PROJECT_ROOT`; lead mutations additionally require `AIDLC_FLEET_TOKEN` and the current `AIDLC_FLEET_LEAD_EPOCH`. Claim an epoch before creating or changing a task:
+
+```sh
+node .agents/aidlc/scripts/remote-state.mjs run claim <task-id>
+node .agents/aidlc/scripts/remote-state.mjs task next <task-id>
+node .agents/aidlc/scripts/remote-state.mjs phase context <task-id>
+node .agents/aidlc/scripts/remote-state.mjs run release <task-id> --epoch <epoch>
+```
+
+The same client supports task items, evidence, decisions, status, audited transitions, wrap lessons, and feature manifests through revision-checked remote mutations. It cannot approve gates with a lead token. A connected reviewer uses `gate inbox` and, only after an explicit later user reply, `gate approve <task-id> --snapshot <id> --source <reply>` with `AIDLC_FLEET_REVIEWER_TOKEN`. See [Coordination service](./coordination-service.md#multi-machine-loop-deployment) for bootstrap, fleet processes, and credentials.
+When `AIDLC_FLEET_URL` is set, local lifecycle, context, gate, assignment, and standalone loop commands reject use so an unattended lead cannot accidentally mutate a second local authority. Unset it only when deliberately returning to a local run.
 
 Installed lifecycle options may appear before or after positionals and accept both `--name value` and `--name=value`. Unknown, duplicate, command-irrelevant, missing-value, and surplus positional arguments are rejected before state I/O. Boolean options such as `--all`, `--include-archive`, and `--require-stop` do not accept values. When a literal value begins with `--`, use the equals form so it is not confused with a missing value.
 
@@ -97,7 +123,7 @@ node .agents/aidlc/scripts/state.mjs gate approve <task-id> --gate <gate> --sour
 node .agents/aidlc/scripts/state.mjs task transition <task-id> --to <phase> --mode audited --reason "<reason>" --source "<source>"
 ```
 
-Self-transitions are rejected, and `task create` rejects an id that collides case-insensitively with an existing task or archive record. `task create` also fails while any other task is actionable (`nextAction` classification `run_phase`); the error lists the actionable task ids and the exact `--switch-from <ids>` acknowledgement. Passing that flag — only with explicit user direction to switch — records a resume-marker diagnostic on each acknowledged task and never pauses, closes, or otherwise mutates its lifecycle; the acknowledged task remains the authoritative resume target. After reopening the Approve plan step, all non-deferred execution items return to `todo`; prior Review implementation, verification, and review evidence cannot satisfy the new build boundary, and repair-bound counters reset with it.
+Self-transitions are rejected, and `task create` rejects an id that collides case-insensitively with an existing task or archive record. `task create` also fails while another unrelated task is actionable; its `--switch-from <ids>` acknowledgement still requires explicit user direction. `--feature <feature-id>` permits sibling tasks in an existing feature without abandoning them. `feature link` checks membership and task dependencies; `task item ... --depends-on <item-id,...> --owns <path,...>` adds item edges and an optional Git path scope. Fleet dispatch requires a nonempty path scope. Missing and cyclic dependencies fail, and an item or feature task cannot finish before its prerequisites. After reopening the Approve plan step, all non-deferred execution items return to `todo`; prior Review implementation, verification, and review evidence cannot satisfy the new build boundary, and repair-bound counters reset with it.
 
 State writes and generated workplans use symlink-checked atomic replacement. State-lock release is owner-token checked and never removes a replacement owner's lock. If a process stops after writing a terminal archive record but before committing the catalog, a retry replaces that orphan only when the persisted catalog still contains the same active task identity and does not reference an archive record; malformed, referenced, or identity-conflicting records fail closed.
 

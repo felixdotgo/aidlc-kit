@@ -2,7 +2,7 @@
 
 Precondition: approval evidence for Approve plan exists and every decision is resolved.
 
-Use the shared orchestration contract in `orchestrator.md`. The lead may assign a batch of independent canonical items to workers only after giving each one exclusive file/area ownership; shared/public surfaces, overlapping paths, lifecycle actions, gates, final integration, and task-wide review remain lead-owned. The lead integrates and inspects each result before marking items or recording any lifecycle evidence/state mutation.
+Use the shared orchestration contract in `orchestrator.md`. The current client conversation is the interactive lead. The lead may assign a batch of independent canonical items to native host workers only after giving each one exclusive file/area ownership and recording its local assignment claim; shared/public surfaces, overlapping paths, lifecycle actions, gates, final integration, and task-wide review remain lead-owned. The lead integrates and inspects each result before marking items or recording any lifecycle evidence/state mutation. On a reopened conversation, reconcile claims and canonical state before dispatch.
 
 1. Read the build phase packet; re-open cited spec lines immediately before implementing dependent behavior.
 2. Read `templates/model-contract.md` and apply its COSTARS build emphasis to the implementation context.

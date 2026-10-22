@@ -17,6 +17,23 @@ request → clarify → Confirm requirements → plan → Approve plan → build
 
 An agent continues after each non-terminal transition and after every item or evidence mutation. Completing one work item is a progress update, not a turn boundary: the agent consumes the returned `nextAction` and continues through the remaining items, verification, and review. It stops only for a gate that is ready for human action, a durable blocker, a terminal non-success outcome, or successful completion.
 
+In ordinary use, ask Codex or Claude Code to work on the feature in the same conversation. The client remains the lead, starts native agents for independent items, and presents each review gate in that conversation. After a restart, open the project and ask the client to resume the task ID. It rereads `task next`, inspects assignment records and worktree results, and continues only dependency-ready work. A human approval is still a later reply to the gate shown in that conversation.
+
+For example, a feature with API, UI, and integration tasks can be recorded as a feature graph:
+
+```sh
+node .agents/aidlc/scripts/state.mjs feature create checkout --branch feature/checkout
+node .agents/aidlc/scripts/state.mjs feature link checkout checkout-api
+node .agents/aidlc/scripts/state.mjs feature link checkout checkout-ui
+node .agents/aidlc/scripts/state.mjs feature link checkout checkout-integration --depends-on checkout-api,checkout-ui
+node .agents/aidlc/scripts/state.mjs feature ready checkout
+node .agents/aidlc/scripts/state.mjs task ready checkout-api
+```
+
+The task IDs must already exist before `feature link`. To create a new sibling in an existing feature, use `task create <id> --title <title> --feature checkout` and optionally `--depends-on <task-id,...>`. Each task still goes through its own G0/G1/G2. Build items can declare `--depends-on <item-id,...>` through `task item`; `task ready` reports which items can be dispatched. Dependencies that are missing, cyclic, or incomplete at completion are rejected.
+
+For unattended work on multiple machines, deploy the optional coordination service with PostgreSQL, distinct lead/worker/reviewer credentials, a shared Git remote, and supervised coordinator/worker processes. The remote workspace is the sole canonical authority for that run. A worker claims a bounded assignment, commits and pushes within its owned paths, and reports its commit. The lead verifies and integrates it before marking the item done. Restarted processes reread canonical state and fenced leases; uncertain results are checked before retry. At G0/G1/G2 the coordinator publishes a review snapshot and waits for a reviewer in a connected client. It cannot grant its own approval.
+
 ## Parallel workstreams
 
 At any phase, the lead agent may use the orchestration contract to delegate independent, bounded workstreams when the host has spare worker capacity. The lead keeps one slot, assigns explicit ownership and completion criteria, and integrates returned work before relying on it. It remains the only writer for task state, evidence, review artifacts, and gates. In build, a batch may contain only items with non-overlapping file/area ownership; shared surfaces, integration, task-wide verification, and adversarial review remain lead-owned. Parallel work never changes the approval or lifecycle requirements described below.

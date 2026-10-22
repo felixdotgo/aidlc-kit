@@ -2,11 +2,12 @@
   "name": "@felixdotgo/aidlc-coordination",
   "private": true,
   "type": "module",
+  "bin": { "aidlc-fleet": "src/fleet-run.mjs" },
   "engines": { "node": ">=20" },
   "scripts": {
     "start": "node src/server.mjs",
     "test": "node --test test/*.test.mjs",
-    "lint": "node --check src/repository.mjs && node --check src/coordination.mjs && node --check src/server.mjs"
+    "lint": "node --check src/repository.mjs && node --check src/coordination.mjs && node --check src/fleet.mjs && node --check src/fleet-client.mjs && node --check src/fleet-run.mjs && node --check src/server.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/express": "^2.0.0",

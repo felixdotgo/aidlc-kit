@@ -123,6 +123,7 @@ export interface LessonDisposition {
 
 export interface TaskState {
   id: string;
+  featureId?: string;
   title: string;
   type: "feature" | "bug" | "refactor" | "infra";
   phase: Phase;
@@ -134,7 +135,7 @@ export interface TaskState {
   branch: string;
   artifacts: { intent?: string; design?: string; workplan?: string };
   decisions: TaskDecision[];
-  tasks: Array<{ id: string; label: string; status: "todo" | "in_progress" | "done" | "deferred" }>;
+  tasks: Array<{ id: string; label: string; status: "todo" | "in_progress" | "done" | "deferred"; dependsOn?: string[]; ownedPaths?: string[] }>;
   evidence: Evidence[];
   lessons?: LessonRecord[];
   lessonDisposition?: LessonDisposition;

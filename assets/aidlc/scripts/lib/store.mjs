@@ -61,7 +61,9 @@ const validateTask = (id, task) => {
   if (!task.title || !["feature", "bug", "refactor", "infra"].includes(task.type) || !statuses.includes(task.status) || (task.phase === "done") !== (task.status === "done")) throw new Error(`Invalid task fields: ${id}`);
   if (!["vi", "en"].includes(task.language) || !["low", "normal", "high", "regulated"].includes(task.risk) || !Array.isArray(task.areas) || !task.areas.length || task.areas.some((area) => !text(area))) throw new Error(`Invalid task language, risk, or areas: ${id}`);
   if (task.decisions.some((item) => !item.id || !item.label || !["unresolved", "approved", "changed", "dropped"].includes(item.status) || (item.status === "changed" && !item.resolution))) throw new Error(`Invalid decisions: ${id}`);
+  if (task.featureId !== undefined && !idPattern.test(task.featureId)) throw new Error(`Invalid feature id: ${id}`);
   if (task.tasks.some((item) => !item.id || !item.label || !["todo", "in_progress", "done", "deferred"].includes(item.status))) throw new Error(`Invalid execution tasks: ${id}`);
+  readyTaskItems(task);
   if (task.evidence.some((item) => !["approval", "spec", "test", "lint", "review", "diagnostic"].includes(item.kind) || !["pass", "fail", "skip"].includes(item.result) || !item.source || !iso(item.recordedAt) || (item.area !== undefined && !text(item.area)) || (item.gate !== undefined && !gates.includes(item.gate)) || (item.kind === "approval" && (!item.gate || item.gate === "none")))) throw new Error(`Invalid evidence: ${id}`);
   const lessonIds = new Set();
   for (const lesson of task.lessons ?? []) { validateLesson(id, lesson); if (lessonIds.has(lesson.id)) throw new Error(`Duplicate lesson id: ${id}/${lesson.id}`); lessonIds.add(lesson.id); }
@@ -276,6 +278,35 @@ export const transitionTask = (state, id, target) => {
   task.phase = target; task.gate = phaseGate(target); task.status = target === "done" ? "done" : "active"; delete task.legacyG2Wait; task.updatedAt = new Date().toISOString(); return task;
 };
 
+export const readyTaskItems = (task) => {
+  const byId = new Map(task.tasks.map((item) => [item.id, item]));
+  if (byId.size !== task.tasks.length) throw new Error(`Duplicate execution item: ${task.id}`);
+  const visiting = new Set(); const visited = new Set();
+  const visit = (id) => {
+    if (visiting.has(id)) throw new Error(`Cyclic execution dependency: ${task.id}/${id}`);
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const dep of byId.get(id)?.dependsOn ?? []) {
+      if (dep === id || !byId.has(dep)) throw new Error(`Unknown execution dependency: ${task.id}/${id}/${dep}`);
+      visit(dep);
+    }
+    visiting.delete(id); visited.add(id);
+  };
+  for (const item of task.tasks) {
+    if (item.dependsOn !== undefined && (!Array.isArray(item.dependsOn) || new Set(item.dependsOn).size !== item.dependsOn.length || item.dependsOn.some((dep) => typeof dep !== "string" || !dep))) throw new Error(`Invalid execution dependencies: ${task.id}/${item.id}`);
+    if (item.ownedPaths !== undefined && (!Array.isArray(item.ownedPaths) || new Set(item.ownedPaths).size !== item.ownedPaths.length || item.ownedPaths.some((path) => typeof path !== "string" || !path || isAbsolute(path) || path === ".." || path.startsWith("../") || path.includes("\\") || path.split("/").includes("..")))) throw new Error(`Invalid owned paths: ${task.id}/${item.id}`);
+    visit(item.id);
+  }
+  const ready = []; const blocked = [];
+  for (const item of task.tasks) {
+    const waitingOn = (item.dependsOn ?? []).filter((dep) => byId.get(dep)?.status !== "done");
+    if (item.status === "done" && waitingOn.length) throw new Error(`Completed item has incomplete prerequisites: ${task.id}/${item.id}`);
+    if (item.status !== "todo" && item.status !== "in_progress") continue;
+    if (waitingOn.length) blocked.push({ id: item.id, waitingOn }); else ready.push(item.id);
+  }
+  return { ready, blocked };
+};
+
 export const nextAction = (task, root) => {
   const rootSuffix = root === undefined ? "" : ` --root ${JSON.stringify(resolve(root))}`;
   const script = (name) => root === undefined ? `node .agents/aidlc/scripts/${name}` : `node ${JSON.stringify(join(resolve(root), ".agents/aidlc/scripts", name))}`;
@@ -288,16 +319,20 @@ export const nextAction = (task, root) => {
   if (task.status === "blocked_on_user" && task.gate === "G1_review" && task.decisions.some((decision) => decision.status === "unresolved")) return { classification: "run_phase", phase: task.phase, gate: task.gate, command: `${contextCommand} ${task.id} --phase plan${rootSuffix}`, reason: "Invalid premature G1 wait; resolve every decision before presenting G1" };
   if (task.status === "blocked_on_user" && task.gate === "G2_codereview" && (task.tasks.some((item) => !["done", "deferred"].includes(item.status)) || !hasVerification(task) || !hasReview(task))) {
     const open = task.tasks.filter((item) => item.status === "in_progress" || item.status === "todo");
-    const item = open.find((entry) => entry.status === "in_progress") ?? open[0];
+    const ready = new Set(readyTaskItems(task).ready);
+    const item = open.find((entry) => entry.status === "in_progress" && ready.has(entry.id)) ?? open.find((entry) => ready.has(entry.id));
     if (item) return { classification: "run_phase", phase: task.phase, gate: task.gate, itemId: item.id, remainingItems: open.length, command: `${contextCommand} ${task.id} --phase build --item ${item.id}${rootSuffix}`, reason: `Invalid premature G2 wait; continue build item ${item.id}` };
+    if (open.length) return { classification: "blocked", phase: task.phase, gate: task.gate, reason: `No dependency-ready build item: ${readyTaskItems(task).blocked.map((entry) => `${entry.id} waits for ${entry.waitingOn.join(",")}`).join("; ")}` };
     return { classification: "run_phase", phase: task.phase, gate: task.gate, remainingItems: 0, command: `${contextCommand} ${task.id} --phase build${rootSuffix}`, reason: "Invalid premature G2 wait; continue verification and adversarial review before presenting G2" };
   }
   if (task.status === "blocked_on_user" && task.gate === "none") return { classification: "run_phase", phase: task.phase, gate: task.gate, command: `${stateCommand} task status ${task.id} --status active${rootSuffix}`, reason: "Recover invalid wait at a gateless wrap phase before continuing wrap" };
   if (task.status === "blocked_on_user") return { classification: "await_user", phase: task.phase, gate: task.gate, command: `${stateCommand} gate approve ${task.id} --gate ${task.gate} --source <explicit-user-approval>${rootSuffix}`, reason: `Explicit human approval is required at ${task.gate}` };
   if (task.phase === "build") {
     const open = task.tasks.filter((item) => item.status === "in_progress" || item.status === "todo");
-    const item = open.find((entry) => entry.status === "in_progress") ?? open[0];
+    const ready = new Set(readyTaskItems(task).ready);
+    const item = open.find((entry) => entry.status === "in_progress" && ready.has(entry.id)) ?? open.find((entry) => ready.has(entry.id));
     if (item) return { classification: "run_phase", phase: task.phase, gate: task.gate, itemId: item.id, remainingItems: open.length, command: `${contextCommand} ${task.id} --phase build --item ${item.id}${rootSuffix}`, reason: `Continue build item ${item.id}; ${open.length} actionable item(s) remain before verification, review, and G2` };
+    if (open.length) return { classification: "blocked", phase: task.phase, gate: task.gate, reason: `No dependency-ready build item: ${readyTaskItems(task).blocked.map((entry) => `${entry.id} waits for ${entry.waitingOn.join(",")}`).join("; ")}` };
     return { classification: "run_phase", phase: task.phase, gate: task.gate, remainingItems: 0, command: `${contextCommand} ${task.id} --phase build${rootSuffix}`, reason: "All build items are terminal; continue verification, adversarial review, and G2 preparation" };
   }
   return { classification: "run_phase", phase: task.phase, gate: task.gate, command: `${contextCommand} ${task.id} --phase ${task.phase}${rootSuffix}`, reason: `Continue ${task.phase} until the next human gate, real blocker, or completion` };
