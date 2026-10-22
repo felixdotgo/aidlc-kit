@@ -191,7 +191,7 @@ test("installed local scripts drive the lifecycle without an aidlc executable or
     assert.equal(reblocked.nextAction.classification, "await_user");
     const next = JSON.parse(run(root, "state.mjs", ["task", "next", id]));
     assert.equal(next.nextAction.classification, "await_user");
-    assert.match(run(root, "gate-view.mjs", [id, "--format", "plain"]), /^\[IMPORTANT\].*GATE G2/);
+    assert.match(run(root, "gate-view.mjs", [id, "--format", "plain"]), /^\[IMPORTANT\].*Review step · Review implementation/);
     assert.equal(JSON.parse(run(root, "gate-view.mjs", [id, "--format", "json"])).gate, "G2_codereview");
     assert.match(run(root, "context.mjs", [id, "--phase", "build", "--format", "json"]), /Runtime smoke/);
     assert.match(run(root, "state.mjs", ["task", "show", id]), /label with spaces/);

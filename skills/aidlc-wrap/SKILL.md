@@ -1,6 +1,6 @@
 ---
 name: aidlc-wrap
-description: "AI-DLC phase 4 (post-G2): after the user approves the code, follow project delivery policy, capture lessons and residual risk, then close canonical task state."
+description: "AI-DLC phase 4 (after implementation approval): after the user approves the code, follow project delivery policy, capture lessons and residual risk, then close canonical task state."
 ---
 
 # AI-DLC · Wrap — adapter

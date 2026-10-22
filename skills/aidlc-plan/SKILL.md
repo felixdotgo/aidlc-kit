@@ -1,9 +1,9 @@
 ---
 name: aidlc-plan
-description: "AI-DLC phase 2 (Gate G1): after intent is confirmed, run bounded discovery, then produce a detailed design, canonical decisions, and a per-submodule workplan. Triggers when the AI-DLC Orchestrator routes a confirmed post-G0 task to planning. Ends at the executable G1 plan review for explicit user approval."
+description: "AI-DLC phase 2 (Approve plan): after intent is confirmed, run bounded discovery, then produce a detailed design, canonical decisions, and a per-submodule workplan. Triggers when the AI-DLC Orchestrator routes a task after requirements confirmation to planning. Ends at the executable Approve plan review for explicit user approval."
 ---
 
-# AI-DLC · Plan (Gate G1) — adapter
+# AI-DLC · Plan (Approve plan) — adapter
 
 This skill is a thin Claude Code adapter. The canonical playbook is tool-agnostic and lives in the repo:
 

@@ -126,6 +126,16 @@ test("init migration fails closed on differing legacy destination", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("generated Claude phase skills use descriptive review names", () => {
+  const files = adapters.find((adapter) => adapter.id === "claude")!.files();
+  for (const [phase, name] of [["clarify", "Confirm requirements"], ["plan", "Approve plan"], ["build", "Review implementation"]]) {
+    const skill = files.find((file) => file.path === `.claude/skills/aidlc-${phase}/SKILL.md`);
+    assert.ok(skill);
+    assert.ok(skill.content.includes(`# AI-DLC ${phase} (${name})`));
+    assert.doesNotMatch(skill.content, /\(G[012]\)/);
+  }
+});
+
 test("official adapters carry the human-only upgrade boundary", () => {
   for (const adapter of adapters) for (const file of adapter.files()) {
     if (file.path === ".codex/config.toml") {
