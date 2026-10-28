@@ -104,3 +104,51 @@ test("two no-progress turns pause without inventing completion and resume from c
     assert.equal(resumed.status, "gate"); assert.equal(resumed.nextAction.gate, "G0_confirm");
   });
 });
+
+test("context failures before the driver pause safely and permit resume after repair", { skip: process.platform === "win32" }, async () => {
+  for (const [name, brokenContext] of [
+    ["exit", "process.exit(1);\n"],
+    ["malformed", "console.log('not json');\n"],
+    ["empty", "console.log(JSON.stringify({ content: '' }));\n"]
+  ]) {
+    await fixture(`context-${name}`, async (root) => {
+      const id = `loop-context-${name}`;
+      runState(root, "task", "create", id, "--title", "Context recovery");
+      const taskDir = join(root, ".agents/data/tasks", id);
+      mkdirSync(taskDir, { recursive: true });
+      writeFileSync(join(taskDir, "intent.md"), intent);
+      const contextPath = join(root, ".agents/aidlc/scripts/context.mjs");
+      const originalContext = readFileSync(contextPath, "utf8");
+      writeFileSync(contextPath, brokenContext);
+      const { runLoop } = await loadRuntime();
+      let calls = 0;
+      const driver = async ({ onSessionId }: { onSessionId: (id: string) => void }) => {
+        calls++;
+        onSessionId("recovered-session");
+        runState(root, "task", "status", id, "--status", "blocked_on_user");
+        return { sessionId: "recovered-session" };
+      };
+      const stopped = await runLoop({ root, taskId: id, agent: "codex", driver });
+      assert.equal(stopped.status, "paused");
+      assert.match(stopped.stopReason, /context packet generation or validation failed/);
+      assert.equal(calls, 0);
+      const recordPath = join(root, ".agents/data/loop", `${id}.json`);
+      const pausedRecord = JSON.parse(readFileSync(recordPath, "utf8"));
+      assert.equal(pausedRecord.sessionId, null);
+      assert.equal(pausedRecord.pausedByLoop, true);
+      assert.equal(runState(root, "task", "show", id).result.status, "paused");
+
+      // A running record without a session may have been interrupted inside a driver;
+      // it must remain guarded even though the known pre-driver failure can resume.
+      writeFileSync(recordPath, JSON.stringify({ ...pausedRecord, status: "running" }));
+      await assert.rejects(runLoop({ root, taskId: id, mode: "resume", driver }), /Interrupted run has no captured session id/);
+      assert.equal(calls, 0);
+      writeFileSync(recordPath, JSON.stringify(pausedRecord));
+      writeFileSync(contextPath, originalContext);
+      const resumed = await runLoop({ root, taskId: id, mode: "resume", driver });
+      assert.equal(resumed.status, "gate");
+      assert.equal(resumed.nextAction.gate, "G0_confirm");
+      assert.equal(calls, 1);
+    });
+  }
+});

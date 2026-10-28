@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const SHA = /^[0-9a-f]{40,64}$/;
@@ -36,9 +36,28 @@ function changedPaths(root, base, head) {
   return raw.toString("utf8").split("\0").filter(Boolean).map((path) => validPath(path, "changed path")).sort();
 }
 function worktreePaths(root) {
-  const tracked = execFileSync("git", ["diff", "--no-renames", "--name-only", "-z", "HEAD"], { cwd: root, encoding: "buffer", timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
+  const unstaged = execFileSync("git", ["diff", "--no-ext-diff", "--no-renames", "--name-only", "-z"], { cwd: root, encoding: "buffer", timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
+  const staged = execFileSync("git", ["diff", "--cached", "--no-ext-diff", "--no-renames", "--name-only", "-z", "HEAD"], { cwd: root, encoding: "buffer", timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
   const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: root, encoding: "buffer", timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
-  return [...new Set(Buffer.concat([tracked, untracked]).toString("utf8").split("\0").filter(Boolean).map((path) => validPath(path, "changed path")))].sort();
+  return [...new Set(Buffer.concat([unstaged, staged, untracked]).toString("utf8").split("\0").filter(Boolean).map((path) => validPath(path, "changed path")))].sort();
+}
+function worktreeFingerprint(root, paths) {
+  // Hash the index as well as the worktree: a staged edit may differ from both
+  // HEAD and the current file, even when the latter has been restored to HEAD.
+  const index = execFileSync("git", ["ls-files", "--stage", "-z"], { cwd: root, encoding: "buffer", timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
+  const files = paths.map((path) => {
+    try {
+      const target = join(root, path);
+      const stat = lstatSync(target);
+      if (stat.isSymbolicLink()) return [path, "symlink", stat.mode, createHash("sha256").update(readlinkSync(target)).digest("hex")];
+      if (!stat.isFile()) throw new Error(`Unsupported changed path type: ${path}`);
+      return [path, "file", stat.mode, createHash("sha256").update(readFileSync(target)).digest("hex")];
+    } catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [path, "deleted"];
+      throw error;
+    }
+  });
+  return createHash("sha256").update(git(root, "rev-parse", "HEAD")).update(index).update(JSON.stringify(files)).digest("hex");
 }
 function checkScope(paths, ownedPaths) {
   const outside = paths.filter((path) => !inScope(path, ownedPaths));
@@ -186,7 +205,7 @@ export function createWorkerGitHandoff({ root: inputRoot, worktreesRoot: inputWo
       const changed = worktreePaths(workspace.root);
       checkScope(changed, scopes(job.ownedPaths));
       const done = typeof result?.resultText === "string" && result.resultText.split(/\r?\n/).some((line) => line.trim() === "AI-DLC-ITEM-COMPLETE");
-      return { done, fingerprint: JSON.stringify(changed) };
+      return { done, fingerprint: worktreeFingerprint(workspace.root, changed) };
     },
     async finish({ job, workspace }) {
       const branch = validBranch(job.branch);

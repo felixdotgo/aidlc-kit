@@ -67,9 +67,11 @@ export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, 
       await emit(onSessionId, value);
     }
   };
-  const commandEvent = async (command, exitCode, status, output) => {
-    await emit(onEvent, { type: "lifecycle_command", command: typeof command === "string" ? command : "", exitCode, status });
-    if ((typeof exitCode === "number" && exitCode !== 0) || status === "failed") addDiagnostic(`commandFailed exitCode=${String(exitCode ?? "unknown")} command=${command ?? "unknown"} output=${output ?? ""}`);
+  const commandEvent = async (exitCode, status) => {
+    const safeExitCode = Number.isSafeInteger(exitCode) ? exitCode : null;
+    const safeStatus = ["completed", "failed", "in_progress"].includes(status) ? status : "unknown";
+    await emit(onEvent, { type: "lifecycle_command", exitCode: safeExitCode, status: safeStatus });
+    if ((safeExitCode !== null && safeExitCode !== 0) || safeStatus === "failed") addDiagnostic(`commandFailed exitCode=${String(safeExitCode ?? "unknown")} status=${safeStatus}`);
   };
   const parseEvent = async (line) => {
     let event;
@@ -81,7 +83,7 @@ export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, 
       if (event.type === "turn.failed" || event.type === "error") throw new Error(`codex reported ${event.type}: ${diagnostic(JSON.stringify(event.error ?? event.message ?? "unknown"))}`);
       const item = record(event.item);
       if (event.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") resultText = item.text.slice(0, MAX_RESULT_CHARS);
-      if (event.type === "item.completed" && item?.type === "command_execution") await commandEvent(item.command, item.exit_code, item.status, item.aggregated_output);
+      if (event.type === "item.completed" && item?.type === "command_execution") await commandEvent(item.exit_code, item.status);
     } else {
       if (event.session_id !== undefined) await captureId(event.session_id);
       if (event.type === "result") {
@@ -94,13 +96,11 @@ export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, 
       if (Array.isArray(message?.content)) for (const block of message.content) {
         if (!record(block)) continue;
         if (block.type === "tool_use" && typeof block.id === "string" && block.name === "Bash") {
-          const input = record(block.input);
-          toolUses.set(block.id, typeof input?.command === "string" ? input.command : "");
+          toolUses.set(block.id, true);
         }
         if (block.type === "tool_result" && typeof block.tool_use_id === "string" && toolUses.has(block.tool_use_id)) {
-          const command = toolUses.get(block.tool_use_id);
           toolUses.delete(block.tool_use_id);
-          await commandEvent(command, block.is_error === true ? 1 : 0, block.is_error === true ? "failed" : "completed", block.content);
+          await commandEvent(block.is_error === true ? 1 : 0, block.is_error === true ? "failed" : "completed");
         }
       }
     }

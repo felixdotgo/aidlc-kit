@@ -101,17 +101,22 @@ test("lease loss aborts a running agent turn", { skip: process.platform === "win
 });
 
 
-test("tool permission errors appear as bounded redacted diagnostics", { skip: process.platform === "win32" }, async () => {
-  await fixture("codex", `console.log(JSON.stringify({type:'thread.started',thread_id:'thread-error'})); console.log(JSON.stringify({type:'item.completed',item:{type:'command_execution',command:'API_TOKEN=supersecret node state.mjs task next demo',exit_code:1,status:'failed',aggregated_output:'permission denied sk_fixturesecret'}})); console.log(JSON.stringify({type:'turn.completed'}));`, async (root) => {
+test("command events and failure diagnostics never contain command or output", { skip: process.platform === "win32" }, async () => {
+  await fixture("codex", `console.log(JSON.stringify({type:'thread.started',thread_id:'thread-error'})); console.log(JSON.stringify({type:'item.completed',item:{type:'command_execution',command:'echo arbitrarycredential',exit_code:1,status:'failed',aggregated_output:'privatevalue'}})); console.log(JSON.stringify({type:'turn.completed'}));`, async (root) => {
     const { runAgentTurn } = await load();
-    const result = await runAgentTurn({ agent: "codex", root, prompt: "x", timeoutMs: 2000 });
-    assert.match(result.diagnostics.join(" "), /permission denied/);
-    assert.doesNotMatch(result.diagnostics.join(" "), /supersecret|sk_fixturesecret/);
+    const events: unknown[] = [];
+    const result = await runAgentTurn({ agent: "codex", root, prompt: "x", timeoutMs: 2000, onEvent: (event: unknown) => events.push(event) });
+    assert.match(result.diagnostics.join(" "), /commandFailed exitCode=1/);
+    assert.doesNotMatch(JSON.stringify({ events, diagnostics: result.diagnostics }), /arbitrarycredential|privatevalue/);
+    assert.deepEqual(events.find((event: any) => event.type === "lifecycle_command"), { type: "lifecycle_command", exitCode: 1, status: "failed" });
     assert.ok(result.diagnostics.every((entry) => entry.length <= 512));
   });
-  await fixture("claude", `console.log(JSON.stringify({type:'system',session_id:'session-error'})); console.log(JSON.stringify({type:'assistant',message:{content:[{type:'tool_use',id:'tool-1',name:'Bash',input:{command:'node state.mjs task next demo'}}]}})); console.log(JSON.stringify({type:'user',message:{content:[{type:'tool_result',tool_use_id:'tool-1',is_error:true,content:'permission denied'}]}})); console.log(JSON.stringify({type:'result',session_id:'session-error',result:'blocked'}));`, async (root) => {
+  await fixture("claude", `console.log(JSON.stringify({type:'system',session_id:'session-error'})); console.log(JSON.stringify({type:'assistant',message:{content:[{type:'tool_use',id:'tool-1',name:'Bash',input:{command:'echo arbitrarycredential'}}]}})); console.log(JSON.stringify({type:'user',message:{content:[{type:'tool_result',tool_use_id:'tool-1',is_error:true,content:'privatevalue'}]}})); console.log(JSON.stringify({type:'result',session_id:'session-error',result:'blocked'}));`, async (root) => {
     const { runAgentTurn } = await load();
-    const result = await runAgentTurn({ agent: "claude", root, prompt: "x", timeoutMs: 2000 });
-    assert.match(result.diagnostics.join(" "), /permission denied/);
+    const events: unknown[] = [];
+    const result = await runAgentTurn({ agent: "claude", root, prompt: "x", timeoutMs: 2000, onEvent: (event: unknown) => events.push(event) });
+    assert.match(result.diagnostics.join(" "), /commandFailed exitCode=1/);
+    assert.doesNotMatch(JSON.stringify({ events, diagnostics: result.diagnostics }), /arbitrarycredential|privatevalue/);
+    assert.deepEqual(events.find((event: any) => event.type === "lifecycle_command"), { type: "lifecycle_command", exitCode: 1, status: "failed" });
   });
 });

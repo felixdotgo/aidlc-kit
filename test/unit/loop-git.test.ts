@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -74,6 +74,55 @@ test("scope violation is rejected before commit or push", async (t) => {
   writeFileSync(join(workspace.root, "b.txt"), "outside\n");
   await assert.rejects(() => handoff.finish({ job, workspace }), /outside assignment/);
   assert.equal(git(workspace.root, "rev-parse", "HEAD"), artifact.baseCommit);
+});
+
+test("worker observation fingerprints content, index, file type, mode and deletion", async (t) => {
+  const { parent, lead, worker } = fixture(t);
+  const { createLeadGitHandoff, createWorkerGitHandoff } = await load();
+  const artifact = await createLeadGitHandoff({ root: lead, integrationBranch: "feature" }).prepare({ taskId: "task-a", item: { id: "T1", ownedPaths: ["a.txt", "extra"] } });
+  const job = { ...artifact, taskId: "task-a", itemId: "T1", assignmentId: "job-a" };
+  const handoff = createWorkerGitHandoff({ root: worker, worktreesRoot: join(parent, "worktrees") });
+  const workspace = await handoff.prepare(job);
+  const observe = async () => (await handoff.observe({ job, workspace, result: {} })).fingerprint as string;
+  const file = join(workspace.root, "a.txt"), extra = join(workspace.root, "extra");
+  const initial = await observe();
+  writeFileSync(file, "secret-one\n");
+  const first = await observe();
+  assert.notEqual(first, initial);
+  assert.equal(first, await observe());
+  assert.doesNotMatch(first, /secret-one/);
+  writeFileSync(file, "secret-two\n");
+  const second = await observe();
+  assert.notEqual(second, first);
+  git(workspace.root, "add", "a.txt");
+  const staged = await observe();
+  assert.notEqual(staged, second);
+  writeFileSync(file, "base\n");
+  const restoredWorktree = await observe();
+  assert.notEqual(restoredWorktree, initial);
+  writeFileSync(file, "secret-three\n");
+  git(workspace.root, "add", "a.txt");
+  writeFileSync(file, "base\n");
+  assert.notEqual(await observe(), restoredWorktree, "staged content remains observable when worktree is restored");
+  writeFileSync(extra, "untracked\n");
+  const untracked = await observe();
+  writeFileSync(extra, "changed untracked\n");
+  assert.notEqual(await observe(), untracked);
+  const beforeMode = await observe();
+  chmodSync(extra, 0o755);
+  assert.notEqual(await observe(), beforeMode);
+  rmSync(extra);
+  symlinkSync("a.txt", extra);
+  const link = await observe();
+  rmSync(extra);
+  symlinkSync("b.txt", extra);
+  assert.notEqual(await observe(), link);
+  rmSync(file);
+  const deleted = await observe();
+  assert.notEqual(deleted, restoredWorktree);
+  assert.equal(deleted, await observe());
+  writeFileSync(join(workspace.root, "b.txt"), "outside\n");
+  await assert.rejects(() => observe(), /outside assignment/);
 });
 
 test("lead rejects a fabricated report and a stale remote branch", async (t) => {

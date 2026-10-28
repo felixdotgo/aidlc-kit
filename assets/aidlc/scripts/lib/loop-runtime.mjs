@@ -191,9 +191,16 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
         return outputStop(record, current.action, gateView);
       }
       if (record.iteration >= limits.maxTurns) return pause("turn limit reached");
-      const packet = JSON.parse(cli(root, "context.mjs", [taskId, "--phase", current.action.phase, ...(current.action.itemId ? ["--item", current.action.itemId] : []), "--format", "json"]));
-      const prompt = packet.content;
-      if (!prompt) throw new Error("Context packet was empty");
+      let prompt;
+      try {
+        const packet = JSON.parse(cli(root, "context.mjs", [taskId, "--phase", current.action.phase, ...(current.action.itemId ? ["--item", current.action.itemId] : []), "--format", "json"]));
+        if (typeof packet?.content !== "string" || !packet.content.trim()) throw new Error("Context packet was empty or invalid");
+        prompt = packet.content;
+      } catch {
+        // No driver has started for this turn, so it is safe to resume after repairing context.
+        // Do not persist arbitrary subprocess output or malformed context in the stop reason.
+        return pause("context packet generation or validation failed; inspect context.mjs and resume after repair");
+      }
       const beforeApprovals = approvalCount(current.task);
       let observedId = record.sessionId;
       try {

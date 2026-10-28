@@ -74,6 +74,8 @@ node dist/services/aidlc-coordination/src/fleet-run.mjs worker
 
 `coordinator <task-id>` runs one task. `--once` processes a bounded polling pass for supervision or diagnostics. Defaults are four worker jobs per feature, five-minute leases with one-minute heartbeat, 12 turns per phase or assignment, 10 minutes per turn, and two consecutive stalls. Set `AIDLC_FLEET_MAX_WORKERS`, `AIDLC_FLEET_LEASE_MS`, `AIDLC_FLEET_HEARTBEAT_MS`, `AIDLC_FLEET_MAX_TURNS`, `AIDLC_FLEET_TURN_TIMEOUT_MS`, and `AIDLC_FLEET_MAX_STALL_TURNS` to change them. Feature mode dispatches dependency-ready tasks in order from one integration checkout; independent items within the active task can use several machines concurrently. After a lost worker report, the lead checks remote Git state and stops for reconciliation if the outcome is ambiguous. Set `AIDLC_FLEET_CODE_ONLY_RETRY=1` to permit an automatic retry only after the prior turn's timeout window has elapsed and Git confirms that no branch was published.
 
+The coordinator and feature commands return when a task reaches a human gate; feature mode stops before dispatching further tasks. After the reviewer acts, restart the command to continue. Command events and command-failure diagnostics report status and exit code without the command text or its output. Worker progress observes changes to file content as well as paths.
+
 ## Shared coordination board
 
 The opt-in service also provides a small workspace-scoped Kanban board that is separate from lifecycle state. Board tasks may link to an AI-DLC task ID or artifact, but board writes, comments, and claims cannot mutate lifecycle state, approve a gate, or rewrite project files.

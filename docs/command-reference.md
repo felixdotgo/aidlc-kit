@@ -89,6 +89,8 @@ node .agents/aidlc/scripts/loop.mjs status <task-id> [--root PATH]
 
 The defaults are 12 turns and 10 minutes per turn; two completed turns without observable progress stop the run. The runner never grants human approval. An interactive client can resume by reading `task next` and reconciling local assignment metadata; fleet execution uses fenced service leases and the remote canonical state.
 
+If context preparation fails before an agent turn starts, the loop pauses with a reason; fix the context problem and use `resume`. An interrupted running turn with no captured session ID still requires inspection of canonical state before recovery.
+
 Fleet mode uses `remote-state.mjs` instead of local `state.mjs`. Set `AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, and `AIDLC_FLEET_PROJECT_ROOT`; lead mutations additionally require `AIDLC_FLEET_TOKEN` and the current `AIDLC_FLEET_LEAD_EPOCH`. Claim an epoch before creating or changing a task:
 
 ```sh

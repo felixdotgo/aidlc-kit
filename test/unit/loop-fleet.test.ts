@@ -196,3 +196,21 @@ test("worker skips canonically completed item after restart", async () => {
   const result = await runFleetWorker({ repository, driver: async () => { invoked = true; }, packet: async () => "packet", handoff });
   assert.equal(result.status, "superseded"); assert.equal(invoked, false);
 });
+
+test("worker resets stalls on changed fingerprints and stops on repeated observations", async () => {
+  const { runFleetWorker } = await load();
+  let turns = 0;
+  let report: any;
+  const repository = {
+    claimJob: async () => ({ taskId: "task-a", itemId: "T1", assignmentId: "job-a", attempt: 1, epoch: 1, agent: "codex" }),
+    renewJob: async () => {}, checkpointJob: async () => {},
+    reportJob: async (input: any) => { report = input.report; },
+    readTask: async () => ({ task: task(), nextAction: action, revision: 1 })
+  };
+  const fingerprints = ["a", "a", "b", "b", "b"];
+  const handoff = { prepare: async () => ({ root: "/tmp/worker-a" }), observe: async () => ({ done: false, fingerprint: fingerprints[turns - 1] }), finish: async () => {} };
+  const result = await runFleetWorker({ repository, workerId: "worker-a", driver: async () => { turns++; return {}; }, packet: async () => "packet", handoff, limits: { maxStallTurns: 2 } });
+  assert.equal(turns, 5);
+  assert.equal(result.status, "uncertain");
+  assert.match(report.reason, /2 worker turns without observable progress/);
+});

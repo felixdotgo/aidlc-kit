@@ -82,6 +82,7 @@ export async function runFleetCli(argv, { callTool, env = process.env, out = con
         const reservedJobs = (await repository.listAllJobs()).filter((job) => job.taskId !== member.taskId);
         const result = await runTask(member.taskId, reservedJobs);
         results.push(result); emit(result);
+        if (result.status === "gate") return { status: "gate", featureId: targetId, results, blockedTaskIds: readiness.items.filter((item) => !item.ready && item.blockers.length).map((item) => item.taskId) };
       }
       const stopped = results.some((entry) => ["blocked", "reconcile", "paused", "terminal"].includes(entry.status));
       const result = { status: !ready.length || stopped ? "blocked" : "active", featureId: targetId, results, blockedTaskIds: readiness.items.filter((member) => !member.ready && member.blockers.length).map((member) => member.taskId) };
@@ -91,7 +92,7 @@ export async function runFleetCli(argv, { callTool, env = process.env, out = con
     }
     const result = await runTask(targetId);
     emit(result);
-    if (once || ["terminal", "complete", "blocked", "paused", "reconcile"].includes(result.status)) return result;
+    if (once || ["terminal", "complete", "blocked", "paused", "reconcile", "gate"].includes(result.status)) return result;
     await pause(pollMs);
   }
 }
