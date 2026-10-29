@@ -31,6 +31,32 @@ test("worker rejects a job from a different provider before running it", async (
   assert.equal(invoked, false);
 });
 
+test("fleet assignment and capability gates accept OpenCode so the container blocker surfaces at execution", async () => {
+  const { runFleetCoordinator, runFleetWorker } = await load();
+  const scheduled: any[] = [];
+  const repository = {
+    readTask: async () => ({ task: task(), nextAction: scheduled.length ? { classification: "await_user", gate: "G1_review" } : action, revision: 1 }),
+    claimLead: async () => ({ epoch: 1 }), renewLead: async () => {}, releaseLead: async () => {}, listJobs: async () => [],
+    scheduleJob: async (input: any) => { scheduled.push(input); return { assignmentId: `job-${input.itemId}`, itemId: input.itemId, workerId: input.workerId, state: "ready" }; },
+    saveGateSnapshot: async () => ({ snapshotId: "snap" })
+  };
+  const handoff = { prepare: async ({ item }: any) => ({ baseCommit: "a".repeat(40), branch: `branch/${item.id}`, ownedPaths: [`src/${item.id}.ts`], agent: "opencode" }) };
+  const result = await runFleetCoordinator({ repository, taskId: "task-a", workerIds: ["worker-a"], workerProviders: { "worker-a": "opencode" }, handoff, pollMs: 1, gateView: async () => "Review" });
+  assert.equal(result.status, "gate");
+  assert.deepEqual(scheduled.map(({ agent }: any) => agent), ["opencode"]);
+
+  const calls: string[] = [];
+  const workerRepository = {
+    claimJob: async () => ({ taskId: "task-a", itemId: "T1", assignmentId: "job-a", attempt: 1, epoch: 1, agent: "opencode" }),
+    renewJob: async () => {}, checkpointJob: async () => {}, reportJob: async () => {},
+    readTask: async () => ({ task: task(), nextAction: action, revision: 1 })
+  };
+  const workerHandoff = { prepare: async () => { calls.push("prepare"); return { root: "/tmp/worker-a" }; }, observe: async () => ({ done: true }), finish: async () => ({ commitSha: "abc", changedPaths: ["src/a.ts"] }) };
+  const worker = await runFleetWorker({ repository: workerRepository, workerId: "worker-a", workerAgent: "opencode", preflight: async (agent: string) => { calls.push(`preflight:${agent}`); }, handoff: workerHandoff, packet: async () => "task", driver: async ({ agent }: any) => { calls.push(`driver:${agent}`); return {}; } });
+  assert.equal(worker.status, "reported");
+  assert.deepEqual(calls, ["preflight:opencode", "prepare", "driver:opencode"]);
+});
+
 test("legacy worker without provider setting preflights and runs the assigned Claude job", async () => {
   const { runFleetWorker } = await load();
   const calls: string[] = [];

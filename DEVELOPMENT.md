@@ -17,7 +17,7 @@ npm run lint
 - [Development guide](./docs/development.md) — dependencies, repository layout, implementation boundaries, and local commands.
 - [Testing and release](./docs/testing-and-release.md) — focused tests, package smoke test, evaluator, and release readiness.
 - [Architecture](./docs/architecture.md) — module ownership, data flow, and installed-runtime parity.
-- [Configuration reference](./docs/configuration.md) — profiles, rules, Codex/Claude permissions, and project-owned configuration.
+- [Configuration reference](./docs/configuration.md) — profiles, rules, provider permissions, and project-owned configuration.
 
 ## Documentation policy
 

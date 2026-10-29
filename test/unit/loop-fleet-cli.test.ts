@@ -25,6 +25,37 @@ test("worker without Docker configuration fails before claiming a job", async ()
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("fleet CLI provider mapping accepts opencode for the host lead and workers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-fleet-opencode-"));
+  try {
+    mkdirSync(join(root, ".agents/aidlc/scripts"), { recursive: true });
+    writeFileSync(join(root, ".agents/aidlc/scripts/remote-state.mjs"), "");
+    const fleet = { jobs: {}, leads: { first: { epoch: 1 } } };
+    const callTool = async ({ name }: { name: string }) => {
+      if (name === "fleet_get") return { revision: 1, fleet };
+      if (name === "task_get") return { revision: 1, task: { id: "first", title: "Review", gate: "G0_confirm", status: "blocked_on_user", risk: "normal", areas: ["root"], artifacts: {}, decisions: [], tasks: [], evidence: [] }, nextAction: { classification: "await_user", gate: "G0_confirm" } };
+      if (name === "run_claim" || name === "run_release") return { fleet };
+      if (name === "gate_snapshot_put") return { id: "snapshot-1" };
+      throw new Error(`Unexpected call ${name}`);
+    };
+    const env = { PATH: process.env.PATH ?? "", AIDLC_FLEET_PROJECT_ROOT: root, AIDLC_FLEET_URL: "https://example.invalid", AIDLC_FLEET_TOKEN: "token", AIDLC_FLEET_WORKSPACE: "workspace", AIDLC_FLEET_WORKER_IDS: "worker", AIDLC_FLEET_WORKER_PROVIDERS: JSON.stringify({ worker: "opencode" }), AIDLC_FLEET_AGENT: "opencode", AIDLC_FLEET_INTEGRATION_BRANCH: "main", AIDLC_FLEET_POLL_MS: "1000" };
+    const { runFleetCli } = await load();
+    const result = await runFleetCli(["coordinator", "first", "--once"], { callTool, env, out: () => {} });
+    assert.equal(result.status, "gate");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("fleet worker execution rejects opencode before any Docker dispatch", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-fleet-opencode-worker-"));
+  try {
+    const calls: string[] = [];
+    const env = { PATH: root, AIDLC_FLEET_PROJECT_ROOT: root, AIDLC_FLEET_URL: "https://example.invalid", AIDLC_FLEET_TOKEN: "token", AIDLC_FLEET_WORKSPACE: "workspace", AIDLC_FLEET_WORKER_ID: "worker-a", AIDLC_FLEET_WORKER_AGENT: "opencode" };
+    const { runFleetCli } = await load();
+    await assert.rejects(runFleetCli(["worker", "--once"], { callTool: async ({ name }: { name: string }) => { calls.push(name); throw new Error("unexpected remote call"); }, env, out: () => {} }), (error: unknown) => error instanceof Error && error.message === "OpenCode workers require file-based credentials and are not available in isolated containers yet");
+    assert.deepEqual(calls, []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 for (const role of ["coordinator", "feature"]) for (const once of [false, true]) {
   test(`${role} returns a gate without polling or dispatching further tasks${once ? " (--once)" : ""}`, async () => {
     const root = mkdtempSync(join(tmpdir(), "aidlc-fleet-cli-"));

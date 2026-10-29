@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { findAdapterForUpgrade, resolvedAdaptersForUpgrade } from "./adapters.js";
-import { managedContentHash, planLoopSelection, readManifest } from "./installer.js";
+import { installedHashFor, managedContentHash, planLoopSelection, readManifest } from "./installer.js";
 import { legacyV021AdapterContents, legacyV021Hashes } from "./legacy.js";
 import type { AgentId, FileSpec, LoopConfig, PlannedWrite, TaskState, WorkflowState } from "./model.js";
 import { planProjectLayoutMigration } from "./project-migration.js";
@@ -112,9 +112,38 @@ export const planUpgrade = (root: string, loop?: LoopConfig): PlannedWrite[] => 
   const selected = requested.filter((id) => findAdapterForUpgrade(id));
   const agentFiles = selected.flatMap((id) => findAdapterForUpgrade(id)?.files() ?? []).map((file) => ({ ...file, ownershipClass: "managed" as const }));
   const managed = [...coreWorkflowFiles(), ...agentFiles];
-  const plan = managed.map((spec) => planManaged(project, spec, installed?.files[spec.path]?.hash, legacy));
+  const plan: PlannedWrite[] = [];
+  const mergedBlocks = new Map<string, PlannedWrite>();
+  for (const spec of managed) {
+    if (spec.strategy !== "managed-block") { plan.push(planManaged(project, spec, installedHashFor(installed?.files, spec), legacy)); continue; }
+    const previous = mergedBlocks.get(spec.path);
+    if (!previous) {
+      const write = planManaged(project, spec, installedHashFor(installed?.files, spec), legacy);
+      plan.push(write);
+      mergedBlocks.set(spec.path, write);
+      continue;
+    }
+    if (!["create", "update", "skip"].includes(previous.action)) continue;
+    const target = safePath(project, spec.path);
+    const current = existsSync(target) ? readFileSync(target, "utf8") : "";
+    // Every owner block is checked before merging so a user edit to a later
+    // adapter's block is reported instead of being silently overwritten.
+    const installedBlockHash = installedHashFor(installed?.files, spec);
+    const currentBlockHash = managedContentHash(spec, current);
+    if (installedBlockHash !== undefined && currentBlockHash !== undefined && installedBlockHash !== currentBlockHash) {
+      previous.action = "conflict";
+      previous.reason = "managed prompt block was modified";
+      continue;
+    }
+    previous.content = mergeManagedBlock(spec, previous.content);
+    previous.action = existsSync(target) ? (previous.content === current ? "skip" : "update") : "create";
+    previous.reason = "managed prompt block";
+  }
   if (installed) {
-    for (const [path, item] of Object.entries(installed.files)) {
+    for (const [key, item] of Object.entries(installed.files)) {
+      const path = key.includes("#") ? key.slice(0, key.lastIndexOf("#")) : key;
+      // Shared prompt blocks are upgraded through the merged plan above; never delete their whole path here.
+      if (item.strategy === "managed-block") continue;
       if (managed.some((spec) => spec.path === path)) continue;
       const target = safePath(project, path);
       if (!existsSync(target)) continue;

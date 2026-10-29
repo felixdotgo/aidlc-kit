@@ -1,6 +1,6 @@
 # aidlc-kit
 
-`@felixdotgo/aidlc-kit` installs an AI-DLC workflow into an existing project. The workflow gives coding agents a shared task lifecycle, dependency-aware work, explicit human review gates, and project-owned state and rules. The normal lead runs in your Codex or Claude Code conversation; an optional coordination service supports workers on multiple machines.
+`@felixdotgo/aidlc-kit` installs an AI-DLC workflow into an existing project. The workflow gives coding agents a shared task lifecycle, dependency-aware work, explicit human review gates, and project-owned state and rules. The normal lead runs in your Codex, Claude Code, or OpenCode conversation; an optional coordination service supports workers on multiple machines.
 
 Workflow assets are bundled with the package, `remoteUpdates` is `false`, and normal status checks never contact a registry. Fleet execution is opt-in and uses a separately deployed service. The optional end-to-end loop is also opt-in: select a mode during `init` or a human-run `upgrade`, then start it explicitly with `aidlc-workflow loop start` — selecting a mode never starts or approves anything by itself.
 
@@ -8,7 +8,7 @@ Workflow assets are bundled with the package, `remoteUpdates` is `false`, and no
 
 - Node.js 20.17 or newer.
 - An existing project directory.
-- Codex or Claude Code.
+- Codex, Claude Code, or OpenCode.
 
 ## Quick start
 
@@ -27,8 +27,9 @@ Use the adapter that matches the coding tool:
 | --- | --- | --- |
 | Codex | `codex` | `AGENTS.md` |
 | Claude Code | `claude` | `CLAUDE.md` and phase skills |
+| OpenCode | `opencode` | `AGENTS.md` |
 
-Use `--all` to install both supported adapters. Codex installs workspace-write sandboxing with on-request approvals and a project execpolicy that permits only AI-DLC lifecycle scripts; trust the project before starting Codex so that it loads the project configuration. Claude Code installs a local permission allowlist for the same lifecycle-script command prefix without granting general Bash access. Use `--force --yes` only for an initial installation when replacing an unmanaged conflicting file is intentional.
+Use `--all` to install every supported adapter. Codex installs workspace-write sandboxing with on-request approvals and a project execpolicy that permits only AI-DLC lifecycle scripts; trust the project before starting Codex so that it loads the project configuration. Claude Code installs a local permission allowlist for the same lifecycle-script command prefix without granting general Bash access. OpenCode installs an owner-scoped block in `AGENTS.md` and uses `.opencode/` only for detection; it writes no OpenCode configuration, MCP, or permission file, so your own settings are not overridden. When Codex and OpenCode are installed together, their blocks merge in the same `AGENTS.md`. Use `--force --yes` only for an initial installation when replacing an unmanaged conflicting file is intentional.
 
 Confirm the installed project locally:
 

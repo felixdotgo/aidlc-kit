@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { acquireLoopLease, assertLoopPath, readLiveLease } from "./loop-lease.mjs";
+import { isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
 
 export const DEFAULT_LIMITS = Object.freeze({ maxTurns: 12, turnTimeoutMs: 600000, maxStallTurns: 2 });
 const states = new Set(["running", "gate", "paused", "blocked", "terminal", "complete"]);
@@ -32,7 +33,7 @@ export function validateRoot(root) {
 export const loopRecordPath = (root, taskId) => assertLoopPath(root, taskId);
 
 function validateRecord(value, taskId) {
-  if (!value || value.schemaVersion !== 1 || value.taskId !== taskId || typeof value.runId !== "string" || !value.runId || !["codex", "claude"].includes(value.agent) || !states.has(value.status) || !Number.isSafeInteger(value.iteration) || value.iteration < 0 || !Number.isSafeInteger(value.stallTurns) || value.stallTurns < 0 || (value.sessionId !== null && (typeof value.sessionId !== "string" || !value.sessionId)) || !value.limits || !value.updatedAt || Number.isNaN(Date.parse(value.updatedAt))) throw new Error(`Corrupt loop run record for ${taskId}`);
+  if (!value || value.schemaVersion !== 1 || value.taskId !== taskId || typeof value.runId !== "string" || !value.runId || !isLoopProvider(value.agent) || !states.has(value.status) || !Number.isSafeInteger(value.iteration) || value.iteration < 0 || !Number.isSafeInteger(value.stallTurns) || value.stallTurns < 0 || (value.sessionId !== null && (typeof value.sessionId !== "string" || !value.sessionId)) || !value.limits || !value.updatedAt || Number.isNaN(Date.parse(value.updatedAt))) throw new Error(`Corrupt loop run record for ${taskId}`);
   if (typeof value.pausedByLoop !== "boolean" || (value.stopReason !== null && typeof value.stopReason !== "string") || (value.checkpoint !== null && (typeof value.checkpoint !== "object" || Array.isArray(value.checkpoint))) || (value.status === "paused" && !value.stopReason)) throw new Error(`Corrupt loop run record for ${taskId}`);
   validateLimits(value.limits);
   if (value.lastFingerprint !== null && (typeof value.lastFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.lastFingerprint))) throw new Error(`Corrupt loop fingerprint for ${taskId}`);
@@ -154,7 +155,7 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
   let record = readLoopRecord(root, taskId);
   if (mode === "run") {
     if (record) throw new Error(`Loop record already exists for ${taskId}; use resume`);
-    if (!["codex", "claude"].includes(agent)) throw new Error("--agent must be codex or claude");
+    if (!isLoopProvider(agent)) throw new Error(`--agent must be ${LOOP_PROVIDER_LIST}`);
   } else if (mode === "resume") {
     if (!record) throw new Error(`No loop record for ${taskId}; use run`);
     if (["complete", "terminal"].includes(record.status)) throw new Error(`Cannot resume ${record.status} loop`);

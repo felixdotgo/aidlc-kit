@@ -7,14 +7,15 @@ import { join } from "node:path";
 import { installableAdapters } from "./adapters.js";
 import { applyPlan, detectedAgents, doctor, formatPlan, planInit, planUninstall, selectAgents, status } from "./installer.js";
 import type { AgentId, InitOptions, LoopConfig } from "./model.js";
+import { LOOP_PROVIDERS } from "./model.js";
 import { loadProjectConfig, resolveProfiles, validateLoopConfig } from "./profiles.js";
 import { applyUpgrade, planUpgrade } from "./upgrade.js";
 import { packageVersion } from "./workflow.js";
 import { applyMcpSetup, planMcpSetup, type McpSetupOptions } from "./mcp-setup.js";
 
 const usage = `Usage:
-  npx @felixdotgo/aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
-  npx @felixdotgo/aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude] [--loop-workers <id=provider,...>] [--dry-run]
+  npx @felixdotgo/aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead ${LOOP_PROVIDERS.join("|")}] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
+  npx @felixdotgo/aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead ${LOOP_PROVIDERS.join("|")}] [--loop-workers <id=provider,...>] [--dry-run]
   npx @felixdotgo/aidlc-kit uninstall [path] [--yes] [--dry-run]
   npx @felixdotgo/aidlc-kit status [path]
   npx @felixdotgo/aidlc-kit doctor [path] [--strict]
@@ -61,7 +62,7 @@ const chooseLoop = async (args: string[], upgrade: boolean): Promise<LoopConfig 
   let lead = leadArg, rawWorkers = workersArg;
   if (interactive() && (!lead || !rawWorkers)) {
     const { select, input } = await prompts();
-    lead ??= await select({ message: "Lead agent", choices: ["codex", "claude"].map((name) => ({ name, value: name })) });
+    lead ??= await select({ message: "Lead agent", choices: LOOP_PROVIDERS.map((name) => ({ name, value: name })) });
     rawWorkers ??= await input({ message: "Workers (id=provider, comma separated)", default: "codex-worker=codex,claude-worker=claude" });
   }
   if (!lead || !rawWorkers) throw new Error("An enabled loop requires --loop-lead and --loop-workers");

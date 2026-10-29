@@ -4,8 +4,8 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { createWorkerSnapshot, inspectWorkerSnapshot } from "./loop-worker-snapshot.mjs";
-import { workerDockerInvocation } from "./loop-worker-docker.mjs";
-import { runAgentTurn } from "./loop-drivers.mjs";
+import { OPENCODE_CONTAINER_ERROR, workerDockerInvocation } from "./loop-worker-docker.mjs";
+import { isLoopProvider, runAgentTurn } from "./loop-drivers.mjs";
 import { claimLocalAssignment, heartbeatLocalAssignment, reportLocalAssignment, releaseLocalAssignment } from "./assignment-store.mjs";
 
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000 });
@@ -37,11 +37,12 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
   if (!Number.isSafeInteger(maxTurns) || maxTurns < 1 || maxTurns > 1000 || !Number.isSafeInteger(maxStallTurns) || maxStallTurns < 1 || maxStallTurns > 20) throw new Error("Invalid worker turn or stall limit");
   const ids = new Set(), workers = new Set(), scopes = [];
   for (const job of jobs) {
-    if (!identifier(job.itemId) || !identifier(job.workerId) || !["codex", "claude"].includes(job.agent) || typeof job.prompt !== "string" || !job.prompt.trim() || !Array.isArray(job.ownedPaths) || !job.ownedPaths.length || job.ownedPaths.length > 64 || !job.ownedPaths.every(safePath)) throw new Error("Invalid local job");
+    if (!identifier(job.itemId) || !identifier(job.workerId) || !isLoopProvider(job.agent) || typeof job.prompt !== "string" || !job.prompt.trim() || !Array.isArray(job.ownedPaths) || !job.ownedPaths.length || job.ownedPaths.length > 64 || !job.ownedPaths.every(safePath)) throw new Error("Invalid local job");
     if (ids.has(job.itemId) || workers.has(job.workerId)) throw new Error("Items and workers must be distinct within a batch");
     ids.add(job.itemId); workers.add(job.workerId);
     for (const path of job.ownedPaths) { if (scopes.some((prior) => overlaps(path, prior))) throw new Error(`Overlapping assignment scope: ${path}`); scopes.push(path); }
   }
+  if (jobs.some((job) => job.agent === "opencode")) throw new Error(OPENCODE_CONTAINER_ERROR);
   if (process.platform !== "linux" || !docker || typeof docker.image !== "string" || !docker.credentials || typeof docker.credentials !== "object") throw new Error("Linux Docker worker isolation and explicit image and provider credentials are required");
   const uid = process.getuid?.(), gid = process.getgid?.();
   if (!uid || !gid) throw new Error("Docker workers require a non-root host user");

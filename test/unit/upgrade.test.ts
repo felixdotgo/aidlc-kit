@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, s
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { adapters } from "../../src/adapters.js";
 import { applyPlan, doctor, planInit, readManifest } from "../../src/installer.js";
+import { managedBlock } from "../../src/managed-content.js";
 import { legacyV021AdapterContents } from "../../src/legacy.js";
 import type { InitOptions, PlannedWrite } from "../../src/model.js";
 import { defaultConfig, loadProjectConfig } from "../../src/profiles.js";
@@ -46,6 +48,64 @@ test("current installation upgrades without touching project config or state", (
     assert.equal(plan.find((item) => item.path === ".agents/data/state/aidlc-state.json")?.action, "preserve");
     assert.equal(plan.find((item) => item.path === ".agents/aidlc/manifest.json")?.action, "update");
     assert.ok(existsSync(state));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("upgrade preserves an installed OpenCode prompt block and writes no vendor config", () => {
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit({ ...options(root), agents: ["opencode"] }));
+    const before = readFileSync(join(root, "AGENTS.md"), "utf8");
+    const plan = planUpgrade(root);
+    assert.equal(plan.some((item) => item.action === "conflict"), false);
+    assert.equal(plan.find((item) => item.path === "AGENTS.md")?.action, "skip");
+    assert.equal(plan.some((item) => item.path === ".opencode" || item.path.startsWith(".opencode/")), false);
+    applyUpgrade(root, plan);
+    assert.equal(readFileSync(join(root, "AGENTS.md"), "utf8"), before);
+    assert.equal(existsSync(join(root, ".opencode")), false);
+    assert.equal(planUpgrade(root).find((item) => item.path === "AGENTS.md")?.action, "skip");
+    assert.match(doctor(root, true), /^OK:/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("upgrade re-adds a missing OpenCode prompt block", () => {
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit({ ...options(root), agents: ["opencode"] }));
+    rmSync(join(root, "AGENTS.md"));
+    const plan = planUpgrade(root);
+    assert.equal(plan.find((item) => item.path === "AGENTS.md")?.action, "create");
+    applyUpgrade(root, plan);
+    const content = readFileSync(join(root, "AGENTS.md"), "utf8");
+    assert.match(content, /^<!-- aidlc-installer:opencode:start -->/);
+    assert.match(content, /# AI-DLC for OpenCode/);
+    assert.equal(existsSync(join(root, ".opencode")), false);
+    assert.match(doctor(root, true), /^OK:/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("upgrade keeps Codex and OpenCode blocks independent in one AGENTS.md", () => {
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit(options(root)));
+    const opencode = adapters.find((adapter) => adapter.id === "opencode")!.files().find((file) => file.path === "AGENTS.md")!.content;
+    const agentsPath = join(root, "AGENTS.md");
+    writeFileSync(agentsPath, `${readFileSync(agentsPath, "utf8").trimEnd()}\n\n${opencode.trimEnd()}\n`);
+    const manifestPath = join(root, ".agents/aidlc/manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.adapters = ["codex", "opencode"];
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    const plan = planUpgrade(root);
+    assert.equal(plan.some((item) => item.action === "conflict"), false);
+    assert.ok(["skip", "update"].includes(plan.find((item) => item.path === "AGENTS.md")?.action ?? ""));
+    applyUpgrade(root, plan);
+    const after = readFileSync(agentsPath, "utf8");
+    for (const owner of ["codex", "opencode"]) {
+      assert.equal([...after.matchAll(new RegExp(`aidlc-installer:${owner}:start`, "g"))].length, 1);
+      const spec = adapters.find((adapter) => adapter.id === owner)!.files().find((file) => file.path === "AGENTS.md")!;
+      assert.equal(managedBlock(spec, after), spec.content.trimEnd());
+    }
+    assert.match(doctor(root, true), /^OK:/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

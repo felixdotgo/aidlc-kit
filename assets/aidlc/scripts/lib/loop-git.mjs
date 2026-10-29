@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { isLoopProvider } from "./loop-drivers.mjs";
 import { createWorkerSnapshot, inspectWorkerSnapshot } from "./loop-worker-snapshot.mjs";
 
 const SHA = /^[0-9a-f]{40,64}$/;
@@ -88,7 +89,7 @@ function normaliseReport(job) {
 export function createLeadGitHandoff({ root: inputRoot, integrationBranch, remote = "origin", agent = "codex" }) {
   const root = resolve(inputRoot);
   validBranch(integrationBranch); validId(remote, "remote");
-  if (!["codex", "claude"].includes(agent)) throw new Error("Invalid worker agent");
+  if (!isLoopProvider(agent)) throw new Error("Invalid worker agent");
   const current = () => { const branch = git(root, "symbolic-ref", "--short", "HEAD"); if (branch !== integrationBranch) throw new Error(`Expected integration branch ${integrationBranch}, found ${branch}`); return git(root, "rev-parse", "HEAD"); };
   const syncCurrent = () => {
     assertClean(root);

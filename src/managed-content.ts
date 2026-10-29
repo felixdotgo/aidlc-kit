@@ -12,7 +12,7 @@ export const mergeManagedBlock = (spec: FileSpec, current: string): string => {
   const end = `<!-- aidlc-installer:${spec.owner}:end -->`;
   const block = spec.content.trimEnd();
   const matches = new RegExp(`${start}[\\s\\S]*?${end}\\n?`, "g");
-  const withoutOwnedBlocks = current.replace(matches, "").replace(/\n{3,}/g, "\n\n").trimEnd();
+  const withoutOwnedBlocks = current.replace(matches, "").replace(/\n{3,}/g, "\n\n").trim();
   const next = `${withoutOwnedBlocks}${withoutOwnedBlocks ? "\n\n" : ""}${block}`;
   return `${next.trimEnd()}\n`;
 };

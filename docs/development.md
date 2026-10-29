@@ -13,7 +13,7 @@ This guide is for contributors to `@felixdotgo/aidlc-kit`. It covers local setup
 npm install
 ```
 
-Codex or Claude Code are optional for manually exercising real evaluator drivers. Ordinary build, lint, and unit-test work does not need external model credentials.
+Codex, Claude Code, or OpenCode are optional for manually exercising real evaluator drivers. Ordinary build, lint, and unit-test work does not need external model credentials. OpenCode driver runs also need `AIDLC_OPENCODE_MODEL` set to a `provider/model[#variant]` value.
 
 ## Repository layout
 

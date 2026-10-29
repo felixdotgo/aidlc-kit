@@ -30,6 +30,13 @@ test("local workers reject overlapping scopes before Docker dispatch", async (t)
   await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: [...jobs, second], ...hooks }), /Overlapping/);
 });
 
+test("local workers reject OpenCode before Docker dispatch", async (t) => {
+  const { root, worktreesRoot } = fixture(t), { runLocalWorkerBatch } = await load();
+  const opencodeJobs = [{ ...jobs[0], agent: "opencode" }];
+  await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: opencodeJobs, ...hooks }), (error: unknown) => error instanceof Error && error.message === "OpenCode workers require file-based credentials and are not available in isolated containers yet");
+  assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "base\n");
+});
+
 test("Docker worker isolates and integrates its scoped snapshot", { skip: !process.env.AIDLC_TEST_WORKER_IMAGE }, async (t) => {
   const { root, worktreesRoot } = fixture(t), { runLocalWorkerBatch } = await load();
   const prior = process.env.OPENAI_API_KEY;

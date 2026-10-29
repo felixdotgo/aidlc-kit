@@ -1,6 +1,10 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import { LOOP_PROVIDERS } from "./model.js";
 import type { AgentId, CommandSpec, LoopConfig, LoopAgent, McpConfig, Profile, ProjectConfig, RiskLevel, StateMutationMode, TrackerConfig } from "./model.js";
+
+const loopProviderNames = `${LOOP_PROVIDERS.slice(0, -1).join(", ")}, or ${LOOP_PROVIDERS[LOOP_PROVIDERS.length - 1]}`;
+const isLoopProvider = (value: unknown): value is LoopAgent => typeof value === "string" && (LOOP_PROVIDERS as readonly string[]).includes(value);
 
 const profile = (id: Profile["topology"], markers: string[] = []): Profile => ({
   schemaVersion: 1,
@@ -30,9 +34,9 @@ export const validateLoopConfig = (value: unknown): LoopConfig => {
   if (Object.keys(item).some((key) => !["mode", "agents"].includes(key)) || typeof item.mode !== "string" || !["off", "local", "fleet"].includes(item.mode)) throw new Error("config.loop requires a valid mode and only supported fields");
   if (item.agents === undefined) return { mode: item.mode as LoopConfig["mode"] };
   const agents = object(item.agents, "config.loop.agents");
-  if (Object.keys(agents).some((key) => !["lead", "workers"].includes(key)) || typeof agents.lead !== "string" || !["codex", "claude"].includes(agents.lead)) throw new Error("config.loop.agents.lead must be codex or claude");
+  if (Object.keys(agents).some((key) => !["lead", "workers"].includes(key)) || !isLoopProvider(agents.lead)) throw new Error(`config.loop.agents.lead must be ${loopProviderNames}`);
   const workers = object(agents.workers, "config.loop.agents.workers");
-  for (const [id, provider] of Object.entries(workers)) if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || typeof provider !== "string" || !["codex", "claude"].includes(provider)) throw new Error("config.loop.agents.workers must map worker IDs to codex or claude");
+  for (const [id, provider] of Object.entries(workers)) if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || !isLoopProvider(provider)) throw new Error(`config.loop.agents.workers must map worker IDs to ${loopProviderNames}`);
   return { mode: item.mode as LoopConfig["mode"], agents: { lead: agents.lead as LoopAgent, workers: workers as Record<string, LoopAgent> } };
 };
 

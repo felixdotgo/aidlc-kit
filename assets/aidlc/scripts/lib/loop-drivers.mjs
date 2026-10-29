@@ -7,6 +7,13 @@ const MAX_STDERR_BYTES = 4096;
 const MAX_RESULT_CHARS = 8192;
 const MAX_DIAGNOSTICS = 16;
 
+/** One runtime enumeration for every loop provider. Host gates import this
+ * list; container paths reject providers that need file-based credentials. */
+export const LOOP_PROVIDERS = Object.freeze(["codex", "claude", "opencode"]);
+export const LOOP_PROVIDER_LIST = `${LOOP_PROVIDERS.slice(0, -1).join(", ")}, or ${LOOP_PROVIDERS[LOOP_PROVIDERS.length - 1]}`;
+export const isLoopProvider = (value) => typeof value === "string" && LOOP_PROVIDERS.includes(value);
+const OPENCODE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+
 const record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : null;
 const redact = (value) => String(value ?? "")
   .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY))=([^\s]+)/gi, "$1=[REDACTED]")
@@ -21,7 +28,7 @@ const emit = async (callback, event) => { if (callback) await callback(event); }
 const adapters = new Map();
 export function registerAgentAdapter(name, adapter) {
   if (typeof name !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(name) || adapters.has(name)) throw new Error("invalid or duplicate agent adapter");
-  if (!adapter || typeof adapter.command !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(adapter.command) || typeof adapter.arguments !== "function" || typeof adapter.parse !== "function" || (adapter.preflight !== undefined && typeof adapter.preflight !== "function")) throw new Error("agent adapter requires a command, arguments, parser, and optional preflight");
+  if (!adapter || typeof adapter.command !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(adapter.command) || typeof adapter.arguments !== "function" || typeof adapter.parse !== "function" || (adapter.preflight !== undefined && typeof adapter.preflight !== "function") || (adapter.completesOnExit !== undefined && typeof adapter.completesOnExit !== "boolean")) throw new Error("agent adapter requires a command, arguments, parser, and optional preflight");
   adapters.set(name, Object.freeze({ ...adapter }));
 }
 export async function preflightAgentAdapter(name, { env = process.env, root } = {}) {
@@ -67,14 +74,36 @@ registerAgentAdapter("claude", {
   }
 });
 
+registerAgentAdapter("opencode", {
+  command: "opencode",
+  completesOnExit: true,
+  arguments: ({ sessionId, prompt, env }) => {
+    const model = (env ?? process.env).AIDLC_OPENCODE_MODEL;
+    if (typeof model !== "string" || !OPENCODE_MODEL.test(model)) throw new Error("opencode provider requires AIDLC_OPENCODE_MODEL");
+    return ["run", "--format", "json", "--standalone", "--auto", ...(sessionId ? ["--session", sessionId] : []), "--model", model, prompt];
+  },
+  parse: async (event, context) => {
+    if (event.sessionID !== undefined) await context.captureId(event.sessionID);
+    const part = record(event.part);
+    if (event.type === "text" && typeof part?.text === "string") context.result(part.text);
+    if (event.type === "tool_use" && part?.tool === "shell") {
+      const state = record(part.state);
+      const metadata = record(record(state?.metadata)?.metadata);
+      await context.commandEvent(metadata?.exit, state?.status === "error" ? "failed" : state?.status);
+    }
+    if (event.type === "step_finish" && part?.reason === "stop") context.complete();
+  }
+});
+
 /**
- * Run exactly one Codex or Claude turn. The returned session ID is the CLI's exact
- * ID; onSessionId observes it immediately. Callers decide when a checkpoint is durable.
- * Transport and protocol failures reject with a bounded, redacted error message.
+ * Run exactly one agent turn for a registered provider. The returned session ID
+ * is the CLI's exact ID; onSessionId observes it immediately. Callers decide when
+ * a checkpoint is durable. Transport and protocol failures reject with a bounded,
+ * redacted error message.
  */
 export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, onSessionId, onEvent, signal, env, spawnProcess = spawn } = {}) {
   const adapter = adapters.get(agent);
-  if (!adapter) throw new Error("agent must be codex or claude or a trusted registered adapter");
+  if (!adapter) throw new Error(`agent must be ${LOOP_PROVIDER_LIST} or a trusted registered adapter`);
   if (typeof root !== "string" || !root) throw new Error("root must be a nonempty path");
   if (typeof prompt !== "string" || !prompt) throw new Error("prompt must be nonempty");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("timeoutMs must be a positive integer");
@@ -84,12 +113,12 @@ export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, 
   if (signal !== undefined && !(signal instanceof AbortSignal)) throw new Error("signal must be an AbortSignal");
   if (signal?.aborted) throw new Error("agent turn aborted before start");
 
-  const args = adapter.arguments({ root, sessionId, prompt });
+  const args = adapter.arguments({ root, sessionId, prompt, env });
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) throw new Error("agent adapter arguments must be an array of strings");
   if (typeof spawnProcess !== "function") throw new Error("spawnProcess must be a function");
   const input = adapter.input?.(prompt);
   if (input !== undefined && typeof input !== "string") throw new Error("agent adapter input must be a string");
-  const child = spawnProcess(adapter.command, args, { cwd: root, shell: false, env: env ?? process.env, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+  const child = spawnProcess(adapter.command, args, { cwd: root, shell: false, env: { ...(env ?? process.env), PWD: root }, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
   if (input !== undefined) {
     if (!child.stdin) throw new Error("agent transport lacks stdin");
     child.stdin.on("error", () => {});
@@ -178,6 +207,7 @@ export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, 
   if (exit.code !== 0) throw new Error(`${agent} exited ${exit.code ?? exit.signal}: ${diagnostic(stderrText)}`);
   if (!exactId) throw new Error(`${agent} turn ended without an explicit captured session ID`);
   if (agent === "claude" && !resultSeen) throw new Error("claude turn ended without a result event");
+  if (!completed && adapter.completesOnExit === true) completed = true;
   if (!completed) throw new Error(`${agent} turn ended without a completion event`);
   if (stderrText.trim()) addDiagnostic(`stderr: ${stderrText}`);
   await emit(onEvent, { type: "turn_completed" });

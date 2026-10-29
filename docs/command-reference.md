@@ -5,12 +5,12 @@ All package commands operate on local files. The examples run version `0.0.1` th
 ## `init`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
 ```
 
 Plans the installation, prints a preview, and then writes the workflow only after confirmation (or `--yes`). `--dry-run` prints the same plan without writing. If exactly one installed agent is detected, it can be selected automatically. In an interactive terminal, choose multiple agents with the checkbox prompt: use arrow keys to move, Space to toggle, A to toggle all, and Enter to confirm. For scripts and non-interactive terminals, use `--agent <name[,name]>` or `--all`.
 
-In interactive setup, choose a loop mode and, when enabled, the lead and worker providers. For non-interactive setup, omit loop options to keep the default off, or specify `--loop-mode local|fleet` together with `--loop-lead` and `--loop-workers` (for example, `--loop-workers a=codex,b=claude`). The preview includes the project config change. These settings only configure the loop; run `aidlc-workflow loop start` to actually start it.
+In interactive setup, choose a loop mode and, when enabled, the lead and worker providers. For non-interactive setup, omit loop options to keep the default off, or specify `--loop-mode local|fleet` together with `--loop-lead` and `--loop-workers` (for example, `--loop-workers a=codex,b=opencode`). The preview includes the project config change. These settings only configure the loop; run `aidlc-workflow loop start` to actually start it.
 
 `--force` is for an intentional initial replacement of an unmanaged conflicting file. It is not an upgrade mechanism. If the project already has another workflow package version, use the human-run upgrade flow instead.
 
@@ -57,7 +57,7 @@ Previews the optional AI-DLC Coordination service configuration, then writes onl
 ## `upgrade`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude] [--loop-workers <id=provider,...>] [--dry-run]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--dry-run]
 ```
 
 Upgrade is deliberately human-only. The command rejects `--yes` and `--force`; applying it requires an interactive terminal and an exact typed confirmation of the package version. Interactive confirmations use the same styled terminal prompt as `init`. Agents must not run, preview, detect, or suggest package upgrades on their own.
@@ -78,7 +78,7 @@ Options: `--task-id <id>` (optional for `start`, which derives one; required for
 
 Local mode requires the Docker worker image configuration described in [Testing and release](./testing-and-release.md) plus the provider credential environment; approval happens through the trusted host terminal command `node .agents/aidlc/scripts/loop-gate.mjs <task-id>`, which refuses piped input.
 
-Fleet mode requires the running coordination service (`AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, lead `AIDLC_FLEET_TOKEN`, `AIDLC_FLEET_INTEGRATION_BRANCH`, and optionally `AIDLC_FLEET_GIT_REMOTE`); worker IDs must match the configured `loop.agents.workers`. The facade preflights the service and the integration branch and fails closed with a diagnosis instead of falling back to local. Fleet workers run separately through the fleet runner (`worker --once`) on each worker machine with `AIDLC_WORKER_DOCKER_IMAGE` and their own worker credential; a reviewer approves gates through the reviewer credential as documented in [Coordination service](./coordination-service.md).
+Fleet mode requires the running coordination service (`AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, lead `AIDLC_FLEET_TOKEN`, `AIDLC_FLEET_INTEGRATION_BRANCH`, and optionally `AIDLC_FLEET_GIT_REMOTE`); worker IDs must match the configured `loop.agents.workers`, and `AIDLC_FLEET_WORKER_PROVIDERS` may map each worker to `codex`, `claude`, or `opencode`. The facade preflights the service and the integration branch and fails closed with a diagnosis instead of falling back to local. Fleet worker containers reject `opencode` with the container diagnostic above; assignment validation accepts it so that blocker surfaces when the job executes rather than being reported as an invalid provider. Fleet workers run separately through the fleet runner (`worker --once`) on each worker machine with `AIDLC_WORKER_DOCKER_IMAGE` and their own worker credential; a reviewer approves gates through the reviewer credential as documented in [Coordination service](./coordination-service.md).
 
 ## Installed lifecycle scripts
 
@@ -97,15 +97,17 @@ node .agents/aidlc/scripts/task-next.mjs <task-id> --require-stop
 node .agents/aidlc/scripts/gate-view.mjs <task-id>
 ```
 
-The normal interactive loop runs in the current Codex or Claude Code conversation, using native agents and the installed lifecycle commands. The optional `loop.mjs` command is for unattended CLI execution:
+The normal interactive loop runs in the current Codex, Claude Code, or OpenCode conversation, using native agents and the installed lifecycle commands. The optional `loop.mjs` command is for unattended CLI execution:
 
 ```sh
-node .agents/aidlc/scripts/loop.mjs run <task-id> --agent codex|claude [--max-turns N] [--turn-timeout-ms N] [--max-stall-turns N] [--root PATH]
+node .agents/aidlc/scripts/loop.mjs run <task-id> --agent codex|claude|opencode [--max-turns N] [--turn-timeout-ms N] [--max-stall-turns N] [--root PATH]
 node .agents/aidlc/scripts/loop.mjs resume <task-id> [--max-turns N] [--turn-timeout-ms N] [--max-stall-turns N] [--root PATH]
 node .agents/aidlc/scripts/loop.mjs status <task-id> [--root PATH]
 ```
 
-The defaults are 12 turns and 10 minutes per turn; two completed turns without observable progress stop the run. The runner never grants human approval. An interactive client can resume by reading `task next` and reconciling local assignment metadata; fleet execution uses fenced service leases and the remote canonical state.
+`--agent opencode` requires `AIDLC_OPENCODE_MODEL` in `provider/model[#variant]` form; the turn fails closed without it. Docker-isolated lead turns, local Docker worker batches, and fleet worker containers reject OpenCode with `OpenCode workers require file-based credentials and are not available in isolated containers yet` and do not fall back to the host. Use `loop.mjs run --agent opencode` for host-executed lead turns, or use Codex or Claude Code where container isolation is required.
+
+The defaults are 12 turns and 10 minutes per turn; two completed turns without observable progress stop the run. Each run records its provider, and `resume` rejects a different agent. The runner never grants human approval. An interactive client can resume by reading `task next` and reconciling local assignment metadata; fleet execution uses fenced service leases and the remote canonical state.
 
 If context preparation fails before an agent turn starts, the loop pauses with a reason; fix the context problem and use `resume`. An interrupted running turn with no captured session ID still requires inspection of canonical state before recovery.
 

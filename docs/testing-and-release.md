@@ -49,7 +49,7 @@ npm test
 - `AIDLC_TEST_MULTITURN_IMAGE` runs the multi-turn session HOME fixture against the turn limit.
 - `AIDLC_WORKER_DOCKER_IMAGE` is required on Linux for the real fleet end-to-end test (coordinator dispatch, isolated worker, Git integration, canonical completion, and G2 publication). Without it that test fails closed instead of skipping.
 
-Each fixture image contains only a fake provider CLI that emits the Codex JSONL protocol; no real Codex or Claude credentials or accounts are used, and the fake refuses to run when it can see `.git`, lifecycle state, or the Docker socket.
+Each fixture image contains only a fake provider CLI that emits the Codex JSONL protocol; no real Codex, Claude Code, or OpenCode credentials or accounts are used, and the fake refuses to run when it can see `.git`, lifecycle state, or the Docker socket.
 
 Without these variables the Docker-gated tests skip, so a plain `npm test` is not loop-isolation verification.
 
@@ -98,17 +98,19 @@ node dist/dev/evaluator/cli.js list
 node dist/dev/evaluator/cli.js run --runner local-simulated
 ```
 
-Runners exchange JSON, and reports capture transport, transcript, normalised events, usage, and diagnostics. Real Codex or Claude runs can consume credentials and model budget; they are not required for ordinary development verification.
+Runners exchange JSON, and reports capture transport, transcript, normalised events, usage, and diagnostics. Real Codex, Claude Code, or OpenCode runs can consume credentials and model budget; they are not required for ordinary development verification.
 
-The release-eligible suite includes `build-multi-item-continuation`, which starts with three canonical build items and requires one agent run to complete all of them, record verification/review evidence, and stop only at a ready G2. This complements unit guards by exercising the model-facing continuation contract.
+The pinned `opencode-gpt6` runner uses adapter `opencode` with model `opencode-go/gpt-6-luna`, version `opencode-2.2.0`, protocol version `2`, real evidence, and a 300000 ms timeout. It runs `opencode run --format json --standalone --auto` once per turn, resumes with `--session`, and writes `opencode.json` containing `{"mcp": {}}` into each scenario workspace so project MCP servers do not leak into the evaluation. OpenCode resolves its project directory from the inherited `PWD`, not the spawned process working directory, so the runner and the loop driver pin `PWD` to the workspace; without that pin, commands would silently run in the invoking repository. OpenCode has no environment-credential mode, so the runner reuses the local Console authentication; the residual risk is that user plugins or agents can still load. That isolation is workspace configuration, not a security boundary.
 
-The release checker validates required evidence according to the configured adapter policy. This repository's script uses the Codex-only policy:
+The release-eligible `aidlc-official-agentic` suite is version `2.5.0`. Its `supported-adapters` scenario asks the agent to explain that the workflow supports Codex, Claude Code, and OpenCode without executing remote code or shell strings. The suite also includes `build-multi-item-continuation`, which starts with three canonical build items and requires one agent run to complete all of them, record verification/review evidence, and stop only at a ready G2. This complements unit guards by exercising the model-facing continuation contract.
+
+The release checker validates required evidence according to the configured adapter policy. This repository's script uses the OpenCode-only policy:
 
 ```sh
 npm run release:check
 ```
 
-It reads local evaluation evidence from `.agents/project/release-eval.json` and fails closed if required evidence or integrity thresholds are missing.
+The script passes `--adapters opencode`, while `dev/evaluator/release.ts` keeps its `["codex","claude"]` default for compatibility so downstream users and existing policies are unaffected. It reads local evaluation evidence from `.agents/project/release-eval.json` and fails closed if required evidence or integrity thresholds are missing. Re-adding Codex or Claude to this repository's policy requires fresh real evidence for those adapters, not a policy-only edit.
 
 ## Release readiness
 

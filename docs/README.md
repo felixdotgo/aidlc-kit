@@ -6,7 +6,7 @@ Use this page to choose the guide that matches your role and next task.
 
 1. Start with the repository [README](../README.md) to install the workflow.
 2. Read [Operating the workflow](./operating-workflow.md) before asking an agent to change a project.
-3. Use [Configuration](./configuration.md) to configure project rules, profiles, and Codex/Claude permissions.
+3. Use [Configuration](./configuration.md) to configure project rules, profiles, and Codex, Claude Code, and OpenCode permissions.
 4. Keep [Command reference](./command-reference.md) nearby for safe CLI usage.
 5. Read [AI-DLC Coordination service](./coordination-service.md) before enabling remote canonical state.
 
@@ -21,7 +21,7 @@ Use this page to choose the guide that matches your role and next task.
 | Page | Audience | Purpose |
 | --- | --- | --- |
 | [Operating the workflow](./operating-workflow.md) | Operators | Lifecycle, task state, human gates, and blocked work. |
-| [Configuration](./configuration.md) | Operators and maintainers | Project configuration, profile precedence, rules, and Codex/Claude permissions. |
+| [Configuration](./configuration.md) | Operators and maintainers | Project configuration, profile precedence, rules, and Codex, Claude Code, and OpenCode permissions. |
 | [Command reference](./command-reference.md) | Operators | Package CLI commands, flags, previews, and safety limits. |
 | [Development](./development.md) | Contributors | Dependencies, source layout, local commands, and implementation rules. |
 | [Testing and release](./testing-and-release.md) | Maintainers | Test strategy, evaluator, package smoke test, and release checks. |

@@ -9,8 +9,8 @@ const request = (workspace: string, turns = 1, suiteId = "aidlc-official-agentic
 const executable = (root: string, name: string, body: string): string => {
   const path = join(root, name); writeFileSync(path, `#!/usr/bin/env node\n${body}\n`, "utf8"); chmodSync(path, 0o755); return path;
 };
-const run = (driver: "claude" | "codex", workspace: string, bin: string, extra: Record<string, string> = {}, turns = 1) => spawnSync(process.execPath, [resolve(`dist/dev/evaluator/runners/${driver}.js`)], {
-  input: request(workspace, turns), encoding: "utf8", env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, AIDLC_EVAL_MODEL: driver === "claude" ? "sonnet" : "fixture", AIDLC_EVAL_TIMEOUT_MS: "10000", ...extra }
+const run = (driver: "claude" | "codex" | "opencode", workspace: string, bin: string, extra: Record<string, string> = {}, turns = 1) => spawnSync(process.execPath, [resolve(`dist/dev/evaluator/runners/${driver}.js`)], {
+  input: request(workspace, turns), encoding: "utf8", env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, AIDLC_EVAL_MODEL: driver === "claude" ? "sonnet" : driver === "opencode" ? "opencode-go/fixture" : "fixture", AIDLC_EVAL_TIMEOUT_MS: "10000", ...extra }
 });
 
 test("Claude driver enables verbose stream JSON mode", { skip: process.platform === "win32" }, () => {
@@ -127,7 +127,7 @@ test("Claude does not auto-approve configured commands for custom suites", { ski
 });
 
 test("executable drivers expose child stderr as protocol diagnostics", { skip: process.platform === "win32" }, () => {
-  for (const driver of ["claude", "codex"] as const) {
+  for (const driver of ["claude", "codex", "opencode"] as const) {
     const root = mkdtempSync(join(tmpdir(), `aidlc-${driver}-error-`));
     try {
       executable(root, driver, `console.error("${driver} fixture stderr"); process.exit(7);`);
@@ -138,11 +138,12 @@ test("executable drivers expose child stderr as protocol diagnostics", { skip: p
 });
 
 test("executable drivers expose bounded command failure diagnostics", { skip: process.platform === "win32" }, () => {
-  const fixtures: Record<"codex" | "claude", string> = {
+  const fixtures: Record<"codex" | "claude" | "opencode", string> = {
     codex: `console.log(JSON.stringify({type:"item.completed",item:{type:"command_execution",command:"API_TOKEN=supersecret node state.mjs task next --id eval-task",status:"failed",exit_code:2,aggregated_output:"task eval-task not found sk_fixturesecret"}})); console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:"Unable to continue"}}));`,
-    claude: `console.log(JSON.stringify({type:"assistant",message:{content:[{type:"tool_use",id:"tool-1",name:"Bash",input:{command:"API_TOKEN=supersecret node state.mjs task next --id eval-task"}}]}})); console.log(JSON.stringify({type:"user",message:{content:[{type:"tool_result",tool_use_id:"tool-1",is_error:true,content:"task eval-task not found sk_fixturesecret"}]}})); console.log(JSON.stringify({type:"result",result:"Unable to continue",session_id:"fixture"}));`
+    claude: `console.log(JSON.stringify({type:"assistant",message:{content:[{type:"tool_use",id:"tool-1",name:"Bash",input:{command:"API_TOKEN=supersecret node state.mjs task next --id eval-task"}}]}})); console.log(JSON.stringify({type:"user",message:{content:[{type:"tool_result",tool_use_id:"tool-1",is_error:true,content:"task eval-task not found sk_fixturesecret"}]}})); console.log(JSON.stringify({type:"result",result:"Unable to continue",session_id:"fixture"}));`,
+    opencode: `console.log(JSON.stringify({type:"tool_use",timestamp:1,sessionID:"fixture",part:{type:"tool",tool:"shell",state:{status:"error",input:{command:"API_TOKEN=supersecret node state.mjs task next --id eval-task"},error:"task eval-task not found sk_fixturesecret",metadata:{metadata:{exit:2},content:[{type:"text",text:"task eval-task not found sk_fixturesecret"}]}}}})); console.log(JSON.stringify({type:"text",timestamp:2,sessionID:"fixture",part:{type:"text",text:"Unable to continue"}}));`
   };
-  for (const driver of ["codex", "claude"] as const) {
+  for (const driver of ["codex", "claude", "opencode"] as const) {
     const root = mkdtempSync(join(tmpdir(), `aidlc-${driver}-command-error-`));
     try {
       executable(root, driver, fixtures[driver]);
@@ -158,11 +159,12 @@ test("executable drivers expose bounded command failure diagnostics", { skip: pr
 });
 
 test("drivers normalize vendor web tools into provider-neutral network events", { skip: process.platform === "win32" }, () => {
-  const fixtures: Record<"codex" | "claude", string> = {
+  const fixtures: Record<"codex" | "claude" | "opencode", string> = {
     codex: `console.log(JSON.stringify({type:"thread.started",thread_id:"fixture"})); console.log(JSON.stringify({type:"item.completed",item:{type:"web_search",query:"example"}})); console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:"done"}}));`,
-    claude: `console.log(JSON.stringify({type:"assistant",message:{content:[{type:"tool_use",id:"web-1",name:"WebFetch",input:{url:"https://example.invalid"}}]}})); console.log(JSON.stringify({type:"result",result:"done",session_id:"fixture"}));`
+    claude: `console.log(JSON.stringify({type:"assistant",message:{content:[{type:"tool_use",id:"web-1",name:"WebFetch",input:{url:"https://example.invalid"}}]}})); console.log(JSON.stringify({type:"result",result:"done",session_id:"fixture"}));`,
+    opencode: `console.log(JSON.stringify({type:"tool_use",sessionID:"fixture",part:{type:"tool",tool:"webfetch",state:{status:"completed",input:{url:"https://example.invalid"}}}})); console.log(JSON.stringify({type:"text",sessionID:"fixture",part:{type:"text",text:"done"}}));`
   };
-  for (const driver of ["codex", "claude"] as const) {
+  for (const driver of ["codex", "claude", "opencode"] as const) {
     const root = mkdtempSync(join(tmpdir(), `aidlc-${driver}-network-`));
     try {
       executable(root, driver, fixtures[driver]);
@@ -172,10 +174,89 @@ test("drivers normalize vendor web tools into provider-neutral network events", 
   }
 });
 
+test("OpenCode driver advertises its version through the doctor protocol", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-opencode-doctor-"));
+  try {
+    executable(root, "opencode", `if (process.argv.includes("--version")) { console.log("2.2.0"); process.exit(0); } console.error("unexpected doctor arguments"); process.exit(9);`);
+    const result = spawnSync(process.execPath, [resolve("dist/dev/evaluator/runners/opencode.js"), "--doctor"], { encoding: "utf8", env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ""}` } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { available: true, driver: "opencode", protocolVersion: 2, version: "2.2.0", diagnostic: "" });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("OpenCode driver runs one headless turn, isolates MCP servers, and captures usage", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-opencode-turn-")); const observedPath = join(root, "observed.json");
+  try {
+    executable(root, "opencode", `const fs=require("node:fs"); const args=process.argv.slice(2); fs.writeFileSync(process.env.FAKE_ARGS_PATH,JSON.stringify({args,cwd:process.cwd(),pwd:process.env.PWD,config:fs.readFileSync("opencode.json","utf8")})); const sid="fixture-session";
+console.log(JSON.stringify({type:"step_start",timestamp:1,sessionID:sid,part:{type:"step-start"}}));
+console.log(JSON.stringify({type:"tool_use",timestamp:2,sessionID:sid,part:{type:"tool",tool:"shell",state:{status:"completed",input:{command:"node .agents/aidlc/scripts/state.mjs task list"},output:"ok",metadata:{metadata:{exit:0},content:[{type:"text",text:"ok"}]}}}}));
+console.log(JSON.stringify({type:"step_finish",timestamp:3,sessionID:sid,part:{type:"step-finish",reason:"stop",cost:0.01,tokens:{input:2,output:1}}}));
+console.log(JSON.stringify({type:"text",timestamp:4,sessionID:sid,part:{type:"text",text:"OK"}}));`);
+    const result = run("opencode", root, root, { FAKE_ARGS_PATH: observedPath }); assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as { transport: string; transcript: string; usage: Record<string, number>; events: Array<{ type: string }> };
+    const observed = JSON.parse(readFileSync(observedPath, "utf8")) as { args: string[]; cwd: string; pwd: string; config: string };
+    assert.equal(payload.transport, "completed"); assert.equal(payload.transcript, "OK");
+    assert.equal(payload.usage.inputTokens, 2); assert.equal(payload.usage.outputTokens, 1); assert.equal(payload.usage.costUsd, 0.01); assert.equal(typeof payload.usage.latencyMs, "number");
+    assert.deepEqual(JSON.parse(observed.config), { mcp: {} });
+    assert.equal(observed.cwd, root); assert.equal(observed.pwd, root);
+    assert.deepEqual(observed.args.slice(0, 5), ["run", "--format", "json", "--standalone", "--auto"]);
+    assert.equal(observed.args[observed.args.indexOf("--model") + 1], "opencode-go/fixture");
+    assert.ok(!observed.args.includes("--session"));
+    assert.match(observed.args.at(-1) ?? "", /Evaluator workspace contract/); assert.match(observed.args.at(-1) ?? "", /Reply OK 1/);
+    assert.ok(payload.events.some((event) => event.type === "command")); assert.ok(payload.events.some((event) => event.type === "step_finish"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("OpenCode driver completes a text-only turn without a step_finish event", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-opencode-text-turn-"));
+  try {
+    executable(root, "opencode", `console.log(JSON.stringify({type:"text",timestamp:1,sessionID:"fixture-session",part:{type:"text",text:"hello"}}));`);
+    const result = run("opencode", root, root); assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as { transport: string; transcript: string; usage: Record<string, number>; diagnostics: string[] };
+    assert.equal(payload.transport, "completed"); assert.equal(payload.transcript, "hello");
+    assert.equal(payload.usage.inputTokens, 0); assert.equal(payload.usage.costUsd, 0); assert.equal(typeof payload.usage.latencyMs, "number");
+    assert.deepEqual(payload.diagnostics, []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("OpenCode driver resumes its captured session for a validated continuation guard", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-opencode-continuation-")); const argsPath = join(root, "args.jsonl");
+  try {
+    const guard = JSON.stringify({ ok: true, continuation: { required: true, code: "CONTINUATION_REQUIRED", command: "node .agents/aidlc/scripts/context.mjs eval-task --phase build --item T1" } });
+    executable(root, "opencode", `const fs=require("node:fs"); const args=process.argv.slice(2); fs.appendFileSync(process.env.FAKE_ARGS_PATH,JSON.stringify(args)+"\\n"); const sid="fixture-session";
+if (args.includes("--session")) { console.log(JSON.stringify({type:"text",timestamp:3,sessionID:sid,part:{type:"text",text:"continued"}})); }
+else { console.log(JSON.stringify({type:"tool_use",timestamp:1,sessionID:sid,part:{type:"tool",tool:"shell",state:{status:"error",input:{command:"node .agents/aidlc/scripts/task-next.mjs eval-task --require-stop"},error:"exit 2",metadata:{metadata:{exit:2},content:[{type:"text",text:process.env.FAKE_GUARD}]}}}})); console.log(JSON.stringify({type:"text",timestamp:2,sessionID:sid,part:{type:"text",text:"guard seen"}})); }`);
+    const result = run("opencode", root, root, { FAKE_ARGS_PATH: argsPath, FAKE_GUARD: guard }); assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as { transport: string; transcript: string; events: Array<{ type: string }>; diagnostics: string[] };
+    const calls = readFileSync(argsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
+    assert.equal(payload.transport, "completed"); assert.equal(calls.length, 2); assert.ok(payload.events.some((event) => event.type === "continuation-guard"));
+    assert.equal(calls[1][calls[1].indexOf("--session") + 1], "fixture-session");
+    assert.match(calls[1].at(-1) ?? "", /Evaluator control turn/); assert.match(calls[1].at(-1) ?? "", /context\.mjs eval-task/);
+    assert.match(payload.transcript, /guard seen/); assert.match(payload.transcript, /continued/);
+    assert.doesNotMatch(payload.diagnostics.join("\n"), /commandFailed/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("OpenCode driver fails closed when a resumed turn has no captured session", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-opencode-missing-session-")); const argsPath = join(root, "args.jsonl");
+  try {
+    executable(root, "opencode", `const fs=require("node:fs"); fs.appendFileSync(process.env.FAKE_ARGS_PATH,JSON.stringify(process.argv.slice(2))+"\\n"); console.log(JSON.stringify({type:"text",timestamp:1,part:{type:"text",text:"OK"}}));`);
+    const result = run("opencode", root, root, { FAKE_ARGS_PATH: argsPath }, 2); assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as { transport: string; diagnostics: string[] };
+    assert.equal(payload.transport, "error"); assert.match(payload.diagnostics.join("\n"), /explicit captured session ID/);
+    assert.equal(readFileSync(argsPath, "utf8").trim().split("\n").length, 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("development-only evaluator runners use the approved timeouts", () => {
   const config = JSON.parse(readFileSync(resolve("dev/evaluator/config.json"), "utf8"));
-  for (const id of ["codex-luna", "claude-sonnet", "claude-haiku"]) assert.equal(config.runners[id].timeoutMs, 300_000);
+  for (const id of ["codex-luna", "claude-sonnet", "claude-haiku", "opencode-gpt6"]) assert.equal(config.runners[id].timeoutMs, 300_000);
   assert.equal(config.runners["local-simulated"].timeoutMs, 120_000);
   assert.equal(config.runners["codex-luna"].modelsByCategory.continuation, "gpt-6-sol");
   assert.equal(config.runners["codex-luna"].version, "codex-cli-0.156.1");
+  assert.equal(config.runners["opencode-gpt6"].adapter, "opencode");
+  assert.equal(config.runners["opencode-gpt6"].model, "opencode-go/gpt-6-luna");
+  assert.equal(config.runners["opencode-gpt6"].version, "opencode-2.2.0");
+  assert.equal(config.runners["opencode-gpt6"].evidenceKind, "real");
+  assert.deepEqual(Object.keys(config.runners["opencode-gpt6"].modelsByCategory).sort(), Object.keys(config.runners["codex-luna"].modelsByCategory).sort());
 });

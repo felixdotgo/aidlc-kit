@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
 import { loopStatus, runLoop } from "./lib/loop-runtime.mjs";
-import { runAgentTurn } from "./lib/loop-drivers.mjs";
+import { LOOP_PROVIDERS, runAgentTurn } from "./lib/loop-drivers.mjs";
 import { requireLocalAuthority } from "./lib/authority.mjs";
 
 function parse(argv) {
   const [command, taskId, ...tail] = argv;
-  if (!["run", "resume", "status"].includes(command) || !taskId) throw new Error("Usage: loop.mjs run <task-id> --agent codex|claude [--max-turns N] [--turn-timeout-ms N] [--max-stall-turns N] [--root PATH] | resume <task-id> [--max-turns N] [--turn-timeout-ms N] [--max-stall-turns N] [--root PATH] | status <task-id> [--root PATH]");
+  const providers = LOOP_PROVIDERS.join("|");
+  if (!["run", "resume", "status"].includes(command) || !taskId) throw new Error(`Usage: loop.mjs run <task-id> --agent ${providers} [--max-turns N] [--turn-timeout-ms N] [--max-stall-turns N] [--root PATH] | resume <task-id> [--max-turns N] [--turn-timeout-ms N] [--max-stall-turns N] [--root PATH] | status <task-id> [--root PATH]`);
   const options = {};
   const supported = new Set(["--root", "--agent", "--max-turns", "--turn-timeout-ms", "--max-stall-turns"]);
   for (let i = 0; i < tail.length; i += 2) {
@@ -15,7 +16,7 @@ function parse(argv) {
     options[name] = value;
   }
   if (command === "status" && Object.keys(options).some((key) => key !== "--root")) throw new Error("status only accepts --root");
-  if (command === "run" && !options["--agent"]) throw new Error("run requires --agent codex|claude");
+  if (command === "run" && !LOOP_PROVIDERS.includes(options["--agent"])) throw new Error(`run requires --agent ${LOOP_PROVIDERS.join("|")}`);
   const limits = {};
   if (options["--max-turns"] !== undefined) limits.maxTurns = Number(options["--max-turns"]);
   if (options["--turn-timeout-ms"] !== undefined) limits.turnTimeoutMs = Number(options["--turn-timeout-ms"]);

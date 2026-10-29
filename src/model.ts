@@ -39,7 +39,8 @@ export interface InitOptions {
 }
 
 export type LoopMode = "off" | "local" | "fleet";
-export type LoopAgent = "codex" | "claude";
+export const LOOP_PROVIDERS = Object.freeze(["codex", "claude", "opencode"] as const);
+export type LoopAgent = (typeof LOOP_PROVIDERS)[number];
 export interface LoopConfig {
   mode: LoopMode;
   agents?: { lead: LoopAgent; workers: Record<string, LoopAgent> };

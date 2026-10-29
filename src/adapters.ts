@@ -1,6 +1,15 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Adapter, AgentId, FileSpec } from "./model.js";
+
+const hasManagedBlock = (root: string, path: string, owner: string): boolean => {
+  const target = join(root, path);
+  if (!existsSync(target)) return false;
+  try {
+    const content = readFileSync(target, "utf8");
+    return content.includes(`<!-- aidlc-installer:${owner}:start -->`) || content.includes(`<!-- aidlc-installer:${owner} -->`);
+  } catch { return false; }
+};
 
 const adapterFile = (owner: string, path: string, body: string): FileSpec => ({
   path,
@@ -80,12 +89,18 @@ export const adapters: readonly Adapter[] = [
   {
     id: "codex",
     displayName: "Codex",
-    detect: (root) => existsSync(join(root, "AGENTS.md")) || existsSync(join(root, ".codex")),
+    detect: (root) => existsSync(join(root, ".codex")) || hasManagedBlock(root, "AGENTS.md", "codex"),
     files: () => [
       { ...adapterFile("codex", "AGENTS.md", instruction("Codex", "codex")), strategy: "managed-block" },
       { path: ".codex/config.toml", owner: "codex", content: "approval_policy = \"on-request\"\nsandbox_mode = \"workspace-write\"\n" },
       { path: ".codex/rules/aidlc.rules", owner: "codex", content: codexExecPolicy }
     ]
+  },
+  {
+    id: "opencode",
+    displayName: "OpenCode",
+    detect: (root) => existsSync(join(root, ".opencode")) || hasManagedBlock(root, "AGENTS.md", "opencode"),
+    files: () => [{ ...adapterFile("opencode", "AGENTS.md", instruction("OpenCode", "opencode")), strategy: "managed-block" }]
   }
 ];
 

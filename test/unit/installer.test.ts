@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { adapters } from "../../src/adapters.js";
-import { applyPlan, doctor, planInit, planUninstall, readManifest, status } from "../../src/installer.js";
+import { applyPlan, detectedAgents, doctor, planInit, planUninstall, readManifest, status } from "../../src/installer.js";
 import type { InitOptions } from "../../src/model.js";
-import { applyUpgrade } from "../../src/upgrade.js";
+import { applyUpgrade, planUpgrade } from "../../src/upgrade.js";
 import { loadProjectConfig } from "../../src/profiles.js";
 
 const makeRoot = () => mkdtempSync(join(tmpdir(), "aidlc-v1-"));
@@ -104,6 +104,65 @@ test("installs Claude Code local lifecycle permission settings", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("--agent opencode installs only an owner-scoped AGENTS.md block", () => {
+  const root = makeRoot();
+  try {
+    const plan = planInit({ ...options(root), agents: ["opencode"] });
+    const agentsFile = plan.find((item) => item.path === "AGENTS.md")!;
+    assert.equal(agentsFile.action, "create");
+    assert.equal(agentsFile.owner, "opencode");
+    assert.equal(agentsFile.strategy, "managed-block");
+    assert.match(agentsFile.content, /^<!-- aidlc-installer:opencode:start -->\n# AI-DLC for OpenCode\n/);
+    assert.match(agentsFile.content, /<!-- aidlc-installer:opencode:end -->\n$/);
+    assert.doesNotMatch(agentsFile.content, /aidlc-installer:codex/);
+    assert.equal(plan.some((item) => item.path === ".opencode" || item.path.startsWith(".opencode/")), false);
+    applyPlan(root, plan);
+    assert.equal(readFileSync(join(root, "AGENTS.md"), "utf8"), agentsFile.content);
+    assert.equal(existsSync(join(root, ".opencode")), false);
+    assert.equal(existsSync(join(root, ".codex")), false);
+    assert.deepEqual(readManifest(root)?.adapters, ["opencode"]);
+    assert.match(doctor(root), /^OK:/);
+    assert.match(status(root), /installed version: 0\.0\.1/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("installing Codex and OpenCode keeps two independent AGENTS.md blocks", () => {
+  // Two adapters own AGENTS.md, so planInit must merge both owner-scoped blocks into one planned write.
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit({ ...options(root), agents: ["codex", "opencode"] }));
+    const content = readFileSync(join(root, "AGENTS.md"), "utf8");
+    for (const owner of ["codex", "opencode"]) {
+      assert.equal([...content.matchAll(new RegExp(`aidlc-installer:${owner}:start`, "g"))].length, 1);
+      assert.equal([...content.matchAll(new RegExp(`aidlc-installer:${owner}:end`, "g"))].length, 1);
+    }
+    assert.match(content, /# AI-DLC for Codex/);
+    assert.match(content, /# AI-DLC for OpenCode/);
+    assert.match(content, /Run every `node \.agents\/aidlc\/scripts\/\.\.\.` lifecycle command in a separate exec call/);
+    assert.equal(existsSync(join(root, ".codex/config.toml")), true);
+    assert.equal(existsSync(join(root, ".opencode")), false);
+    assert.deepEqual(readManifest(root)?.adapters, ["codex", "opencode"]);
+    const again = planInit({ ...options(root), agents: ["codex", "opencode"] });
+    assert.equal(again.find((item) => item.path === "AGENTS.md")?.action, "skip");
+    applyPlan(root, again);
+    assert.equal(readFileSync(join(root, "AGENTS.md"), "utf8"), content);
+    assert.match(doctor(root), /^OK:/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an .opencode directory detects the OpenCode adapter", () => {
+  const root = makeRoot();
+  try {
+    assert.deepEqual(detectedAgents(root), []);
+    mkdirSync(join(root, ".opencode"), { recursive: true });
+    assert.deepEqual(detectedAgents(root), ["opencode"]);
+    assert.match(status(root), /detected agents: opencode/);
+    applyPlan(root, planInit({ ...options(root), agents: ["opencode"] }));
+    assert.match(status(root), /detected agents: opencode$/m);
+    assert.match(doctor(root), /^OK:/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("init migrates legacy project data with transactional backup", () => {
   const root = makeRoot();
   try {
@@ -192,7 +251,7 @@ test("official adapters carry the human-only upgrade boundary", () => {
       assert.ok(file.content.split("\n").length > 20);
     }
   }
-  assert.deepEqual(adapters.map((adapter) => adapter.id), ["claude", "codex"]);
+  assert.deepEqual(adapters.map((adapter) => adapter.id), ["claude", "codex", "opencode"]);
   const codexAgents = adapters.find((adapter) => adapter.id === "codex")?.files().find((file) => file.path === "AGENTS.md")?.content;
   assert.match(codexAgents ?? "", /Run every `node \.agents\/aidlc\/scripts\/\.\.\.` lifecycle command in a separate exec call/);
   assert.match(codexAgents ?? "", /never join lifecycle commands with shell operators such as `&`, `&&`, `;`, or `\|`/);
@@ -276,6 +335,101 @@ test("uninstall preserves a modified managed adapter and ownership manifest", ()
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("uninstall removes every owner-scoped prompt block from a shared AGENTS.md", () => {
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit({ ...options(root), agents: ["codex", "opencode"] }));
+    const manifest = readManifest(root)!;
+    assert.ok(manifest.files["AGENTS.md#codex"]); assert.ok(manifest.files["AGENTS.md#opencode"]);
+    assert.equal(manifest.files["AGENTS.md"], undefined);
+    applyPlan(root, planUninstall(root));
+    assert.equal(existsSync(join(root, "AGENTS.md")), false);
+    assert.equal(existsSync(join(root, ".agents/aidlc/manifest.json")), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("uninstall preserves a legacy marker left beside a modern prompt block", () => {
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit(options(root)));
+    const file = join(root, "AGENTS.md");
+    writeFileSync(file, `<!-- aidlc-installer:codex -->\nlegacy instruction\n\n${readFileSync(file, "utf8")}`);
+    const plan = planUninstall(root);
+    assert.equal(plan.find((item) => item.path === "AGENTS.md")?.action, "preserve");
+    assert.equal(plan.find((item) => item.path === ".agents/aidlc/manifest.json")?.action, "preserve");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("upgrade reports a modified second-owner block instead of overwriting it", () => {
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit({ ...options(root), agents: ["codex", "opencode"] }));
+    const file = join(root, "AGENTS.md");
+    const tampered = readFileSync(file, "utf8").replace("# AI-DLC for OpenCode", "# AI-DLC for OpenCode (edited)");
+    writeFileSync(file, tampered);
+    const plan = planUpgrade(root);
+    const entry = plan.find((item) => item.path === "AGENTS.md")!;
+    assert.equal(entry.action, "conflict");
+    assert.match(entry.reason, /managed prompt block was modified/);
+    assert.equal(readFileSync(file, "utf8"), tampered);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("uninstall removes an OpenCode-only prompt block and ownership manifest", () => {
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit({ ...options(root), agents: ["opencode"] }));
+    assert.match(readFileSync(join(root, "AGENTS.md"), "utf8"), /aidlc-installer:opencode:start/);
+    applyPlan(root, planUninstall(root));
+    assert.equal(existsSync(join(root, "AGENTS.md")), false);
+    assert.equal(existsSync(join(root, ".agents/aidlc/manifest.json")), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("doctor reports a modified block in either shared AGENTS.md owner", () => {
+  for (const heading of ["# AI-DLC for Codex", "# AI-DLC for OpenCode"]) {
+    const root = makeRoot();
+    try {
+      applyPlan(root, planInit({ ...options(root), agents: ["codex", "opencode"] }));
+      const file = join(root, "AGENTS.md");
+      writeFileSync(file, readFileSync(file, "utf8").replace(heading, `${heading} (edited)`));
+      assert.match(doctor(root, true), /^ERROR: managed integrity differs: AGENTS\.md/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test("a plain user AGENTS.md does not select the Codex adapter", () => {
+  const root = makeRoot();
+  try {
+    writeFileSync(join(root, "AGENTS.md"), "# Project agents\n\nUser notes.\n");
+    assert.deepEqual(detectedAgents(root), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("uninstall preserves a legacy single-marker prompt block it cannot remove safely", () => {
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit(options(root)));
+    writeFileSync(join(root, "AGENTS.md"), "<!-- aidlc-installer:codex -->\nlegacy instruction\n");
+    const plan = planUninstall(root);
+    assert.equal(plan.find((item) => item.path === "AGENTS.md")?.action, "preserve");
+    assert.equal(plan.find((item) => item.path === ".agents/aidlc/manifest.json")?.action, "preserve");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("upgrade keeps both shared AGENTS.md owner blocks without conflict", () => {
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit({ ...options(root), agents: ["codex", "opencode"] }));
+    const plan = planUpgrade(root);
+    assert.equal(plan.some((item) => item.path === "AGENTS.md" && item.action === "conflict"), false);
+    assert.equal(plan.filter((item) => item.path === "AGENTS.md").length, 1);
+    applyUpgrade(root, plan);
+    const content = readFileSync(join(root, "AGENTS.md"), "utf8");
+    assert.match(content, /aidlc-installer:codex:start/); assert.match(content, /aidlc-installer:opencode:start/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("package implementation contains no runtime remote fetch", () => {
   const files = [resolve("src/installer.ts"), resolve("src/upgrade.ts"), resolve("src/workflow.ts"), resolve(".agents/aidlc/orchestrator.md")];
   const content = files.map((file) => readFileSync(file, "utf8")).join("\n");
@@ -301,11 +455,17 @@ test("bundled JSON schemas are valid JSON and avoid remote schema resolution", (
   }
 });
 
-test("installer rejects non-Codex, non-Claude adapters", () => {
+test("installer accepts registered adapters and rejects unknown ones", () => {
   const root = makeRoot();
   try {
     const allPlan = planInit({ ...options(root), agents: [], all: true });
-    assert.deepEqual([...new Set(allPlan.filter((item) => item.owner === "codex" || item.owner === "claude").map((item) => item.owner))].sort(), ["claude", "codex"]);
+    const agentsContent = allPlan.filter((item) => item.path === "AGENTS.md").map((item) => item.content).join("\n");
+    for (const owner of ["codex", "opencode"]) assert.equal([...agentsContent.matchAll(new RegExp(`aidlc-installer:${owner}:start`, "g"))].length, 1);
+    assert.ok(allPlan.some((item) => item.path === "CLAUDE.md"));
+    assert.ok(allPlan.some((item) => item.path === ".codex/config.toml"));
+    applyPlan(root, allPlan);
+    assert.deepEqual(readManifest(root)?.adapters, ["claude", "codex", "opencode"]);
+    assert.equal(existsSync(join(root, ".opencode")), false);
     assert.throws(() => planInit({ ...options(root), agents: ["cursor"] }), /Unsupported adapter: cursor/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

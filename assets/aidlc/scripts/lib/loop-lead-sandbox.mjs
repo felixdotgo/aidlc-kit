@@ -1,5 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
-import { workerDockerInvocation } from "./loop-worker-docker.mjs";
+import { isLoopProvider } from "./loop-drivers.mjs";
+import { OPENCODE_CONTAINER_ERROR, workerDockerInvocation } from "./loop-worker-docker.mjs";
 
 /** Invocation only: callers must supply a sanitized, host-owned source snapshot,
  * never the checkout. No host output directory, state, or broker channel is mounted.
@@ -45,7 +46,8 @@ export async function runIsolatedLeadTurn({ root, snapshotsRoot, image, agent, p
   const { randomUUID } = await import("node:crypto");
   const { runAgentTurn } = await import("./loop-drivers.mjs");
   const { parseLeadProposal } = await import("./loop-lead-broker.mjs");
-  if (process.platform !== "linux" || !["codex", "claude"].includes(agent) || typeof prompt !== "string" || !prompt || Buffer.byteLength(prompt) > 262144 || typeof assertOwned !== "function") throw new Error("Invalid isolated lead configuration");
+  if (agent === "opencode") throw new Error(OPENCODE_CONTAINER_ERROR);
+  if (process.platform !== "linux" || !isLoopProvider(agent) || typeof prompt !== "string" || !prompt || Buffer.byteLength(prompt) > 262144 || typeof assertOwned !== "function") throw new Error("Invalid isolated lead configuration");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || (signal !== undefined && !(signal instanceof AbortSignal))) throw new Error("Invalid isolated lead timeout or signal");
   const uid = process.getuid?.(), gid = process.getgid?.();
   if (!uid || !gid) throw new Error("Isolated lead requires a non-root Linux host user");

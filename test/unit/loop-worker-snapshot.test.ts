@@ -54,3 +54,14 @@ test("Docker invocation passes only explicit provider credential without exposin
   assert.throws(() => workerDockerInvocation({ ...opts, credentialEnv: ["LEAD_TOKEN"] }), /Unsupported/);
   assert.throws(() => workerDockerInvocation({ ...opts, uid: 0 }), /Non-root/);
 });
+
+test("container execution paths reject OpenCode with one explicit credential message", async (t) => {
+  const { source, target, parent } = fixture(t);
+  const { workerDockerInvocation, OPENCODE_CONTAINER_ERROR } = await import(resolve("dist/assets/.agents/aidlc/scripts/lib/loop-worker-docker.mjs"));
+  const message = "OpenCode workers require file-based credentials and are not available in isolated containers yet";
+  assert.equal(OPENCODE_CONTAINER_ERROR, message);
+  const opts = { workspace: target, image: "trusted:tag", command: "opencode", args: ["run"], credentialEnv: ["OPENAI_API_KEY"], hostEnv: { PATH: "/bin", OPENAI_API_KEY: "secret" }, uid: 1000, gid: 1000 };
+  assert.throws(() => workerDockerInvocation(opts), (error: unknown) => error instanceof Error && error.message === message);
+  const { runIsolatedLeadTurn } = await import(resolve("dist/assets/.agents/aidlc/scripts/lib/loop-lead-sandbox.mjs"));
+  await assert.rejects(runIsolatedLeadTurn({ root: source, snapshotsRoot: parent, image: "trusted:tag", agent: "opencode", prompt: "propose", assertOwned: async () => {} }), (error: unknown) => error instanceof Error && error.message === message);
+});

@@ -117,7 +117,7 @@ export const applyFleetCommand = (before, command, actor, role, time = now()) =>
     if (c.type === "run_heartbeat") { if (!validLease(c.leaseMs)) throw new Error("invalid lease duration"); lead.expiresAt = iso(time + c.leaseMs); }
     else lead.expiresAt = iso(time);
   } else if (c.type === "job_schedule") {
-    if (role !== "lead" || !id(c.jobId) || !id(c.taskId) || !id(c.itemId) || !id(c.workerId) || !["codex", "claude"].includes(c.agent) || !Number.isInteger(c.attempt) || c.attempt < 1 || !Array.isArray(c.ownedPaths) || c.ownedPaths.length > 100 || c.ownedPaths.some((path) => typeof path !== "string" || !path || path.startsWith("/") || path.split("/").includes("..")) || !/^[a-f0-9]{40}$/.test(c.baseCommit) || !branchName(c.branch)) throw new Error("invalid job schedule");
+    if (role !== "lead" || !id(c.jobId) || !id(c.taskId) || !id(c.itemId) || !id(c.workerId) || !["codex", "claude", "opencode"].includes(c.agent) || !Number.isInteger(c.attempt) || c.attempt < 1 || !Array.isArray(c.ownedPaths) || c.ownedPaths.length > 100 || c.ownedPaths.some((path) => typeof path !== "string" || !path || path.startsWith("/") || path.split("/").includes("..")) || !/^[a-f0-9]{40}$/.test(c.baseCommit) || !branchName(c.branch)) throw new Error("invalid job schedule");
     requireLead(state, c.taskId, actor, c.leadEpoch, time, c.ownerToken);
     if (state.jobs[c.jobId]) throw new FleetConflict("job ID already exists");
     const priorJobs=Object.values(state.jobs).filter((job)=>job.taskId===c.taskId&&job.itemId===c.itemId);

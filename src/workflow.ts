@@ -30,6 +30,8 @@ export const initialProjectFiles = (): FileSpec[] => [
   { path: ".agents/data/memory/agentic-memory.json", owner: "aidlc-memory", ownershipClass: "project", content: `${JSON.stringify(emptyMemoryRegistry(), null, 2)}\n` }
 ];
 
+export const manifestKey = (spec: Pick<FileSpec, "path" | "owner" | "strategy">): string => spec.strategy === "managed-block" ? `${spec.path}#${spec.owner}` : spec.path;
+
 export const manifestFor = (files: FileSpec[], adapters: AgentId[]): WorkflowManifest => ({
   schemaVersion: 2,
   packageVersion: packageJson.version,
@@ -38,7 +40,7 @@ export const manifestFor = (files: FileSpec[], adapters: AgentId[]): WorkflowMan
   remoteUpdates: false,
   managedBy: "aidlc-workflow",
   adapters,
-  files: Object.fromEntries(files.filter((file) => file.ownershipClass === "managed" || !file.ownershipClass).map((file) => [file.path, {
+  files: Object.fromEntries(files.filter((file) => file.ownershipClass === "managed" || !file.ownershipClass).map((file) => [manifestKey(file), {
     hash: contentHash(file.strategy === "managed-block" ? file.content.trimEnd() : file.content),
     owner: file.owner,
     strategy: file.strategy ?? "replace"

@@ -17,7 +17,7 @@ request → clarify → Confirm requirements → plan → Approve plan → build
 
 An agent continues after each non-terminal transition and after every item or evidence mutation. Completing one work item is a progress update, not a turn boundary: the agent consumes the returned `nextAction` and continues through the remaining items, verification, and review. It stops only for a gate that is ready for human action, a durable blocker, a terminal non-success outcome, or successful completion.
 
-In ordinary use, ask Codex or Claude Code to work on the feature in the same conversation. The client remains the lead, starts native agents for independent items, and presents each review gate in that conversation. After a restart, open the project and ask the client to resume the task ID. It rereads `task next`, inspects assignment records and worktree results, and continues only dependency-ready work. A human approval is still a later reply to the gate shown in that conversation.
+In ordinary use, ask Codex, Claude Code, or OpenCode to work on the feature in the same conversation. The client remains the lead, starts native agents for independent items, and presents each review gate in that conversation. After a restart, open the project and ask the client to resume the task ID. It rereads `task next`, inspects assignment records and worktree results, and continues only dependency-ready work. A human approval is still a later reply to the gate shown in that conversation.
 
 For example, a feature with API, UI, and integration tasks can be recorded as a feature graph:
 
@@ -50,7 +50,7 @@ The adapter creates a task, writes an intent brief, and presents Confirm require
 
 ## State and review artifacts
 
-Each installed project owns its data under `.agents/data/`. Package-managed workflow instructions live under `.agents/aidlc/`; project configuration, local rules, and evidence are project-owned. The package supports Codex and Claude Code only. Do not hand-edit lifecycle state: use the installed scripts instead.
+Each installed project owns its data under `.agents/data/`. Package-managed workflow instructions live under `.agents/aidlc/`; project configuration, local rules, and evidence are project-owned. The package supports Codex, Claude Code, and OpenCode. Do not hand-edit lifecycle state: use the installed scripts instead.
 
 ```sh
 node .agents/aidlc/scripts/state.mjs task list --limit 20
@@ -120,4 +120,4 @@ When the project enables `loop.mode`, `aidlc-workflow loop start` accepts a requ
 
 The loop never approves a gate itself. At each gate it publishes the review packet and waits; in local mode approval happens only through the trusted host terminal command, and in fleet mode only through the reviewer credential against the published snapshot and revision. After a real approval the running supervisor re-reads the canonical state and checkpoint, re-acquires its fenced lease, and resumes automatically. If the supervisor is not running at approval time, restart it and it reconciles from the checkpoint; a consumed, stale, or mismatched checkpoint stops for manual reconciliation instead of guessing. Restarting never resumes a paused or handed-off task, an outdated snapshot, or an uncertain Git result — those require the documented recovery actions.
 
-The supervisor runs in the foreground or under a process supervisor you choose; there is no background daemon. Workers execute in Docker with their own scoped credentials and never inherit host access. See [Command reference](./command-reference.md) for the loop commands and environment, and [Coordination service](./coordination-service.md) for fleet deployment, backends, and recovery.
+The supervisor runs in the foreground or under a process supervisor you choose; there is no background daemon. Workers execute in Docker with their own scoped credentials and never inherit host access. Host-executed lead turns support `codex`, `claude`, or `opencode`; container-isolated lead turns, local Docker worker batches, and fleet worker containers reject `opencode` because it requires file-based credentials, returning `OpenCode workers require file-based credentials and are not available in isolated containers yet` instead of falling back to the host. When the loop uses `opencode`, set `AIDLC_OPENCODE_MODEL` to a `provider/model[#variant]` value. See [Command reference](./command-reference.md) for the loop commands and environment, and [Coordination service](./coordination-service.md) for fleet deployment, backends, and recovery.

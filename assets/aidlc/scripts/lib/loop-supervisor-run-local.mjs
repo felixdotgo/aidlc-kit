@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { requireLocalAuthority } from "./authority.mjs";
-import { runAgentTurn } from "./loop-drivers.mjs";
+import { runAgentTurn, isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
 import { readLoopRecord, runLoop, validateRoot } from "./loop-runtime.mjs";
 import { runSupervisor } from "./loop-supervisor.mjs";
 import { createLocalSupervisorAdapter } from "./loop-supervisor-local.mjs";
@@ -16,7 +16,7 @@ const digest = (value) => createHash("sha256").update(JSON.stringify(value)).dig
 export function createLocalLoopSupervisor({ root: rootInput, taskId, agent, limits, driver = runAgentTurn, preflight = true, pollMs, signal, onEvent = () => {}, runner = runLoop } = {}) {
   requireLocalAuthority();
   const root = validateRoot(rootInput);
-  if (!["codex", "claude"].includes(agent)) throw new Error("local lead agent must be codex or claude");
+  if (!isLoopProvider(agent)) throw new Error(`local lead agent must be ${LOOP_PROVIDER_LIST}`);
   if (typeof driver !== "function" || typeof runner !== "function" || typeof onEvent !== "function") throw new Error("invalid local supervisor callbacks");
   const adapter = createLocalSupervisorAdapter({ root, taskId });
   const getRecord = () => readLoopRecord(root, taskId);

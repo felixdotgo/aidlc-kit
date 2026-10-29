@@ -3,21 +3,21 @@ import { tmpdir } from "node:os";
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import { runAgentTurn } from "./loop-drivers.mjs";
+import { isLoopProvider, LOOP_PROVIDER_LIST, runAgentTurn } from "./loop-drivers.mjs";
 import { runFleetCoordinator, runFleetWorker, validateFleetLimits } from "./loop-fleet.mjs";
 import { runFleetSupervisor } from "./loop-fleet-supervisor.mjs";
 import { createFleetRemoteRepository } from "./loop-fleet-remote.mjs";
 import { createLeadGitHandoff, createIsolatedWorkerGitHandoff } from "./loop-git.mjs";
-import { workerDockerInvocation } from "./loop-worker-docker.mjs";
+import { workerDockerInvocation, OPENCODE_CONTAINER_ERROR } from "./loop-worker-docker.mjs";
 
 const required = (env, name) => { const value = env[name]; if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required`); return value; };
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const provider = (value, name) => { if (!["codex", "claude"].includes(value)) throw new Error(`${name} must be codex or claude`); return value; };
+const provider = (value, name) => { if (!isLoopProvider(value)) throw new Error(`${name} must be ${LOOP_PROVIDER_LIST}`); return value; };
 function workerMapping(env, workerIds, defaultAgent) {
   if (!env.AIDLC_FLEET_WORKER_PROVIDERS) return Object.fromEntries(workerIds.map((id) => [id, defaultAgent]));
   let mapping;
   try { mapping = JSON.parse(env.AIDLC_FLEET_WORKER_PROVIDERS); } catch { throw new Error("AIDLC_FLEET_WORKER_PROVIDERS must be a JSON object"); }
-  if (!mapping || typeof mapping !== "object" || Array.isArray(mapping) || Object.keys(mapping).length !== workerIds.length || workerIds.some((id) => !Object.hasOwn(mapping, id) || !["codex", "claude"].includes(mapping[id])) || Object.keys(mapping).some((id) => !workerIds.includes(id))) throw new Error("AIDLC_FLEET_WORKER_PROVIDERS must map every configured worker ID to codex or claude");
+  if (!mapping || typeof mapping !== "object" || Array.isArray(mapping) || Object.keys(mapping).length !== workerIds.length || workerIds.some((id) => !Object.hasOwn(mapping, id) || !isLoopProvider(mapping[id])) || Object.keys(mapping).some((id) => !workerIds.includes(id))) throw new Error(`AIDLC_FLEET_WORKER_PROVIDERS must map every configured worker ID to ${LOOP_PROVIDER_LIST}`);
   return mapping;
 }
 
@@ -49,6 +49,7 @@ export async function runFleetCli(argv, { callTool, env = process.env, out = con
     const workerId = required(env, "AIDLC_FLEET_WORKER_ID");
     const workerAgentSetting = env.AIDLC_FLEET_WORKER_AGENT ?? env.AIDLC_FLEET_AGENT;
     const workerAgent = workerAgentSetting === undefined ? undefined : provider(workerAgentSetting, "AIDLC_FLEET_WORKER_AGENT");
+    if (workerAgent === "opencode") throw new Error(OPENCODE_CONTAINER_ERROR);
     const requestedImage = required(env, "AIDLC_WORKER_DOCKER_IMAGE");
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,255}$/.test(requestedImage)) throw new Error("Invalid Docker worker image");
     const image = execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", requestedImage], {env:{PATH:env.PATH ?? "/usr/bin:/bin"},encoding:"utf8",timeout:30000,stdio:["ignore","pipe","ignore"]}).trim();
@@ -89,6 +90,7 @@ export async function runFleetCli(argv, { callTool, env = process.env, out = con
       async discard(args) { try { return await baseHandoff.discard(args); } finally { cleanupSession(args.workspace); } }
     };
     const isolatedDriver = async (turn) => {
+      if (turn.agent === "opencode") throw new Error(OPENCODE_CONTAINER_ERROR);
       const session=sessions.get(turn.root);
       if (!session || session.agent !== turn.agent || (turn.sessionId && turn.sessionId !== session.sessionId)) throw new Error("Docker worker session is not recoverable; reconcile this assignment");
       const credential = turn.agent === "codex" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";

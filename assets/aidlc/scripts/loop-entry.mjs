@@ -6,6 +6,7 @@ import { resolve, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { requireLocalAuthority } from "./lib/authority.mjs";
+import { isLoopProvider } from "./lib/loop-drivers.mjs";
 import { prepareLoopIntake } from "./lib/loop-intake.mjs";
 import * as localSupervisor from "./lib/loop-supervisor-run-local.mjs";
 import { loadTask } from "./lib/store.mjs";
@@ -24,7 +25,7 @@ try {
   if (mode !== config.loop?.mode) throw new Error("Requested mode does not match configured authority");
   const agent = config.loop?.agents?.lead;
   const workers = config.loop?.agents?.workers ?? {};
-  if (!["codex", "claude"].includes(agent) || !Object.keys(workers).length || Object.entries(workers).some(([, value]) => !["codex", "claude"].includes(value))) throw new Error("Loop requires a configured lead and worker providers");
+  if (!isLoopProvider(agent) || !Object.keys(workers).length || Object.entries(workers).some(([, value]) => !isLoopProvider(value))) throw new Error("Loop requires a configured lead and worker providers");
   const taskId = taskArg || (action === "start" ? `loop-${randomUUID()}` : "");
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId)) throw new Error("Valid task ID required");
   if (mode === "fleet") {

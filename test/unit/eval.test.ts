@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { findAdapter, installableAdapters } from "../../src/adapters.js";
 import { evalSuiteDigest, evaluationPassed, loadEvalSuite, recomputeReportGate, releaseReady, reportIntegrityErrors, resolveRunnerArguments, runEvaluation, scenarioTimeoutMs, type EvalReport, type EvalScenarioResult } from "../../dev/evaluator/eval.js";
 import { verifyReleaseEvidence } from "../../dev/evaluator/release.js";
 import { validateState } from "../../src/state.js";
@@ -20,13 +21,15 @@ const report = (runner: string, adapter: string, evidenceKind: "real" | "simulat
 test("bundled agentic suite is versioned and release eligible", () => {
   const suite = loadEvalSuite();
   assert.equal(suite.schemaVersion, 2);
-  assert.equal(suite.version, "2.4.0");
+  assert.equal(suite.version, "2.5.0");
   assert.equal(suite.releaseEligible, true);
   assert.equal(suite.scenarios.length, 14);
   assert.ok(suite.scenarios.some((item) => item.turns.length > 1));
   assert.ok(suite.scenarios.some((item) => item.assertions.some((assertion) => assertion.type === "jsonEquals")));
   assert.ok(suite.scenarios.some((item) => item.assertions.some((assertion) => assertion.type === "eventNotObserved")));
   const supportedAdapters = suite.scenarios.find((item) => item.id === "supported-adapters");
+  assert.match(supportedAdapters?.turns[0].input ?? "", /Codex, Claude Code, and OpenCode/);
+  assert.doesNotMatch(supportedAdapters?.turns[0].input ?? "", /only/);
   assert.ok(supportedAdapters?.assertions.some((assertion) => assertion.id === "no-remote" && assertion.type === "eventNotObserved" && assertion.event === "network"));
   const boundedRepair = suite.scenarios.find((item) => item.id === "build-bounded-repair");
   assert.ok(boundedRepair?.assertions.some((assertion) => assertion.id === "handoff-kind" && assertion.type === "jsonEquals" && assertion.jsonPath === "tasks.eval-task.handoff.kind"));
@@ -99,14 +102,32 @@ test("runner script paths resolve from the project root without escaping it", ()
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("evaluation workspace installs the runner's native adapter", () => {
-  const root = mkdtempSync(join(tmpdir(), "aidlc-native-eval-"));
+test("evaluation workspace installs every adapter registered by the installer", () => {
+  for (const adapter of installableAdapters()) {
+    const root = mkdtempSync(join(tmpdir(), `aidlc-${adapter.id}-native-eval-`));
+    try {
+      const marker = adapter.files().find((file) => file.path.endsWith(".md"))?.path;
+      assert.ok(marker, `adapter ${adapter.id} must install a native instruction file`);
+      assert.ok(findAdapter(adapter.id), `adapter ${adapter.id} is not registered by the installer`);
+      const path = join(root, "suite.json");
+      writeFileSync(path, JSON.stringify({ schemaVersion: 2, suiteId: "native-adapter", version: "1", releaseEligible: false, scenarios: [{ id: "native", category: "adapter", maxContextChars: 1000, turns: [{ role: "user", input: "Inspect native instructions" }], assertions: [{ id: "transport", dimension: "completion", severity: "critical", type: "transportCompleted" }, { id: "agents", dimension: "artifact", severity: "critical", type: "fileExists", path: marker }] }] }));
+      const evaluated = runEvaluation(`fake-${adapter.id}`, { command: "node", args: [resolve("dev/evaluator/scripts/deterministic-eval-runner.mjs")], adapter: adapter.id, model: "fake", version: "fixture", protocolVersion: 2, evidenceKind: "simulated" }, process.cwd(), { suitePath: path });
+      assert.equal(evaluated.results[0].score, 10, `${adapter.id}: ${evaluated.results[0].diagnostics.join("; ")}`);
+      assert.equal(evaluated.passedReleaseGate, false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test("evaluation workspace fails closed for adapters outside the installer registry", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-unknown-eval-adapter-"));
   try {
     const path = join(root, "suite.json");
-    writeFileSync(path, JSON.stringify({ schemaVersion: 2, suiteId: "native-adapter", version: "1", releaseEligible: false, scenarios: [{ id: "native", category: "adapter", maxContextChars: 1000, turns: [{ role: "user", input: "Inspect native instructions" }], assertions: [{ id: "transport", dimension: "completion", severity: "critical", type: "transportCompleted" }, { id: "agents", dimension: "artifact", severity: "critical", type: "fileExists", path: "AGENTS.md" }] }] }));
-    const evaluated = runEvaluation("fake-codex", { command: "node", args: [resolve("dev/evaluator/scripts/deterministic-eval-runner.mjs")], adapter: "codex", model: "fake", version: "fixture", protocolVersion: 2, evidenceKind: "simulated" }, process.cwd(), { suitePath: path });
-    assert.equal(evaluated.results[0].score, 10);
-    assert.equal(evaluated.passedReleaseGate, false);
+    writeFileSync(path, JSON.stringify({ schemaVersion: 2, suiteId: "unknown-adapter", version: "1", releaseEligible: false, scenarios: [{ id: "unknown", category: "adapter", maxContextChars: 1000, turns: [{ role: "user", input: "Inspect native instructions" }], assertions: [{ id: "transport", dimension: "completion", severity: "critical", type: "transportCompleted" }] }] }));
+    assert.equal(findAdapter("unknown-vendor"), undefined);
+    const evaluated = runEvaluation("fake-unknown", { command: "node", args: [resolve("dev/evaluator/scripts/deterministic-eval-runner.mjs")], adapter: "unknown-vendor", model: "fake", version: "fixture", protocolVersion: 2, evidenceKind: "simulated" }, process.cwd(), { suitePath: path });
+    assert.equal(evaluated.results[0].completed, false);
+    assert.ok(evaluated.results[0].assertions.every((assertion) => !assertion.passed));
+    assert.match(evaluated.results[0].diagnostics.join("\n"), /Unsupported runner adapter: unknown-vendor/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

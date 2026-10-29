@@ -1,12 +1,18 @@
 import { lstatSync, realpathSync } from 'node:fs';
 import { sep } from 'node:path';
+import { isLoopProvider } from './loop-drivers.mjs';
+
+/** Container workers receive credentials as environment keys only. OpenCode
+ * authenticates from a file-based data store, so it fails closed here. */
+export const OPENCODE_CONTAINER_ERROR = 'OpenCode workers require file-based credentials and are not available in isolated containers yet';
 
 /** Build a Docker invocation. This function never accepts a shell command or credentials in arguments. */
 export function workerDockerInvocation({ workspace, image, command, args, credentialEnv, hostEnv, uid, gid, containerName, sessionHome }) {
   const root = realpathSync(workspace);
   if (/[\x00-\x1f,]/.test(root)) throw new Error('Invalid Docker workspace path');
   if (typeof image !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,255}$/.test(image)) throw new Error('Explicit Docker image is required');
-  if (!['codex', 'claude'].includes(command) || !Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) throw new Error('Invalid worker provider command');
+  if (command === 'opencode') throw new Error(OPENCODE_CONTAINER_ERROR);
+  if (!isLoopProvider(command) || !Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) throw new Error('Invalid worker provider command');
   if (!Number.isSafeInteger(uid) || uid < 1 || !Number.isSafeInteger(gid) || gid < 1) throw new Error('Non-root worker uid and gid are required');
   if (!hostEnv || typeof hostEnv !== 'object' || !Array.isArray(credentialEnv) || !credentialEnv.length || credentialEnv.some((key) => !/^[A-Z][A-Z0-9_]*$/.test(key) || typeof hostEnv[key] !== 'string' || !hostEnv[key])) throw new Error('Explicit worker provider credentials are required');
   const allowed = command === 'codex' ? ['OPENAI_API_KEY'] : ['ANTHROPIC_API_KEY'];

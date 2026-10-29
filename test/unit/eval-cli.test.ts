@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -21,4 +21,19 @@ test("repository evaluator CLI reads development config and writes non-overwriti
     const rerun = spawnSync(process.execPath, [cli, "run", "--config", config, "--runner", "fixture", "--scenario", "clarify-read-only", "--output", output, "--root", root], { encoding: "utf8" });
     assert.equal(rerun.status, 1); assert.match(rerun.stderr, /Refusing to overwrite/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("repository evaluator policy targets the pinned OpenCode runner", () => {
+  const config = JSON.parse(readFileSync(resolve("dev/evaluator/config.json"), "utf8"));
+  const runner = config.runners["opencode-gpt6"];
+  assert.equal(runner.command, "node");
+  assert.deepEqual(runner.args, ["./dist/dev/evaluator/runners/opencode.js"]);
+  assert.equal(runner.adapter, "opencode");
+  assert.equal(runner.protocolVersion, 2);
+  assert.equal(runner.evidenceKind, "real");
+  assert.equal(config.runners["codex-luna"].adapter, "codex");
+  assert.equal(config.runners["claude-sonnet"].adapter, "claude");
+  const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+  assert.match(pkg.scripts["release:check"], /release-check\.js \.agents\/project\/release-eval\.json --adapters opencode$/);
+  assert.match(pkg.scripts.prepublishOnly, /release:check/);
 });

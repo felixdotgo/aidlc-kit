@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findAdapter } from "../../src/adapters.js";
 import { applyPlan, planInit } from "../../src/installer.js";
 import type { EvalRunner } from "./config.js";
 
@@ -118,7 +119,7 @@ const evaluateAssertion = (workspace: string, assertion: EvalAssertion, result: 
 };
 
 const provision = (workspace: string, scenario: EvalScenario, adapter: string): void => {
-  if (adapter !== "codex" && adapter !== "claude") throw new Error(`Unsupported runner adapter: ${adapter}`);
+  if (!findAdapter(adapter)) throw new Error(`Unsupported runner adapter: ${adapter}`);
   applyPlan(workspace, planInit({ root: workspace, agents: [adapter], all: false, dryRun: false, yes: true, force: false }));
   mkdirSync(join(workspace, ".agents/data/tasks"), { recursive: true });
   for (const [path, content] of Object.entries(scenario.setup?.files ?? {})) { const target = inside(workspace, path); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, content, "utf8"); }
@@ -144,7 +145,7 @@ export const runEvaluation = (runnerId: string, runner: EvalRunner, root = proce
     try {
       provision(workspace, scenario, runner.adapter ?? "codex");
       const request = { protocolVersion: 2, suiteId: suite.suiteId, scenario, workspace }; const perTurnTimeoutMs = runner.timeoutMs ?? 120_000; const outerTimeoutMs = scenarioTimeoutMs(perTurnTimeoutMs, scenario.turns.length);
-      const execution = spawnSync(runner.command, runnerArgs, { input: JSON.stringify(request), encoding: "utf8", timeout: outerTimeoutMs, cwd: workspace, env: { ...process.env, AIDLC_EVAL_WORKSPACE: workspace, AIDLC_EVAL_MODEL: model, AIDLC_EVAL_VERSION: runner.version, AIDLC_EVAL_TIMEOUT_MS: String(perTurnTimeoutMs), AIDLC_EVAL_SCENARIO_TIMEOUT_MS: String(outerTimeoutMs) }, shell: false });
+      const execution = spawnSync(runner.command, runnerArgs, { input: JSON.stringify(request), encoding: "utf8", timeout: outerTimeoutMs, cwd: workspace, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, PWD: workspace, AIDLC_EVAL_WORKSPACE: workspace, AIDLC_EVAL_MODEL: model, AIDLC_EVAL_VERSION: runner.version, AIDLC_EVAL_TIMEOUT_MS: String(perTurnTimeoutMs), AIDLC_EVAL_SCENARIO_TIMEOUT_MS: String(outerTimeoutMs) }, shell: false });
       if (execution.error || execution.status !== 0) { const timedOut = Boolean(execution.error && "code" in execution.error && execution.error.code === "ETIMEDOUT"); output = { transport: timedOut ? "timeout" : "error", transcript: "", diagnostics: [timedOut ? `scenario=${scenario.id} turns=${scenario.turns.length} perTurnTimeoutMs=${perTurnTimeoutMs} outerTimeoutMs=${outerTimeoutMs} elapsedMs=${Date.now() - scenarioStarted} timeout` : execution.error?.message ?? `Runner exited ${execution.status}: ${execution.stderr}`] }; }
       else output = normalizeRunnerResult(execution.stdout, scenario.id);
       output.usage = { ...output.usage, latencyMs: output.usage?.latencyMs ?? Date.now() - scenarioStarted };

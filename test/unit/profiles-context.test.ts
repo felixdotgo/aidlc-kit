@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { compileContext } from "../../src/context.js";
+import { LOOP_PROVIDERS } from "../../src/model.js";
 import type { TaskState } from "../../src/model.js";
-import { defaultConfig, includedRuleFiles, loadProjectConfig, resolveEffectiveConfig, resolveProfiles, validateProfile } from "../../src/profiles.js";
+import { defaultConfig, includedRuleFiles, loadProjectConfig, resolveEffectiveConfig, resolveProfiles, validateLoopConfig, validateProfile } from "../../src/profiles.js";
 
 const task: TaskState = {
   id: "ctx", title: "Context", type: "infra", phase: "build", gate: "G2_codereview", status: "active", language: "en", risk: "normal", areas: ["root"], branch: "—",
@@ -14,6 +15,13 @@ const task: TaskState = {
 
 test("default configuration exposes no gate auto-pass surface", () => {
   assert.equal("gates" in defaultConfig(), false);
+});
+
+test("loop provider validation uses the shared enumeration and deterministic messages", () => {
+  assert.deepEqual([...LOOP_PROVIDERS], ["codex", "claude", "opencode"]);
+  assert.deepEqual(validateLoopConfig({ mode: "local", agents: { lead: "opencode", workers: { worker: "opencode" } } }), { mode: "local", agents: { lead: "opencode", workers: { worker: "opencode" } } });
+  assert.throws(() => validateLoopConfig({ mode: "local", agents: { lead: "gemini", workers: { worker: "codex" } } }), (error: unknown) => error instanceof Error && error.message === "config.loop.agents.lead must be codex, claude, or opencode");
+  assert.throws(() => validateLoopConfig({ mode: "local", agents: { lead: "codex", workers: { worker: "gemini" } } }), (error: unknown) => error instanceof Error && error.message === "config.loop.agents.workers must map worker IDs to codex, claude, or opencode");
 });
 
 test("config and profiles are dependency-free, composable, and traversal-safe", () => {

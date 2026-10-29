@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readyTaskItems, formatGateView } from "./store.mjs";
+import { isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
 
 export const FLEET_LIMITS = Object.freeze({ maxTurns: 12, turnTimeoutMs: 600_000, maxStallTurns: 2, maxWorkers: 4, leaseMs: 300_000, heartbeatMs: 60_000 });
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -113,7 +114,7 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
   assertId(taskId, "task ID"); assertId(ownerId, "owner ID");
   if (!Array.isArray(workerIds) || new Set(workerIds).size !== workerIds.length) throw new Error("workerIds must be distinct IDs");
   for (const workerId of workerIds) assertId(workerId, "worker ID");
-  if (workerProviders !== undefined && (!workerProviders || typeof workerProviders !== "object" || Array.isArray(workerProviders) || Object.keys(workerProviders).length !== workerIds.length || workerIds.some((workerId) => !["codex", "claude"].includes(workerProviders[workerId])) || Object.keys(workerProviders).some((workerId) => !workerIds.includes(workerId)))) throw new Error("workerProviders must map each configured worker ID to codex or claude");
+  if (workerProviders !== undefined && (!workerProviders || typeof workerProviders !== "object" || Array.isArray(workerProviders) || Object.keys(workerProviders).length !== workerIds.length || workerIds.some((workerId) => !isLoopProvider(workerProviders[workerId])) || Object.keys(workerProviders).some((workerId) => !workerIds.includes(workerId)))) throw new Error(`workerProviders must map each configured worker ID to ${LOOP_PROVIDER_LIST}`);
   const limits = validateFleetLimits(inputLimits);
   integer(pollMs, "pollMs", 300000);
   const pickupTimeoutMs = integer(inputPickupTimeout ?? limits.leaseMs, "pickupTimeoutMs", 3_600_000);
@@ -189,7 +190,7 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
             if (pathClaims.some((job) => pathsOverlap(artifact.ownedPaths, job.ownedPaths))) continue;
             const workerId = [...load].sort((a, b) => a[1] - b[1])[0][0];
             const agent = workerProviders ? workerProviders[workerId] : artifact.agent;
-            if (!["codex", "claude"].includes(agent)) throw new Error(`Invalid provider for worker ${workerId}`);
+            if (!isLoopProvider(agent)) throw new Error(`Invalid provider for worker ${workerId}`);
             const job = await scheduleJob({ taskId, itemId: item.id, workerId, leadEpoch: epoch, expectedRevision: snapshot.revision, baseCommit: artifact.baseCommit, branch: artifact.branch, ownedPaths: artifact.ownedPaths, agent, idempotencyKey: randomUUID() });
             active.push(job); reserved.add(item.id);
             pathClaims.push({ ...job, ownedPaths: artifact.ownedPaths, state: "ready" });
@@ -231,7 +232,7 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
 /** A worker claims one attempt, persists its exact CLI session, and reports a Git artifact. */
 export async function runFleetWorker({ repository, workerId = randomUUID(), workerAgent, preflight, limits: inputLimits, driver, packet, handoff, onEvent = () => {} }) {
   assertId(workerId, "worker ID");
-  if (workerAgent !== undefined && !["codex", "claude"].includes(workerAgent)) throw new Error("workerAgent must be codex or claude");
+  if (workerAgent !== undefined && !isLoopProvider(workerAgent)) throw new Error(`workerAgent must be ${LOOP_PROVIDER_LIST}`);
   const limits = validateFleetLimits(inputLimits);
   const claimJob = required(repository, "claimJob");
   const renewJob = required(repository, "renewJob");
@@ -240,7 +241,7 @@ export async function runFleetWorker({ repository, workerId = randomUUID(), work
   const readTask = required(repository, "readTask");
   const job = await claimJob({ workerId, leaseMs: limits.leaseMs, idempotencyKey: key("worker-claim", workerId, randomUUID()) });
   if (!job) return { status: "idle" };
-  if (!["codex", "claude"].includes(job.agent) || (workerAgent !== undefined && job.agent !== workerAgent)) throw new Error(`Assigned provider does not match worker ${workerId} capability`);
+  if (!isLoopProvider(job.agent) || (workerAgent !== undefined && job.agent !== workerAgent)) throw new Error(`Assigned provider does not match worker ${workerId} capability`);
   if (preflight !== undefined) {
     if (typeof preflight !== "function") throw new Error("Worker preflight must be a function");
     await preflight(job.agent);

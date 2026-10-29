@@ -1,6 +1,6 @@
 # Configuration
 
-Each installed project owns its workflow configuration at `.agents/config.json`. It selects topology profiles, specification roots, safe verification commands, and local rules without changing the package-managed kernel. The package supports only Codex and Claude Code.
+Each installed project owns its workflow configuration at `.agents/config.json`. It selects topology profiles, specification roots, safe verification commands, and local rules without changing the package-managed kernel. The package supports Codex, Claude Code, and OpenCode.
 
 ## Minimal configuration
 
@@ -61,6 +61,8 @@ Keep business/domain rules in `.agents/project/rules/`. Do not edit managed kern
 
 The Codex adapter installs `.codex/config.toml` with `approval_policy = "on-request"` and `sandbox_mode = "workspace-write"`, plus `.codex/rules/aidlc.rules`. The execpolicy allowlists only the six lifecycle entry points under `node .agents/aidlc/scripts/`, allowing AI-DLC state transitions without granting general command approval. Each allowed lifecycle command must be run as its own exec invocation: joining commands with `&`, `&&`, `;`, or `|` creates shell command segments that are not covered by a single prefix rule. Codex loads this project config only after the user trusts the project; network access stays disabled unless the project separately enables it. Claude Code installs `.claude/settings.local.json` and phase skills that allow only `node .agents/aidlc/scripts/*`, so lifecycle state updates do not require repeated confirmation while general Bash commands remain unapproved.
 
+The OpenCode adapter installs only an owner-scoped managed block in `AGENTS.md` and reads `.opencode/` solely to detect the adapter. It writes no OpenCode configuration, MCP, or permission file, so user and project OpenCode settings are not overridden. Codex and OpenCode blocks are independently owned and merge in the same `AGENTS.md` when both adapters are installed.
+
 ## Context and risk
 
 `context.maxChars` bounds a phase packet. The runtime preserves lifecycle instructions, approved decisions, and mandatory invariants; it fails clearly rather than silently truncating required contract content.
@@ -73,15 +75,17 @@ Set the default risk level deliberately. Planning, migrations, cross-service con
 
 ## Optional loop configuration
 
-`loop.mode` can be `off`, `local`, or `fleet`; an absent `loop` field means `off`. The optional `loop.agents` maps one lead and named workers to `codex` or `claude`, independently of `mcp.providers`:
+`loop.mode` can be `off`, `local`, or `fleet`; an absent `loop` field means `off`. The optional `loop.agents` maps one lead and named workers to `codex`, `claude`, or `opencode`, independently of `mcp.providers`:
 
 ```json
 {
   "loop": {
     "mode": "local",
-    "agents": { "lead": "codex", "workers": { "worker-a": "codex", "worker-b": "claude" } }
+    "agents": { "lead": "codex", "workers": { "worker-a": "codex", "worker-b": "opencode" } }
   }
 }
 ```
+
+When any selected provider is `opencode`, set `AIDLC_OPENCODE_MODEL` to a `provider/model[#variant]` value such as `opencode-go/gpt-6-luna`. The provider turn fails closed without a valid value. Docker-isolated lead turns, local Docker worker batches, and fleet worker containers reject OpenCode with `OpenCode workers require file-based credentials and are not available in isolated containers yet`; they do not fall back to the host.
 
 Configure this field through the init or human-run upgrade preview, or edit the project-owned config deliberately. Provider credentials do not belong in this object. The configuration is an opt-in selection; it does not install or start a service, authorize an upgrade, or grant gate approval. Selecting a mode alone does not start the loop — run `aidlc-workflow loop start` explicitly. Existing fleet operations and storage requirements are documented in [Coordination service](./coordination-service.md).
