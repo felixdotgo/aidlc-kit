@@ -34,9 +34,9 @@ function validPath(value, label = "path") {
 }
 function scopes(input) {
   if (!Array.isArray(input) || input.length === 0) throw new Error("Assignment requires nonempty ownedPaths");
-  return [...new Set(input.map((path) => validPath(path, "owned path")))].sort();
+  return [...new Set(input.map((path) => validPath(path, "owned path").replace(/\/+$/, "")))].filter(Boolean).sort();
 }
-function inScope(path, ownedPaths) { return ownedPaths.some((scope) => path === scope || (scope.endsWith("/") && path.startsWith(scope))); }
+function inScope(path, ownedPaths) { return ownedPaths.some((scope) => path === scope || path.startsWith(`${scope}/`)); }
 function changedPaths(root, base, head) {
   const raw = execFileSync("git", ["diff", "--no-renames", "--name-only", "-z", base, head], { cwd: root, encoding: "buffer", timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
   return raw.toString("utf8").split("\0").filter(Boolean).map((path) => validPath(path, "changed path")).sort();

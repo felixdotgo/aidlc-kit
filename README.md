@@ -55,6 +55,13 @@ The detailed documentation is organised by task and audience:
 
 Only a human may initiate or apply a workflow upgrade. `upgrade` rejects `--yes` and `--force`, requires an interactive terminal, and asks the human to type the target package version. See the [command reference](./docs/command-reference.md#upgrade) before changing an existing installation.
 
+## Recent changes
+
+- Synced the two committed ESM lifecycle cores so `lifecycle-core-conformance` passes.
+- Normalized Git path scopes (trailing slashes stripped) consistently across fleet, local-worker, and snapshot flows; directory scopes now work in all three.
+- Hardened the state lock to reclaim partially written (corrupt) lock files instead of wedging mutations.
+- Made the fleet end-to-end test skip cleanly when its Docker worker image is unavailable.
+
 ## License
 
 MIT

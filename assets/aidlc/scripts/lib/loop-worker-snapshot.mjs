@@ -51,13 +51,14 @@ export function createWorkerSnapshot(source, destination, trackedPaths) {
 
 /** Validate the complete stopped-worker snapshot before host integration. */
 export function inspectWorkerSnapshot(destination, baseline, scopes) {
-  if (!(baseline instanceof Map) || !Array.isArray(scopes) || !scopes.length || !scopes.every(scopePath)) throw new Error('Invalid snapshot baseline or scopes');
+  const normalizedScopes = (Array.isArray(scopes) ? scopes : []).map((scope) => (typeof scope === "string" ? scope.replace(/\/+$/, "") : scope)).filter((scope) => scope);
+  if (!(baseline instanceof Map) || !normalizedScopes.length || !normalizedScopes.every(scopePath)) throw new Error('Invalid snapshot baseline or scopes');
   const root = realpathSync(destination), current = inventory(root, false);
   const changed = [];
   for (const path of new Set([...baseline.keys(), ...current.keys()])) {
     const before = baseline.get(path), after = current.get(path);
     if (!before || !after || before.digest !== after.digest || before.executable !== after.executable) {
-      if (!scopePath(path) || !within(path, scopes)) throw new Error(`Worker changed a path outside its scope: ${path}`);
+      if (!scopePath(path) || !within(path, normalizedScopes)) throw new Error(`Worker changed a path outside its scope: ${path}`);
       changed.push(path);
     }
   }

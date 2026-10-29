@@ -44,7 +44,10 @@ const lockExpired = (record: LockRecord | undefined, now: number, staleMs: numbe
 
 const releaseOwnedLock = (lockRecordOrNull: LockRecord | undefined, lockPath: string, token: string): void => {
   if (!lockRecordOrNull) {
-    if (existsSync(lockPath)) throw new Error("Cannot release AI-DLC state lock because its owner record is unreadable");
+    // A corrupt/unreadable lock record must not wedge release; reclaim best-effort.
+    if (existsSync(lockPath)) {
+      try { unlinkSync(lockPath); } catch { /* best-effort cleanup of a corrupt lock */ }
+    }
     return;
   }
   if (lockRecordOrNull.token !== token) return;
@@ -67,7 +70,11 @@ export const acquireStateLock = (root: string, options: StateLockOptions = {}): 
     const guardToken = randomUUID();
     const now = Date.now();
     const existing = lockRecord(guardPath);
-    if (lockExpired(existing, now, staleMs)) removeOwnedLock(guardPath, existing!.token);
+    if (existing === undefined && existsSync(guardPath)) {
+      try { unlinkSync(guardPath); } catch { /* best-effort reclamation of a corrupt guard */ }
+    } else if (lockExpired(existing, now, staleMs)) {
+      removeOwnedLock(guardPath, existing!.token);
+    }
     return tryCreateLock(guardPath, { token: guardToken, pid: process.pid, createdAt: now }) ? guardToken : undefined;
   };
   while (Date.now() <= deadline) {
@@ -76,7 +83,11 @@ export const acquireStateLock = (root: string, options: StateLockOptions = {}): 
     try {
       const now = Date.now();
       const existing = lockRecord(lockPath);
-      if (lockExpired(existing, now, staleMs)) removeOwnedLock(lockPath, existing!.token);
+      if (existing === undefined && existsSync(lockPath)) {
+        try { unlinkSync(lockPath); } catch { /* best-effort reclamation of a corrupt lock */ }
+      } else if (lockExpired(existing, now, staleMs)) {
+        removeOwnedLock(lockPath, existing!.token);
+      }
       if (tryCreateLock(lockPath, { token, pid: process.pid, createdAt: now })) {
         return () => releaseOwnedLock(lockRecord(lockPath), lockPath, token);
       }

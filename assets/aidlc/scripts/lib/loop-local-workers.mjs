@@ -37,6 +37,7 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
   if (!Number.isSafeInteger(maxTurns) || maxTurns < 1 || maxTurns > 1000 || !Number.isSafeInteger(maxStallTurns) || maxStallTurns < 1 || maxStallTurns > 20) throw new Error("Invalid worker turn or stall limit");
   const ids = new Set(), workers = new Set(), scopes = [];
   for (const job of jobs) {
+    if (Array.isArray(job.ownedPaths)) job.ownedPaths = [...new Set(job.ownedPaths.map((path) => (typeof path === "string" ? path.replace(/\/+$/, "") : path)).filter((path) => path))];
     if (!identifier(job.itemId) || !identifier(job.workerId) || !isLoopProvider(job.agent) || typeof job.prompt !== "string" || !job.prompt.trim() || !Array.isArray(job.ownedPaths) || !job.ownedPaths.length || job.ownedPaths.length > 64 || !job.ownedPaths.every(safePath)) throw new Error("Invalid local job");
     if (ids.has(job.itemId) || workers.has(job.workerId)) throw new Error("Items and workers must be distinct within a batch");
     ids.add(job.itemId); workers.add(job.workerId);

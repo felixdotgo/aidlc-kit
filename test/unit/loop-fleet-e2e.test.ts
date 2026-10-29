@@ -18,8 +18,12 @@ const processResult = (command: string, args: string[], options: { cwd: string; 
 });
 const waitFor = async (probe: () => Promise<boolean>) => { for (let n = 0; n < 100; n++) { try { if (await probe()) return; } catch { /* startup */ } await new Promise((resolveWait) => setTimeout(resolveWait, 50)); } throw new Error("service did not become ready"); };
 
-test("real fleet CLI schedules a worker, integrates Git, records canonical completion, and publishes G2", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+test("real fleet CLI schedules a worker, integrates Git, records canonical completion, and publishes G2", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
   const temp = mkdtempSync(join(tmpdir(), "aidlc-fleet-e2e-"));
+  const dockerImage = process.env.AIDLC_WORKER_DOCKER_IMAGE ?? "aidlc-worker-fleet-e2e-test:local";
+  let dockerAvailable = false;
+  try { execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", dockerImage], { stdio: "ignore", timeout: 10000 }); dockerAvailable = true; } catch {}
+  if (!dockerAvailable) { t.skip("Docker worker image unavailable"); rmSync(temp, { recursive: true, force: true }); return; }
   const leadRoot = join(temp, "lead"), workerRoot = join(temp, "worker"), bare = join(temp, "remote.git"), bin = join(temp, "bin"), db = join(temp, "fleet.db");
   let service: ReturnType<typeof spawn> | undefined;
   let serviceError = "";
@@ -63,7 +67,7 @@ test("real fleet CLI schedules a worker, integrates Git, records canonical compl
     let coordinatorDone: { code: number | null; output: string } | undefined;
     const coordinator = processResult(process.execPath, [cli, "coordinator", taskId, "--once"], { cwd: leadRoot, env: { ...shared, AIDLC_FLEET_TOKEN: leadToken, AIDLC_FLEET_PROJECT_ROOT: leadRoot, AIDLC_FLEET_WORKER_IDS: "worker1", AIDLC_FLEET_INTEGRATION_BRANCH: "feature/test" } }).then((result) => { coordinatorDone = result; return result; });
     await waitFor(async () => { if (coordinatorDone) throw new Error(coordinatorDone.output); return Object.values((await callTool({ url, token: leadToken, name: "fleet_get", args: { workspace } })).fleet.jobs).length > 0; }).catch((error) => { throw new Error(`${error.message}: ${coordinatorDone?.output ?? ""}`); });
-    const worker = await processResult(process.execPath, [cli, "worker", "--once"], { cwd: workerRoot, env: { ...shared, OPENAI_API_KEY: "dummy", AIDLC_FLEET_TOKEN: workerToken, AIDLC_FLEET_PROJECT_ROOT: workerRoot, AIDLC_FLEET_WORKER_ID: "worker1", AIDLC_FLEET_WORKTREES_ROOT: join(temp, "worktrees") } });
+    const worker = await processResult(process.execPath, [cli, "worker", "--once"], { cwd: workerRoot, env: { ...shared, OPENAI_API_KEY: "dummy", AIDLC_FLEET_TOKEN: workerToken, AIDLC_FLEET_PROJECT_ROOT: workerRoot, AIDLC_FLEET_WORKER_ID: "worker1", AIDLC_FLEET_WORKTREES_ROOT: join(temp, "worktrees"), AIDLC_WORKER_DOCKER_IMAGE: dockerImage } });
     assert.equal(worker.code, 0, worker.output);
     const lead = await coordinator; assert.equal(lead.code, 0, lead.output);
     const canonical = await callTool({ url, token: leadToken, name: "task_get", args: { workspace, taskId, clientProjectRoot: leadRoot } });
