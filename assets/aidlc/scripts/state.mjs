@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+/**
+ * AI-DLC lifecycle CLI. Parses argv, dispatches to the canonical state module,
+ * and emits the JSON result with the nextAction for the lead.
+ */
 import { acquireStateLock, approveAndAdvance, checkGate, closeTask, failEntry, handoffTask, listTaskSummaries, loadMemoryRegistry, loadState, loadTask, migrateState, nextAction, option, parseArguments, promoteAgenticMemory, rebuildLessonIndex, recordLesson, recordNoLessons, renderViews, reopenTask, retireAgenticMemory, rootOption, saveState, searchLessons, supersedeTask, transitionTask, validateArguments } from "./lib/runtime.mjs";
 import { readLiveLease } from "./lib/loop-lease.mjs";
 import { listFeatures, loadFeature, readyFeatureTasks, saveFeature } from "./lib/feature-store.mjs";

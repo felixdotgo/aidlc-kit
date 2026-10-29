@@ -1,3 +1,7 @@
+/**
+ * Git handoff helpers: create lead/worker/isolated worktrees, sync the
+ * integration branch, and produce scoped change reports.
+ */
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
@@ -72,7 +76,7 @@ function fetchBranch(root, remote, branch) {
   return git(root, "rev-parse", remoteRef(remote, branch));
 }
 function ancestor(root, base, head) {
-  try { git(root, "merge-base", "--is-ancestor", base, head); return true; } catch { return false; }
+  try { git(root, "merge-base", "--is-ancestor", base, head); return true; } catch { return false; } /* intentional: non-git/non-worktree is treated as not clean */
 }
 function assertClean(root) {
   if (git(root, "status", "--porcelain=v1", "--untracked-files=all")) throw new Error("Git worktree must be clean before handoff or integration");
@@ -87,6 +91,7 @@ function normaliseReport(job) {
 
 /** The coordinator calls this from its protected integration checkout. */
 export function createLeadGitHandoff({ root: inputRoot, integrationBranch, remote = "origin", agent = "codex" }) {
+  // --- Validate inputs and resolve the integration checkout ------------------
   const root = resolve(inputRoot);
   validBranch(integrationBranch); validId(remote, "remote");
   if (!isLoopProvider(agent)) throw new Error("Invalid worker agent");

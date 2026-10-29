@@ -1,3 +1,7 @@
+/**
+ * Fleet coordination: job reconciliation, coordinator loop, and worker loop
+ * for multi-host AI-DLC execution.
+ */
 import { createHash, randomUUID } from "node:crypto";
 import { readyTaskItems, formatGateView } from "./store.mjs";
 import { isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
@@ -116,6 +120,7 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
   for (const workerId of workerIds) assertId(workerId, "worker ID");
   if (workerProviders !== undefined && (!workerProviders || typeof workerProviders !== "object" || Array.isArray(workerProviders) || Object.keys(workerProviders).length !== workerIds.length || workerIds.some((workerId) => !isLoopProvider(workerProviders[workerId])) || Object.keys(workerProviders).some((workerId) => !workerIds.includes(workerId)))) throw new Error(`workerProviders must map each configured worker ID to ${LOOP_PROVIDER_LIST}`);
   const limits = validateFleetLimits(inputLimits);
+  // --- Validate limits and normalize inputs ---------------------------------
   integer(pollMs, "pollMs", 300000);
   const pickupTimeoutMs = integer(inputPickupTimeout ?? limits.leaseMs, "pickupTimeoutMs", 3_600_000);
   const readTask = required(repository, "readTask");
@@ -234,6 +239,7 @@ export async function runFleetWorker({ repository, workerId = randomUUID(), work
   assertId(workerId, "worker ID");
   if (workerAgent !== undefined && !isLoopProvider(workerAgent)) throw new Error(`workerAgent must be ${LOOP_PROVIDER_LIST}`);
   const limits = validateFleetLimits(inputLimits);
+  // --- Validate limits and bind adapter methods ------------------------------
   const claimJob = required(repository, "claimJob");
   const renewJob = required(repository, "renewJob");
   const checkpointJob = required(repository, "checkpointJob");

@@ -1,3 +1,7 @@
+/**
+ * Agent driver adapters: preflight, turn execution, and provider-specific
+ * command construction for codex/claude/opencode.
+ */
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
@@ -35,7 +39,7 @@ export async function preflightAgentAdapter(name, { env = process.env, root } = 
   const adapter = adapters.get(name);
   if (!adapter) throw new Error(`Unknown agent adapter: ${name}`);
   const paths = (env.PATH ?? process.env.PATH ?? "").split(delimiter);
-  if (!paths.some((entry) => { try { accessSync(join(entry || ".", adapter.command), constants.X_OK); return true; } catch { return false; } })) throw new Error(`Worker provider CLI is unavailable: ${name}`);
+  if (!paths.some((entry) => { try { accessSync(join(entry || ".", adapter.command), constants.X_OK); return true; } catch { return false; } /* intentional: missing/unreadable executable is treated as unavailable */ })) throw new Error(`Worker provider CLI is unavailable: ${name}`);
   if (adapter.preflight) await adapter.preflight({ env, root });
 }
 registerAgentAdapter("codex", {
@@ -102,6 +106,7 @@ registerAgentAdapter("opencode", {
  * redacted error message.
  */
 export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, onSessionId, onEvent, signal, env, spawnProcess = spawn } = {}) {
+  // --- Validate inputs and resolve the adapter -------------------------------
   const adapter = adapters.get(agent);
   if (!adapter) throw new Error(`agent must be ${LOOP_PROVIDER_LIST} or a trusted registered adapter`);
   if (typeof root !== "string" || !root) throw new Error("root must be a nonempty path");

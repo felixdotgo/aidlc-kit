@@ -1,3 +1,7 @@
+/**
+ * Local loop runtime: record management, checkpointing, turn orchestration,
+ * and pause/resume handling for a single lead.
+ */
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -152,6 +156,7 @@ function outputStop(record, action, gateView) { return { taskId: record.taskId, 
 
 export async function runLoop({ root: rootInput, taskId, agent, mode = "run", limits: limitInput, driver, onEvent = () => {}, preflight = false, precondition }) {
   const root = validateRoot(rootInput);
+  // --- Validate mode and load/create the loop record -------------------------
   let record = readLoopRecord(root, taskId);
   if (mode === "run") {
     if (record) throw new Error(`Loop record already exists for ${taskId}; use resume`);
@@ -187,7 +192,8 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
     record.lastFingerprint = initial.digest;
     record.checkpoint = checkpoint(current.task, current.action, initial.tree, record.iteration);
     record.status = "running"; record.stopReason = null; record.updatedAt = iso(); writeLoopRecord(root, record);
-    for (;;) {
+    // --- Main turn loop --------------------------------------------------------
+  for (;;) {
       const kind = classifyAction(current.action);
       if (kind !== "run_phase") {
         record.status = kind === "await_user" ? "gate" : kind;

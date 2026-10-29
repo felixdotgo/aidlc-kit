@@ -69,6 +69,7 @@ export const runRemoteState = async (argv, client, root, git = {}) => {
   if (!extra && ["task item", "decision set", "lesson record"].includes(route)) throw new Error(`${route} requires an item/decision/lesson id`);
 
   const current = await client.get();
+  // --- Read-only routes ------------------------------------------------------
   if (!Number.isSafeInteger(current?.revision) || !current?.state?.tasks) throw new Error("Remote coordination returned invalid canonical state");
   const state = current.state;
   const previous = state.tasks[id];
@@ -100,6 +101,7 @@ export const runRemoteState = async (argv, client, root, git = {}) => {
     return { ok: true, result: await client.snapshot(current.revision, id, gate, reviewText, integrationCommit) };
   }
 
+  // --- Mutating routes -------------------------------------------------------
   let task;
   if (route === "task create") {
     if (previous || state.archive?.[id]) throw new Error(`Task already exists: ${id}`);

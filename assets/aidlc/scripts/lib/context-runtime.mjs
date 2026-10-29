@@ -1,3 +1,7 @@
+/**
+ * Context packet compiler: assembles the phase packet (task state, rules,
+ * agentic memory, spec traceability) consumed by the lead and workers.
+ */
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { loadMemoryRegistry, nextAction, selectAgenticMemory } from "./store.mjs";
@@ -209,6 +213,7 @@ const requiredEvidence = (task) => task.evidence.filter((item, index, entries) =
   return !entries.slice(index + 1).some((candidate) => `${candidate.kind}:${candidate.area ?? ""}:${candidate.gate ?? ""}` === key);
 }).map(({ detail, ...item }) => item);
 
+/** Compiles a phase context packet (task state, rules, memory, spec traceability). */
 export const compileContext = (root, task, phase = task.phase, options = {}) => {
   if (!["clarify", "plan", "build", "wrap", "done"].includes(phase)) throw new Error(`Unsupported phase: ${phase}`);
   const config = loadConfig(root);
