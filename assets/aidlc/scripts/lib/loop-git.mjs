@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { createWorkerSnapshot, inspectWorkerSnapshot } from "./loop-worker-snapshot.mjs";
 
 const SHA = /^[0-9a-f]{40,64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -231,5 +232,47 @@ export function createWorkerGitHandoff({ root: inputRoot, worktreesRoot: inputWo
       git(root, "worktree", "remove", "--force", path);
       rmSync(path, { recursive: true, force: true });
     }
+  };
+}
+
+/** Worker sees only a checked source snapshot. Git and credentials remain on host. */
+export function createIsolatedWorkerGitHandoff(options) {
+  const host = createWorkerGitHandoff(options);
+  return {
+    async prepare(job) {
+      const checkout = await host.prepare(job);
+      if (worktreePaths(checkout.root).length || git(checkout.root, "rev-parse", "HEAD") !== job.baseCommit) throw new Error("Existing worker checkout requires reconciliation");
+      const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: checkout.root, encoding: "utf8", timeout: 30000 }).split("\0").filter((path) => path && path !== ".agents/data" && !path.startsWith(".agents/data/"));
+      const snapshot = mkdtempSync(join(resolve(options.worktreesRoot), "snapshot-"));
+      try { const baseline = createWorkerSnapshot(checkout.root, snapshot, tracked); return { root: snapshot, checkout, baseline }; }
+      catch (error) { rmSync(snapshot, {recursive:true,force:true}); throw error; }
+    },
+    async observe({job, workspace, result}) {
+      const changed = inspectWorkerSnapshot(workspace.root, workspace.baseline, job.ownedPaths);
+      const fingerprint = createHash("sha256").update(JSON.stringify(changed.map((path) => { const full=join(workspace.root,path); return existsSync(full) ? [path,createHash("sha256").update(readFileSync(full)).digest("hex"),lstatSync(full).mode] : [path,null]; }))).digest("hex");
+      const done = typeof result?.resultText === "string" && result.resultText.split(/\r?\n/).some((line) => line.trim() === "AI-DLC-ITEM-COMPLETE");
+      return {done, fingerprint};
+    },
+    async finish({job, workspace}) {
+      const changed=inspectWorkerSnapshot(workspace.root, workspace.baseline, job.ownedPaths);
+      if (!changed.length) throw new Error("Worker produced no changes");
+      if (worktreePaths(workspace.checkout.root).length || git(workspace.checkout.root,"rev-parse","HEAD") !== job.baseCommit) throw new Error("Host checkout changed during worker run");
+      for (const path of changed) {
+        const source=join(workspace.root,path), target=join(workspace.checkout.root,path);
+        let parent = workspace.checkout.root;
+        for (const segment of path.split("/").slice(0,-1)) {
+          parent = join(parent,segment);
+          try { const info=lstatSync(parent); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Unsafe integration directory"); }
+          catch(error) { if (error.code !== "ENOENT") throw error; mkdirSync(parent); }
+        }
+        try { const info=lstatSync(target); if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error("Unsafe integration target"); }
+        catch(error) { if (error.code !== "ENOENT") throw error; }
+        if (!existsSync(source)) { rmSync(target,{force:true}); continue; }
+        copyFileSync(source,target); chmodSync(target,lstatSync(source).mode & 0o777);
+      }
+      const result=await host.finish({job,workspace:workspace.checkout});
+      rmSync(workspace.root,{recursive:true,force:true}); return result;
+    },
+    async discard({workspace}) { rmSync(workspace.root,{recursive:true,force:true}); return host.discard({workspace:workspace.checkout}); }
   };
 }

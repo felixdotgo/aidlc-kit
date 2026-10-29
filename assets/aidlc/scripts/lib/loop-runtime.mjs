@@ -149,7 +149,7 @@ export const classifyAction = (action) => {
 function approvalCount(task) { return task.evidence.filter((item) => item.kind === "approval" && item.result === "pass").length; }
 function outputStop(record, action, gateView) { return { taskId: record.taskId, runId: record.runId, status: record.status, iteration: record.iteration, sessionId: record.sessionId, stopReason: record.stopReason, nextAction: action, ...(gateView ? { gateView } : {}) }; }
 
-export async function runLoop({ root: rootInput, taskId, agent, mode = "run", limits: limitInput, driver, onEvent = () => {}, preflight = false }) {
+export async function runLoop({ root: rootInput, taskId, agent, mode = "run", limits: limitInput, driver, onEvent = () => {}, preflight = false, precondition }) {
   const root = validateRoot(rootInput);
   let record = readLoopRecord(root, taskId);
   if (mode === "run") {
@@ -168,6 +168,11 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
   const release = acquireLoopLease(root, taskId, record.runId);
   try {
     let current = readCanonical(root, taskId);
+    if (precondition) {
+      const expectedHash = hash(JSON.stringify(current.task));
+      const evidenceHash = hash(JSON.stringify(current.task.evidence));
+      if (precondition.taskId !== taskId || precondition.phase !== current.task.phase || precondition.taskHash !== expectedHash || precondition.evidenceHash !== evidenceHash || precondition.evidenceCount !== current.task.evidence.length || current.task.status !== "active" || current.action.classification !== "run_phase") throw new Error("Supervisor precondition changed before acquiring loop lease");
+    }
     if (mode === "resume" && current.task.status === "paused") {
       if (!record.pausedByLoop || current.task.handoff) throw new Error("Task was paused outside this loop; explicit user handling is required");
       current = readCanonical(root, taskId);

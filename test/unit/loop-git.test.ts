@@ -199,3 +199,46 @@ test("replacement lead fast-forwards a stale clean integration checkout", async 
   assert.equal(next.baseCommit, git(remote, "rev-parse", "refs/heads/feature"));
   assert.equal(git(replacement, "rev-parse", "HEAD"), next.baseCommit);
 });
+
+
+test("isolated worker hands off only validated snapshot changes", async (t) => {
+  const { parent, lead, worker } = fixture(t);
+  const { createLeadGitHandoff, createIsolatedWorkerGitHandoff } = await load();
+  const leadHandoff = createLeadGitHandoff({ root: lead, integrationBranch: "feature" });
+  const artifact = await leadHandoff.prepare({ taskId: "task-a", item: { id: "T1", ownedPaths: ["a.txt"] } });
+  const job = { ...artifact, taskId: "task-a", itemId: "T1", assignmentId: "job-isolated" };
+  const handoff = createIsolatedWorkerGitHandoff({ root: worker, worktreesRoot: join(parent, "worktrees") });
+  const workspace = await handoff.prepare(job);
+  assert.equal(readFileSync(join(workspace.root, "a.txt"), "utf8"), "base\n");
+  assert.throws(() => readFileSync(join(workspace.root, ".git")), /ENOENT/);
+  writeFileSync(join(workspace.root, "b.txt"), "outside\n");
+  await assert.rejects(() => handoff.finish({job, workspace}), /outside its scope/);
+  assert.equal(readFileSync(join(workspace.checkout.root, "b.txt"), "utf8"), "base\n");
+  writeFileSync(join(workspace.root, "b.txt"), "base\n");
+  writeFileSync(join(workspace.root, "a.txt"), "isolated\n");
+  const report = await handoff.finish({job, workspace});
+  assert.deepEqual(report.changedPaths, ["a.txt"]);
+  assert.equal((await leadHandoff.verify({job:{...job,report}})).valid, true);
+});
+
+test("fleet worker executes isolated Docker image and pushes a scoped commit", { skip: !process.env.AIDLC_TEST_DOCKER_IMAGE }, async (t) => {
+  const { parent, lead, worker } = fixture(t);
+  const { createLeadGitHandoff } = await load();
+  const { runFleetCli } = await import(resolve("dist/assets/.agents/aidlc/scripts/lib/loop-fleet-cli.mjs")) as any;
+  const leadHandoff = createLeadGitHandoff({root:lead,integrationBranch:"feature"});
+  const artifact=await leadHandoff.prepare({taskId:"task-a",item:{id:"T1",ownedPaths:["a.txt"],agent:"codex"}});
+  const job: any={...artifact,id:"job-docker",taskId:"task-a",itemId:"T1",workerId:"worker",agent:"codex",state:"ready",attempt:1,epoch:0};
+  let revision=0; let reported: any;
+  const callTool=async ({name,args}:any) => {
+    if(name==="fleet_get") return {revision,fleet:{jobs:{[job.id]:job}}};
+    if(name==="job_claim") {job.state="leased";job.epoch=1;revision++;return {fleet:{jobs:{[job.id]:job}}};}
+    if(name==="job_checkpoint" || name==="job_heartbeat") {revision++;return {};}
+    if(name==="job_report") {reported=args;revision++;return {};}
+    if(name==="task_get") return {revision:1,task:{id:"task-a",title:"Test",tasks:[{id:"T1",status:"todo"}]},nextAction:{classification:"run_phase",phase:"build"}};
+    throw new Error(`Unexpected ${name}`);
+  };
+  const env={...process.env,AIDLC_WORKER_DOCKER_IMAGE:process.env.AIDLC_TEST_DOCKER_IMAGE,OPENAI_API_KEY:"dummy",AIDLC_FLEET_WORKER_AGENT:"codex",AIDLC_FLEET_PROJECT_ROOT:worker,AIDLC_FLEET_URL:"https://example.invalid",AIDLC_FLEET_TOKEN:"dummy",AIDLC_FLEET_WORKSPACE:"test",AIDLC_FLEET_WORKER_ID:"worker",AIDLC_FLEET_WORKTREES_ROOT:join(parent,"worktrees")};
+  const result=await runFleetCli(["worker","--once"],{env,callTool,out:()=>{}});
+  assert.equal(result.status,"reported"); assert.deepEqual(reported.changedPaths,["a.txt"]);
+  assert.equal((await leadHandoff.verify({job:{...job,report:{commitSha:reported.commitSha,changedPaths:reported.changedPaths}}})).valid,true);
+});

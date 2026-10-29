@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import { delimiter, join } from "node:path";
 
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_STDERR_BYTES = 4096;
@@ -14,13 +16,65 @@ const diagnostic = (value) => redact(value).slice(0, 512);
 const isId = (value) => typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\s\x00-\x1f]/.test(value);
 const emit = async (callback, event) => { if (callback) await callback(event); };
 
+// Adapters are registered by trusted application code, never loaded from a
+// project configuration or shell string. Each adapter owns its CLI protocol.
+const adapters = new Map();
+export function registerAgentAdapter(name, adapter) {
+  if (typeof name !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(name) || adapters.has(name)) throw new Error("invalid or duplicate agent adapter");
+  if (!adapter || typeof adapter.command !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(adapter.command) || typeof adapter.arguments !== "function" || typeof adapter.parse !== "function" || (adapter.preflight !== undefined && typeof adapter.preflight !== "function")) throw new Error("agent adapter requires a command, arguments, parser, and optional preflight");
+  adapters.set(name, Object.freeze({ ...adapter }));
+}
+export async function preflightAgentAdapter(name, { env = process.env, root } = {}) {
+  const adapter = adapters.get(name);
+  if (!adapter) throw new Error(`Unknown agent adapter: ${name}`);
+  const paths = (env.PATH ?? process.env.PATH ?? "").split(delimiter);
+  if (!paths.some((entry) => { try { accessSync(join(entry || ".", adapter.command), constants.X_OK); return true; } catch { return false; } })) throw new Error(`Worker provider CLI is unavailable: ${name}`);
+  if (adapter.preflight) await adapter.preflight({ env, root });
+}
+registerAgentAdapter("codex", {
+  command: "codex",
+  arguments: ({ root, sessionId }) => ["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "-C", root, ...(sessionId ? ["resume", sessionId] : []), "-"],
+  input: (prompt) => prompt,
+  parse: async (event, context) => {
+    if (event.type === "thread.started") await context.captureId(event.thread_id);
+    if (event.type === "turn.completed") context.complete();
+    if (event.type === "turn.failed" || event.type === "error") throw new Error(`codex reported ${event.type}: ${diagnostic(JSON.stringify(event.error ?? event.message ?? "unknown"))}`);
+    const item = record(event.item);
+    if (event.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") context.result(item.text);
+    if (event.type === "item.completed" && item?.type === "command_execution") await context.commandEvent(item.exit_code, item.status);
+  }
+});
+registerAgentAdapter("claude", {
+  command: "claude",
+  arguments: ({ sessionId }) => ["-p", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json", "--permission-mode", "acceptEdits", ...(sessionId ? ["--resume", sessionId] : [])],
+  input: (prompt) => `${JSON.stringify({ type: "user", message: { role: "user", content: prompt } })}\n`,
+  parse: async (event, context) => {
+    if (event.session_id !== undefined) await context.captureId(event.session_id);
+    if (event.type === "result") {
+      if (event.is_error === true) throw new Error(`claude reported an error: ${diagnostic(event.result)}`);
+      context.complete();
+      if (typeof event.result === "string") context.result(event.result);
+    }
+    const message = record(event.message);
+    if (Array.isArray(message?.content)) for (const block of message.content) {
+      if (!record(block)) continue;
+      if (block.type === "tool_use" && typeof block.id === "string" && block.name === "Bash") context.toolUses.set(block.id, true);
+      if (block.type === "tool_result" && typeof block.tool_use_id === "string" && context.toolUses.has(block.tool_use_id)) {
+        context.toolUses.delete(block.tool_use_id);
+        await context.commandEvent(block.is_error === true ? 1 : 0, block.is_error === true ? "failed" : "completed");
+      }
+    }
+  }
+});
+
 /**
  * Run exactly one Codex or Claude turn. The returned session ID is the CLI's exact
- * ID; the caller must persist it when onSessionId fires, before the turn completes.
+ * ID; onSessionId observes it immediately. Callers decide when a checkpoint is durable.
  * Transport and protocol failures reject with a bounded, redacted error message.
  */
-export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, onSessionId, onEvent, signal, env } = {}) {
-  if (agent !== "codex" && agent !== "claude") throw new Error("agent must be codex or claude");
+export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, onSessionId, onEvent, signal, env, spawnProcess = spawn } = {}) {
+  const adapter = adapters.get(agent);
+  if (!adapter) throw new Error("agent must be codex or claude or a trusted registered adapter");
   if (typeof root !== "string" || !root) throw new Error("root must be a nonempty path");
   if (typeof prompt !== "string" || !prompt) throw new Error("prompt must be nonempty");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("timeoutMs must be a positive integer");
@@ -30,10 +84,17 @@ export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, 
   if (signal !== undefined && !(signal instanceof AbortSignal)) throw new Error("signal must be an AbortSignal");
   if (signal?.aborted) throw new Error("agent turn aborted before start");
 
-  const args = agent === "codex"
-    ? ["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "-C", root, ...(sessionId ? ["resume", sessionId] : []), prompt]
-    : ["-p", "--verbose", "--output-format", "stream-json", "--permission-mode", "acceptEdits", ...(sessionId ? ["--resume", sessionId] : []), prompt];
-  const child = spawn(agent, args, { cwd: root, shell: false, env: env ?? process.env, stdio: ["ignore", "pipe", "pipe"] });
+  const args = adapter.arguments({ root, sessionId, prompt });
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) throw new Error("agent adapter arguments must be an array of strings");
+  if (typeof spawnProcess !== "function") throw new Error("spawnProcess must be a function");
+  const input = adapter.input?.(prompt);
+  if (input !== undefined && typeof input !== "string") throw new Error("agent adapter input must be a string");
+  const child = spawnProcess(adapter.command, args, { cwd: root, shell: false, env: env ?? process.env, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+  if (input !== undefined) {
+    if (!child.stdin) throw new Error("agent transport lacks stdin");
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
+  }
   const diagnostics = [];
   let exactId = sessionId;
   let resultText = "";
@@ -77,33 +138,7 @@ export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, 
     let event;
     try { event = JSON.parse(line); } catch { throw new Error(`${agent} emitted malformed JSONL`); }
     if (!record(event) || typeof event.type !== "string") throw new Error(`${agent} emitted malformed event`);
-    if (agent === "codex") {
-      if (event.type === "thread.started") await captureId(event.thread_id);
-      if (event.type === "turn.completed") completed = true;
-      if (event.type === "turn.failed" || event.type === "error") throw new Error(`codex reported ${event.type}: ${diagnostic(JSON.stringify(event.error ?? event.message ?? "unknown"))}`);
-      const item = record(event.item);
-      if (event.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") resultText = item.text.slice(0, MAX_RESULT_CHARS);
-      if (event.type === "item.completed" && item?.type === "command_execution") await commandEvent(item.exit_code, item.status);
-    } else {
-      if (event.session_id !== undefined) await captureId(event.session_id);
-      if (event.type === "result") {
-        resultSeen = true;
-        completed = true;
-        if (event.is_error === true) throw new Error(`claude reported an error: ${diagnostic(event.result)}`);
-        if (typeof event.result === "string") resultText = event.result.slice(0, MAX_RESULT_CHARS);
-      }
-      const message = record(event.message);
-      if (Array.isArray(message?.content)) for (const block of message.content) {
-        if (!record(block)) continue;
-        if (block.type === "tool_use" && typeof block.id === "string" && block.name === "Bash") {
-          toolUses.set(block.id, true);
-        }
-        if (block.type === "tool_result" && typeof block.tool_use_id === "string" && toolUses.has(block.tool_use_id)) {
-          toolUses.delete(block.tool_use_id);
-          await commandEvent(block.is_error === true ? 1 : 0, block.is_error === true ? "failed" : "completed");
-        }
-      }
-    }
+    await adapter.parse(event, { captureId, commandEvent, toolUses, complete: () => { completed = true; resultSeen = true; }, result: (value) => { resultText = value.slice(0, MAX_RESULT_CHARS); } });
     await emit(onEvent, { type: "agent_event", eventType: event.type });
   };
   const queueLine = (line) => {

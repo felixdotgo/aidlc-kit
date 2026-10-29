@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
-import type { AgentId, CommandSpec, McpConfig, Profile, ProjectConfig, RiskLevel, StateMutationMode, TrackerConfig } from "./model.js";
+import type { AgentId, CommandSpec, LoopConfig, LoopAgent, McpConfig, Profile, ProjectConfig, RiskLevel, StateMutationMode, TrackerConfig } from "./model.js";
 
 const profile = (id: Profile["topology"], markers: string[] = []): Profile => ({
   schemaVersion: 1,
@@ -22,6 +22,18 @@ export const builtInProfiles: Readonly<Record<string, Profile>> = Object.freeze(
 const object = (value: unknown, label: string): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value as Record<string, unknown>;
+};
+
+export const validateLoopConfig = (value: unknown): LoopConfig => {
+  if (value === undefined) return { mode: "off" };
+  const item = object(value, "config.loop");
+  if (Object.keys(item).some((key) => !["mode", "agents"].includes(key)) || typeof item.mode !== "string" || !["off", "local", "fleet"].includes(item.mode)) throw new Error("config.loop requires a valid mode and only supported fields");
+  if (item.agents === undefined) return { mode: item.mode as LoopConfig["mode"] };
+  const agents = object(item.agents, "config.loop.agents");
+  if (Object.keys(agents).some((key) => !["lead", "workers"].includes(key)) || typeof agents.lead !== "string" || !["codex", "claude"].includes(agents.lead)) throw new Error("config.loop.agents.lead must be codex or claude");
+  const workers = object(agents.workers, "config.loop.agents.workers");
+  for (const [id, provider] of Object.entries(workers)) if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || typeof provider !== "string" || !["codex", "claude"].includes(provider)) throw new Error("config.loop.agents.workers must map worker IDs to codex or claude");
+  return { mode: item.mode as LoopConfig["mode"], agents: { lead: agents.lead as LoopAgent, workers: workers as Record<string, LoopAgent> } };
 };
 
 const strings = (value: unknown, label: string): string[] => {
@@ -103,7 +115,8 @@ export const defaultConfig = (): ProjectConfig => ({
   risk: { default: "normal" },
   context: { maxChars: 16_000 },
   agentState: {},
-  mcp: { enabled: false }
+  mcp: { enabled: false },
+  loop: { mode: "off" }
 });
 
 export const loadProjectConfig = (root: string): ProjectConfig => {
@@ -132,7 +145,8 @@ export const loadProjectConfig = (root: string): ProjectConfig => {
     context: { maxChars },
     agentState,
     tracker: tracker(item.tracker),
-    mcp: mcp(item.mcp)
+    mcp: mcp(item.mcp),
+    loop: validateLoopConfig(item.loop)
   };
 };
 
@@ -172,7 +186,8 @@ export const resolveEffectiveConfig = (root: string, config: ProjectConfig) => {
     rules: { include: stable([...profiles.flatMap((item) => item.rules?.include ?? []), ...config.rules.include]) },
     risk: config.risk,
     context: config.context,
-    mcp: config.mcp
+    mcp: config.mcp,
+    loop: config.loop ?? { mode: "off" }
   };
 };
 

@@ -35,6 +35,14 @@ export interface InitOptions {
   dryRun: boolean;
   yes: boolean;
   force: boolean;
+  loop?: LoopConfig;
+}
+
+export type LoopMode = "off" | "local" | "fleet";
+export type LoopAgent = "codex" | "claude";
+export interface LoopConfig {
+  mode: LoopMode;
+  agents?: { lead: LoopAgent; workers: Record<string, LoopAgent> };
 }
 
 export interface CommandSpec {
@@ -64,6 +72,7 @@ export interface ProjectConfig {
   agentState: Partial<Record<AgentId, StateMutationMode>>;
   tracker?: TrackerConfig;
   mcp: McpConfig;
+  loop?: LoopConfig;
 }
 
 export interface McpConfig {

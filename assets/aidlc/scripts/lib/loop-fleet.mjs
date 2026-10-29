@@ -109,10 +109,11 @@ async function withHeartbeat(renew, intervalMs, work) {
  * One fenced coordinator invocation. The repository is the remote authority;
  * no local lifecycle file or PID lease is consulted in fleet mode.
  */
-export async function runFleetCoordinator({ repository, taskId, ownerId = randomUUID(), workerIds = [], reservedJobs = [], allowCodeOnlyRetry = false, limits: inputLimits, pollMs = 5000, pickupTimeoutMs: inputPickupTimeout, packet, driver, gateView, handoff, completeItem, onEvent = () => {} }) {
+export async function runFleetCoordinator({ repository, taskId, ownerId = randomUUID(), workerIds = [], workerProviders, reservedJobs = [], allowCodeOnlyRetry = false, limits: inputLimits, pollMs = 5000, pickupTimeoutMs: inputPickupTimeout, packet, driver, gateView, handoff, completeItem, claimedLead, supervisorSignal, onEvent = () => {} }) {
   assertId(taskId, "task ID"); assertId(ownerId, "owner ID");
   if (!Array.isArray(workerIds) || new Set(workerIds).size !== workerIds.length) throw new Error("workerIds must be distinct IDs");
   for (const workerId of workerIds) assertId(workerId, "worker ID");
+  if (workerProviders !== undefined && (!workerProviders || typeof workerProviders !== "object" || Array.isArray(workerProviders) || Object.keys(workerProviders).length !== workerIds.length || workerIds.some((workerId) => !["codex", "claude"].includes(workerProviders[workerId])) || Object.keys(workerProviders).some((workerId) => !workerIds.includes(workerId)))) throw new Error("workerProviders must map each configured worker ID to codex or claude");
   const limits = validateFleetLimits(inputLimits);
   integer(pollMs, "pollMs", 300000);
   const pickupTimeoutMs = integer(inputPickupTimeout ?? limits.leaseMs, "pickupTimeoutMs", 3_600_000);
@@ -124,14 +125,15 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
   const scheduleJob = required(repository, "scheduleJob");
   const saveGateSnapshot = required(repository, "saveGateSnapshot");
   let snapshot = validateSnapshot(await readTask({ taskId }), taskId);
-  const claim = await claimLead({ taskId, ownerId, leaseMs: limits.leaseMs, expectedRevision: snapshot.revision, idempotencyKey: randomUUID() });
+  const claim = claimedLead ?? await claimLead({ taskId, ownerId, leaseMs: limits.leaseMs, expectedRevision: snapshot.revision, idempotencyKey: randomUUID() });
   if (!Number.isSafeInteger(claim?.epoch) || claim.epoch < 1) throw new Error("Lead claim lacks a fencing epoch");
   const epoch = claim.epoch;
   let turns = 0, stalls = 0, lastSignal = null;
   const startedAt = Date.now();
   const readySeen = new Map();
   try {
-    return await withHeartbeat(() => renewLead({ taskId, ownerId, epoch, leaseMs: limits.leaseMs }), limits.heartbeatMs, async (signal) => {
+    return await withHeartbeat(() => renewLead({ taskId, ownerId, epoch, leaseMs: limits.leaseMs }), limits.heartbeatMs, async (leaseSignal) => {
+      const signal = supervisorSignal ? AbortSignal.any([leaseSignal, supervisorSignal]) : leaseSignal;
       for (;;) {
         if (signal.aborted) throw new Error("Lead lease renewal failed");
         if (Date.now() - startedAt >= limits.maxTurns * limits.turnTimeoutMs) return { status: "paused", taskId, reason: "coordinator wall-time limit reached" };
@@ -186,7 +188,9 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
             const artifact = await handoff.prepare({ taskId, item, snapshot });
             if (pathClaims.some((job) => pathsOverlap(artifact.ownedPaths, job.ownedPaths))) continue;
             const workerId = [...load].sort((a, b) => a[1] - b[1])[0][0];
-            const job = await scheduleJob({ taskId, itemId: item.id, workerId, leadEpoch: epoch, expectedRevision: snapshot.revision, baseCommit: artifact.baseCommit, branch: artifact.branch, ownedPaths: artifact.ownedPaths, agent: artifact.agent, idempotencyKey: randomUUID() });
+            const agent = workerProviders ? workerProviders[workerId] : artifact.agent;
+            if (!["codex", "claude"].includes(agent)) throw new Error(`Invalid provider for worker ${workerId}`);
+            const job = await scheduleJob({ taskId, itemId: item.id, workerId, leadEpoch: epoch, expectedRevision: snapshot.revision, baseCommit: artifact.baseCommit, branch: artifact.branch, ownedPaths: artifact.ownedPaths, agent, idempotencyKey: randomUUID() });
             active.push(job); reserved.add(item.id);
             pathClaims.push({ ...job, ownedPaths: artifact.ownedPaths, state: "ready" });
             load.set(workerId, load.get(workerId) + 1);
@@ -225,8 +229,9 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
 }
 
 /** A worker claims one attempt, persists its exact CLI session, and reports a Git artifact. */
-export async function runFleetWorker({ repository, workerId = randomUUID(), limits: inputLimits, driver, packet, handoff, onEvent = () => {} }) {
+export async function runFleetWorker({ repository, workerId = randomUUID(), workerAgent, preflight, limits: inputLimits, driver, packet, handoff, onEvent = () => {} }) {
   assertId(workerId, "worker ID");
+  if (workerAgent !== undefined && !["codex", "claude"].includes(workerAgent)) throw new Error("workerAgent must be codex or claude");
   const limits = validateFleetLimits(inputLimits);
   const claimJob = required(repository, "claimJob");
   const renewJob = required(repository, "renewJob");
@@ -235,6 +240,11 @@ export async function runFleetWorker({ repository, workerId = randomUUID(), limi
   const readTask = required(repository, "readTask");
   const job = await claimJob({ workerId, leaseMs: limits.leaseMs, idempotencyKey: key("worker-claim", workerId, randomUUID()) });
   if (!job) return { status: "idle" };
+  if (!["codex", "claude"].includes(job.agent) || (workerAgent !== undefined && job.agent !== workerAgent)) throw new Error(`Assigned provider does not match worker ${workerId} capability`);
+  if (preflight !== undefined) {
+    if (typeof preflight !== "function") throw new Error("Worker preflight must be a function");
+    await preflight(job.agent);
+  }
   assertId(job.taskId, "job task ID"); assertId(job.itemId, "job item ID");
   if (!Number.isSafeInteger(job.epoch) || job.epoch < 1 || !Number.isSafeInteger(job.attempt) || job.attempt < 1 || !job.assignmentId) throw new Error("Job claim lacks a fenced attempt");
   const identity = { assignmentId: job.assignmentId, attempt: job.attempt, epoch: job.epoch, workerId };
@@ -267,17 +277,26 @@ export async function runFleetWorker({ repository, workerId = randomUUID(), limi
       if (typeof prompt !== "string" || !prompt) throw new Error("Empty worker packet");
       const result = await driver({ agent: job.agent, root: workspace.root, sessionId: sessionId ?? undefined, prompt: `${prompt}\n\nWorker scope: modify only assigned paths. Do not mutate AI-DLC lifecycle state or approve any gate. When the scoped implementation is ready for commit, end the final answer with AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs: limits.turnTimeoutMs, signal, onSessionId: async (id) => {
         if (typeof id !== "string" || !id) throw new Error("Invalid worker session ID");
-        await checkpointJob({ ...identity, sessionId: id, checkpoint: { turns, capturedAt: new Date().toISOString() } });
+        if (sessionId && sessionId !== id) throw new Error("Worker session changed during the same assignment");
         sessionId = id;
       }, onEvent });
+      if (result?.sessionId && sessionId && result.sessionId !== sessionId) throw new Error("Worker session changed during the same assignment");
       if (result?.sessionId && !sessionId) {
-        await checkpointJob({ ...identity, sessionId: result.sessionId, checkpoint: { turns, capturedAt: new Date().toISOString() } });
         sessionId = result.sessionId;
       }
+      if (signal.aborted) throw new Error("Job lease renewal failed after worker turn");
+      await renewJob({ ...identity, leaseMs: limits.leaseMs });
+      if (signal.aborted) throw new Error("Job lease renewal failed after worker turn");
       turns++;
+      if (sessionId) await checkpointJob({ ...identity, sessionId, checkpoint: { agent: job.agent, turns, completedAt: new Date().toISOString() } });
       const observed = await handoff.observe({ job, workspace, result, turns });
       if (observed?.done) {
+        await renewJob({ ...identity, leaseMs: limits.leaseMs });
+        if (signal.aborted) throw new Error("Job lease renewal failed before Git handoff");
         const artifact = await handoff.finish({ job, workspace, result });
+        if (signal.aborted) throw new Error("Job lease renewal failed during Git handoff; reconcile remote state");
+        await renewJob({ ...identity, leaseMs: limits.leaseMs });
+        if (signal.aborted) throw new Error("Job lease renewal failed after Git handoff; reconcile remote state");
         if (!artifact?.commitSha || !Array.isArray(artifact.changedPaths)) throw new Error("Invalid Git handoff artifact");
         await report({ status: "reported", commitSha: artifact.commitSha, changedPaths: artifact.changedPaths, sessionId });
         return { status: "reported", assignmentId: job.assignmentId, commitSha: artifact.commitSha };

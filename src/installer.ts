@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { adapters, findAdapter, installableAdapters, resolvedAdapters } from "./adapters.js";
-import type { AgentId, FileSpec, InitOptions, PlannedWrite, WorkflowManifest } from "./model.js";
-import { loadProjectConfig } from "./profiles.js";
+import type { AgentId, FileSpec, InitOptions, LoopConfig, PlannedWrite, WorkflowManifest } from "./model.js";
+import { loadProjectConfig, validateLoopConfig } from "./profiles.js";
 import { loadState } from "./state.js";
 import { planProjectLayoutMigration } from "./project-migration.js";
 import { managedBlock, mergeManagedBlock } from "./managed-content.js";
@@ -58,6 +58,23 @@ const planFile = (root: string, spec: FileSpec, force: boolean, installed?: Work
   return { ...spec, action: "conflict", reason: "managed ownership cannot be proven; use upgrade or review --force" };
 };
 
+/** Include an explicitly selected loop config in the same preview/transaction as setup. */
+export const planLoopSelection = (plan: PlannedWrite[], selection?: LoopConfig): void => {
+  if (selection === undefined) return;
+  const loop = validateLoopConfig(selection);
+  const config = plan.find((item) => item.path === ".agents/config.json");
+  if (!config || !["create", "preserve", "skip", "migrate"].includes(config.action)) throw new Error("Cannot change loop configuration while the project config has another planned change");
+  const parsed: unknown = JSON.parse(config.content);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid project config");
+  const current = parsed as Record<string, unknown>;
+  if (JSON.stringify(current.loop) === JSON.stringify(loop)) return;
+  const previousAction = config.action;
+  current.loop = loop;
+  config.content = `${JSON.stringify(current, null, 2)}\n`;
+  config.action = previousAction === "create" || previousAction === "migrate" ? previousAction : "update";
+  config.reason = "explicit loop mode selection";
+};
+
 export const planInit = (options: InitOptions): PlannedWrite[] => {
   const root = resolve(options.root);
   const installed = readManifest(root);
@@ -70,6 +87,7 @@ export const planInit = (options: InitOptions): PlannedWrite[] => {
   const files = [...managedFiles, manifestSpec(managedFiles, selected), ...initialProjectFiles()];
   const plan = files.map((spec) => planFile(root, spec, options.force, installed));
   planProjectLayoutMigration(root, plan);
+  planLoopSelection(plan, options.loop);
   return plan;
 };
 

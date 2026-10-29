@@ -1,0 +1,9 @@
+#!/bin/sh
+# Fake worker provider CLI for AIDLC_TEST_WORKER_IMAGE / AIDLC_TEST_DOCKER_IMAGE.
+# It completes one scoped item inside the isolated snapshot and must never see
+# .git, lifecycle state, or the Docker socket.
+if [ "$1" = --version ]; then echo fake-1; exit 0; fi
+cat >/dev/null
+if [ -e /workspace/.git ] || [ -e /workspace/.agents/data ] || [ -e /var/run/docker.sock ]; then exit 9; fi
+echo isolated > /workspace/a.txt
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}' '{"type":"item.completed","item":{"type":"agent_message","text":"AI-DLC-ITEM-COMPLETE"}}' '{"type":"turn.completed"}'

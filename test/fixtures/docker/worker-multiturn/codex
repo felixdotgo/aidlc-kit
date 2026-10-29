@@ -1,0 +1,13 @@
+#!/bin/sh
+# Fake worker provider CLI for AIDLC_TEST_MULTITURN_IMAGE. It only completes the
+# scoped item from a later turn after the private HOME survives a restart,
+# exercising session persistence and the turn limit.
+if [ "$1" = --version ]; then echo fake-1; exit 0; fi
+cat >/dev/null
+if [ -f "$HOME/session" ]; then
+  printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}' '{"type":"item.completed","item":{"type":"agent_message","text":"AI-DLC-ITEM-COMPLETE"}}' '{"type":"turn.completed"}'
+else
+  echo saved > "$HOME/session"
+  echo isolated > /workspace/a.txt
+  printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}' '{"type":"item.completed","item":{"type":"agent_message","text":"More work"}}' '{"type":"turn.completed"}'
+fi

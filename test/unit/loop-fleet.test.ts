@@ -6,6 +6,49 @@ const load = async (): Promise<any> => import(resolve("dist/assets/.agents/aidlc
 const task = (status = "todo") => ({ id: "task-a", phase: "build", tasks: [{ id: "T1", status, dependsOn: [] }] });
 const action = { classification: "run_phase", phase: "build", itemId: "T1" };
 
+test("coordinator schedules independent jobs with each worker's configured provider", async () => {
+  const { runFleetCoordinator } = await load();
+  const assigned: any[] = [];
+  const twoItems = { id: "task-a", phase: "build", tasks: [{ id: "T1", status: "todo", dependsOn: [] }, { id: "T2", status: "todo", dependsOn: [] }] };
+  const repository = {
+    readTask: async () => ({ task: twoItems, nextAction: assigned.length === 2 ? { classification: "await_user", gate: "G1_review" } : action, revision: 1 }),
+    claimLead: async () => ({ epoch: 1 }), renewLead: async () => {}, releaseLead: async () => {}, listJobs: async () => [],
+    scheduleJob: async (input: any) => { assigned.push(input); return { assignmentId: `job-${input.itemId}`, itemId: input.itemId, workerId: input.workerId, state: "ready" }; },
+    saveGateSnapshot: async () => ({ snapshotId: "snap" })
+  };
+  const handoff = { prepare: async ({ item }: any) => ({ baseCommit: "a".repeat(40), branch: `branch/${item.id}`, ownedPaths: [`src/${item.id}.ts`], agent: "codex" }) };
+  const result = await runFleetCoordinator({ repository, taskId: "task-a", workerIds: ["worker-a", "worker-b"], workerProviders: { "worker-a": "codex", "worker-b": "claude" }, handoff, pollMs: 1, gateView: async () => "Review" });
+  assert.equal(result.status, "gate");
+  assert.deepEqual(assigned.map(({ workerId, agent }: any) => [workerId, agent]), [["worker-a", "codex"], ["worker-b", "claude"]]);
+  await assert.rejects(runFleetCoordinator({ repository, taskId: "task-a", workerIds: ["worker-a", "worker-b"], workerProviders: { "worker-a": "codex" } }), /map each configured worker/);
+});
+
+test("worker rejects a job from a different provider before running it", async () => {
+  const { runFleetWorker } = await load();
+  let invoked = false;
+  const repository = { claimJob: async () => ({ agent: "claude" }), renewJob: async () => {}, checkpointJob: async () => {}, reportJob: async () => {}, readTask: async () => {} };
+  await assert.rejects(runFleetWorker({ repository, workerId: "worker-a", workerAgent: "codex", driver: async () => { invoked = true; } }), /does not match worker/);
+  assert.equal(invoked, false);
+});
+
+test("legacy worker without provider setting preflights and runs the assigned Claude job", async () => {
+  const { runFleetWorker } = await load();
+  const calls: string[] = [];
+  const repository = {
+    claimJob: async () => ({ taskId: "task-a", itemId: "T1", assignmentId: "job-a", attempt: 1, epoch: 1, agent: "claude" }),
+    renewJob: async () => {}, checkpointJob: async () => {}, reportJob: async () => {},
+    readTask: async () => ({ task: task(), nextAction: action, revision: 1 })
+  };
+  const handoff = { prepare: async () => { calls.push("prepare"); return { root: "/tmp/worker-a" }; }, observe: async () => ({ done: true }), finish: async () => ({ commitSha: "abc", changedPaths: ["src/a.ts"] }) };
+  const run = (preflight: any) => runFleetWorker({ repository, workerId: "worker-a", preflight, handoff, packet: async () => "task", driver: async ({ agent }: any) => { calls.push(`driver:${agent}`); return {}; } });
+  await assert.rejects(run(async (agent: string) => { calls.push(`preflight:${agent}`); throw new Error("CLI unavailable"); }), /CLI unavailable/);
+  assert.deepEqual(calls, ["preflight:claude"]);
+  calls.length = 0;
+  const result = await run(async (agent: string) => { calls.push(`preflight:${agent}`); });
+  assert.equal(result.status, "reported");
+  assert.deepEqual(calls, ["preflight:claude", "prepare", "driver:claude"]);
+});
+
 test("coordinator schedules dependency-ready work under a fenced lead claim", async () => {
   const { runFleetCoordinator } = await load();
   const calls: string[] = [];
@@ -167,7 +210,7 @@ test("restart after canonical completion finalizes an uncertain report without r
   assert.equal(gate.status, "gate"); assert.equal(integrated, true);
 });
 
-test("worker saves exact session ID before reporting Git commit", async () => {
+test("worker checkpoints session only after the completed turn and before reporting", async () => {
   const { runFleetWorker } = await load();
   const calls: string[] = [];
   const repository = {
@@ -180,7 +223,7 @@ test("worker saves exact session ID before reporting Git commit", async () => {
   const driver = async ({ onSessionId }: any) => { await onSessionId("session-a"); calls.push("driver-end"); return { sessionId: "session-a" }; };
   const handoff = { prepare: async () => ({ root: "/tmp/worker-a" }), observe: async () => ({ done: true }), finish: async () => ({ commitSha: "abc123", changedPaths: ["src/a.ts"] }) };
   const result = await runFleetWorker({ repository, workerId: "worker-a", driver, packet: async () => "Do T1", handoff });
-  assert.equal(result.status, "reported"); assert.deepEqual(calls, ["checkpoint", "driver-end", "report"]);
+  assert.equal(result.status, "reported"); assert.deepEqual(calls, ["driver-end", "checkpoint", "report"]);
 });
 
 test("worker skips canonically completed item after restart", async () => {
@@ -213,4 +256,20 @@ test("worker resets stalls on changed fingerprints and stops on repeated observa
   assert.equal(turns, 5);
   assert.equal(result.status, "uncertain");
   assert.match(report.reason, /2 worker turns without observable progress/);
+});
+
+test("worker does not checkpoint or push after its lease expires at turn boundary", async () => {
+  const { runFleetWorker } = await load();
+  let checkpointed = false, finished = false, reported = false;
+  const repository = {
+    claimJob: async () => ({ taskId: "task-a", itemId: "T1", assignmentId: "job-a", attempt: 1, epoch: 5, agent: "codex" }),
+    renewJob: async () => { throw new Error("lease expired"); },
+    checkpointJob: async () => { checkpointed = true; },
+    reportJob: async () => { reported = true; },
+    readTask: async () => ({ task: task(), nextAction: action, revision: 1 })
+  };
+  const driver = async ({ onSessionId }: any) => { await onSessionId("session-a"); return { sessionId: "session-a" }; };
+  const handoff = { prepare: async () => ({ root: "/tmp/worker-a" }), observe: async () => ({ done: true }), finish: async () => { finished = true; } };
+  await assert.rejects(() => runFleetWorker({ repository, workerId: "worker-a", driver, packet: async () => "Do T1", handoff }), /lease expired/);
+  assert.equal(checkpointed, false); assert.equal(finished, false); assert.equal(reported, false);
 });

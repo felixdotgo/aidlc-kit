@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -53,7 +53,7 @@ test("real fleet CLI schedules a worker, integrates Git, records canonical compl
     chmodSync(fake, 0o755);
     const leadToken = "l".repeat(32), workerToken = "w".repeat(32), reviewerToken = "r".repeat(32);
     const servicePort = await port(); const url = `http://127.0.0.1:${servicePort}/mcp`;
-    const serviceEnv = { ...process.env, MCP_FLEET_ENABLED: "1", MCP_FLEET_ALLOW_SQLITE_TEST: "1", MCP_STATE_DATABASE: "sqlite", MCP_STATE_SQLITE_PATH: db, MCP_STATE_HOST: "127.0.0.1", MCP_STATE_PORT: String(servicePort), MCP_FLEET_LEAD_TOKEN: leadToken, MCP_FLEET_REVIEWER_TOKEN: reviewerToken, MCP_FLEET_WORKER_TOKENS: JSON.stringify({ worker1: workerToken }) };
+    const serviceEnv = { ...process.env, MCP_FLEET_ENABLED: "1", MCP_STATE_DATABASE: "sqlite", MCP_STATE_SQLITE_PATH: db, MCP_STATE_HOST: "127.0.0.1", MCP_STATE_PORT: String(servicePort), MCP_FLEET_LEAD_TOKEN: leadToken, MCP_FLEET_REVIEWER_TOKEN: reviewerToken, MCP_FLEET_WORKER_TOKENS: JSON.stringify({ worker1: workerToken }) };
     service = spawn(process.execPath, [resolve("services/aidlc-coordination/src/server.mjs")], { cwd: temp, env: serviceEnv, stdio: ["ignore", "ignore", "pipe"] });
     service.stderr?.on("data", (chunk) => { serviceError += chunk; });
     const { callTool } = await import(resolve("services/aidlc-coordination/src/fleet-client.mjs"));
@@ -63,7 +63,7 @@ test("real fleet CLI schedules a worker, integrates Git, records canonical compl
     let coordinatorDone: { code: number | null; output: string } | undefined;
     const coordinator = processResult(process.execPath, [cli, "coordinator", taskId, "--once"], { cwd: leadRoot, env: { ...shared, AIDLC_FLEET_TOKEN: leadToken, AIDLC_FLEET_PROJECT_ROOT: leadRoot, AIDLC_FLEET_WORKER_IDS: "worker1", AIDLC_FLEET_INTEGRATION_BRANCH: "feature/test" } }).then((result) => { coordinatorDone = result; return result; });
     await waitFor(async () => { if (coordinatorDone) throw new Error(coordinatorDone.output); return Object.values((await callTool({ url, token: leadToken, name: "fleet_get", args: { workspace } })).fleet.jobs).length > 0; }).catch((error) => { throw new Error(`${error.message}: ${coordinatorDone?.output ?? ""}`); });
-    const worker = await processResult(process.execPath, [cli, "worker", "--once"], { cwd: workerRoot, env: { ...shared, AIDLC_FLEET_TOKEN: workerToken, AIDLC_FLEET_PROJECT_ROOT: workerRoot, AIDLC_FLEET_WORKER_ID: "worker1", AIDLC_FLEET_WORKTREES_ROOT: join(temp, "worktrees") } });
+    const worker = await processResult(process.execPath, [cli, "worker", "--once"], { cwd: workerRoot, env: { ...shared, OPENAI_API_KEY: "dummy", AIDLC_FLEET_TOKEN: workerToken, AIDLC_FLEET_PROJECT_ROOT: workerRoot, AIDLC_FLEET_WORKER_ID: "worker1", AIDLC_FLEET_WORKTREES_ROOT: join(temp, "worktrees") } });
     assert.equal(worker.code, 0, worker.output);
     const lead = await coordinator; assert.equal(lead.code, 0, lead.output);
     const canonical = await callTool({ url, token: leadToken, name: "task_get", args: { workspace, taskId, clientProjectRoot: leadRoot } });
@@ -72,4 +72,79 @@ test("real fleet CLI schedules a worker, integrates Git, records canonical compl
     assert.ok(inbox.some((entry: any) => entry.taskId === taskId && entry.gate === "G2_codereview" && entry.integrationCommit === git(leadRoot, "rev-parse", "HEAD")));
     assert.match(git(leadRoot, "show", "HEAD:src/a.txt"), /done/);
   } finally { service?.kill("SIGTERM"); rmSync(temp, { recursive: true, force: true }); }
+});
+
+test("loop start drives the supervised fleet loop from a requirement through all gates to completion", { skip: process.platform === "win32", timeout: 90000 }, async () => {
+  const temp = mkdtempSync(join(tmpdir(), "aidlc-fleet-facade-"));
+  const leadRoot = join(temp, "lead"), workerRoot = join(temp, "worker"), bare = join(temp, "remote.git"), bin = join(temp, "bin"), db = join(temp, "fleet.db");
+  let service: ReturnType<typeof spawn> | undefined;
+  let facade: ReturnType<typeof spawn> | undefined;
+  let facadeOutput = "";
+  let serviceError = "";
+  const taskId = "fleet-facade";
+  const intent = "# Intent\n\n## 📋 Problem\nLoop facade fixture\n## 🗺️ Affected areas\nroot\n## 💭 Assumptions\nnone\n## ❓ Open questions\nnone\n## 🎯 Scope\nChange src/a.txt\n";
+  const design = "# Design\n\n## 🧩 Solution per affected area\nroot\n## 📌 Spec traceability\nfixture\n## 🔗 Cross-service contracts\nnone\n## ⚠️ Risks / edge cases\nnone\n";
+  try {
+    mkdirSync(leadRoot); mkdirSync(bin);
+    const options: InitOptions = { root: leadRoot, agents: ["codex"], all: false, dryRun: false, yes: true, force: false, loop: { mode: "fleet", agents: { lead: "codex", workers: { worker1: "codex" } } } as any };
+    applyPlan(leadRoot, planInit(options));
+    mkdirSync(join(leadRoot, "src")); writeFileSync(join(leadRoot, "src/a.txt"), "seed\n");
+    git(temp, "init", "--bare", bare); git(leadRoot, "init"); git(leadRoot, "checkout", "-b", "feature/test"); git(leadRoot, "add", "."); git(leadRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-m", "seed"); git(leadRoot, "remote", "add", "origin", bare); git(leadRoot, "push", "-u", "origin", "feature/test");
+    git(temp, "clone", "-b", "feature/test", bare, workerRoot);
+    const fake = join(bin, "codex");
+    writeFileSync(fake, `#!/usr/bin/env node\nconst fs=require('node:fs'),cp=require('node:child_process'),path=require('node:path');\nif(process.argv.includes('--version')){console.log('fake');process.exit(0)}\nconst root=process.cwd(),taskId=${JSON.stringify(taskId)},cli=path.join(root,'.agents/aidlc/scripts/remote-state.mjs');\nconst run=(...args)=>cp.execFileSync(process.execPath,[cli,...args],{encoding:'utf8',maxBuffer:8*1024*1024});\nconst task=JSON.parse(run('task','show',taskId)).result;\nif(!task)throw new Error('task missing');\nconst artifacts=path.join(root,'.agents/data/tasks',taskId);fs.mkdirSync(artifacts,{recursive:true});\nconst commit=(message)=>{cp.execFileSync('git',['add','-f',artifacts],{cwd:root});cp.execFileSync('git',['-c','user.name=Fixture','-c','user.email=fixture@localhost','commit','-m',message],{cwd:root});cp.execFileSync('git',['push','origin','HEAD'],{cwd:root});};\nif(task.phase==='clarify'){fs.writeFileSync(path.join(artifacts,'intent.md'),${JSON.stringify(intent)});commit('loop artifacts: intent');run('task','status',taskId,'--status','blocked_on_user');}\nelse if(task.phase==='plan'){fs.writeFileSync(path.join(artifacts,'design.md'),${JSON.stringify(design)});fs.writeFileSync(path.join(artifacts,'workplan.md'),'# Workplan\\n\\n- T1 Change src/a.txt\\n');commit('loop artifacts: design and workplan');run('task','item',taskId,'T1','--status','todo','--owns','src/a.txt');run('task','status',taskId,'--status','blocked_on_user');}\nelse if(task.phase==='build'){run('evidence','add',taskId,'--kind','test','--result','pass','--source','fixture test');run('evidence','add',taskId,'--kind','review','--result','pass','--source','fixture review');run('task','status',taskId,'--status','blocked_on_user');}\nelse if(task.phase==='wrap'){run('lesson','none',taskId,'--reason','none','--source','fixture');run('task','transition',taskId,'--to','done','--mode','audited','--reason','wrap complete','--source','fixture');}\nelse throw new Error('unexpected phase '+task.phase);\nconsole.log(JSON.stringify({type:'thread.started',thread_id:'lead-session'}));console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'gate ready'}}));console.log(JSON.stringify({type:'turn.completed'}));\n`);
+    chmodSync(fake, 0o755);
+    const leadToken = "l".repeat(32), workerToken = "w".repeat(32), reviewerToken = "r".repeat(32);
+    const servicePort = await port(); const url = `http://127.0.0.1:${servicePort}/mcp`;
+    const serviceEnv = { ...process.env, MCP_FLEET_ENABLED: "1", MCP_STATE_DATABASE: "sqlite", MCP_STATE_SQLITE_PATH: db, MCP_STATE_HOST: "127.0.0.1", MCP_STATE_PORT: String(servicePort), MCP_FLEET_LEAD_TOKEN: leadToken, MCP_FLEET_REVIEWER_TOKEN: reviewerToken, MCP_FLEET_WORKER_TOKENS: JSON.stringify({ worker1: workerToken }) };
+    service = spawn(process.execPath, [resolve("services/aidlc-coordination/src/server.mjs")], { cwd: temp, env: serviceEnv, stdio: ["ignore", "ignore", "pipe"] });
+    service.stderr?.on("data", (chunk: Buffer) => { serviceError += chunk; });
+    const { callTool } = await import(resolve("services/aidlc-coordination/src/fleet-client.mjs"));
+    const workspace = "fleet-facade";
+    await waitFor(async () => { if (service?.exitCode !== null) throw new Error(serviceError); return Boolean((await callTool({ url, token: leadToken, name: "fleet_get", args: { workspace } })).fleet); }).catch((error) => { throw new Error(`${error.message}: ${serviceError}`); });
+    const loopEntry = resolve("dist/assets/.agents/aidlc/scripts/loop-entry.mjs");
+    const facadeEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, AIDLC_FLEET_URL: url, AIDLC_FLEET_WORKSPACE: workspace, AIDLC_FLEET_TOKEN: leadToken, AIDLC_FLEET_INTEGRATION_BRANCH: "feature/test", AIDLC_FLEET_POLL_MS: "1000" };
+    facade = spawn(process.execPath, [loopEntry, "start", taskId, leadRoot, "fleet"], { cwd: leadRoot, env: facadeEnv, stdio: ["pipe", "pipe", "pipe"] });
+    facade.stdout!.on("data", (chunk: Buffer) => { facadeOutput += chunk; });
+    facade.stderr!.on("data", (chunk: Buffer) => { facadeOutput += chunk; });
+    facade.stdin!.end("Change src/a.txt to done through the supervised fleet loop.\n");
+    const approved = new Set<string>();
+    const deadline = Date.now() + 75000;
+    let workerBusy = false;
+    while (facade.exitCode === null && Date.now() < deadline) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+      const fleetState = await callTool({ url, token: leadToken, name: "fleet_get", args: { workspace } });
+      const readyJob = Object.values(fleetState.fleet.jobs).find((job: any) => job.workerId === "worker1" && job.state === "ready");
+      if (readyJob && !workerBusy) {
+        workerBusy = true;
+        const workerEnv = { ...facadeEnv, AIDLC_FLEET_TOKEN: workerToken, AIDLC_FLEET_PROJECT_ROOT: workerRoot, AIDLC_FLEET_WORKER_ID: "worker1", AIDLC_FLEET_WORKTREES_ROOT: join(temp, "worktrees"), OPENAI_API_KEY: "dummy", AIDLC_WORKER_DOCKER_IMAGE: process.env.AIDLC_WORKER_DOCKER_IMAGE ?? "aidlc-worker-fleet-e2e-test:local" };
+        const workerResult = await processResult(process.execPath, [resolve("dist/services/aidlc-coordination/src/fleet-run.mjs"), "worker", "--once"], { cwd: workerRoot, env: workerEnv });
+        workerBusy = false;
+        if (workerResult.code !== 0) throw new Error(`fleet worker failed: ${workerResult.output}`);
+      }
+      let snapshot: any = null;
+      try { snapshot = await callTool({ url, token: leadToken, name: "task_get", args: { workspace, taskId, clientProjectRoot: leadRoot } }); } catch { /* intake still bootstrapping */ }
+      if (snapshot?.task.status === "blocked_on_user" && !approved.has(snapshot.task.gate)) {
+        const inbox = await callTool({ url, token: reviewerToken, name: "gate_inbox_get", args: { workspace } });
+        const entry = inbox.find((item: any) => item.taskId === taskId && item.gate === snapshot.task.gate && item.taskDigest);
+        if (entry) {
+          await callTool({ url, token: reviewerToken, name: "gate_approve", args: { workspace, expectedRevision: snapshot.revision, idempotencyKey: `facade-approve-${snapshot.task.gate}`, taskId, snapshotId: entry.id, source: "e2e reviewer approval", clientProjectRoot: leadRoot, ...(entry.integrationCommit ? { integrationCommit: entry.integrationCommit } : {}) } });
+          approved.add(snapshot.task.gate);
+        }
+      }
+    }
+    const exit = await new Promise<{ code: number | null }>((resolveExit) => { if (facade!.exitCode !== null) resolveExit({ code: facade!.exitCode }); else facade!.once("close", (code) => resolveExit({ code })); });
+    assert.equal(exit.code, 0, facadeOutput);
+    assert.match(facadeOutput, /"status":"complete"/);
+    assert.equal(approved.size, 3);
+    const canonical = await callTool({ url, token: leadToken, name: "task_get", args: { workspace, taskId, clientProjectRoot: leadRoot } });
+    assert.equal(canonical.task.status, "done");
+    assert.equal(canonical.task.title, `Loop task ${taskId}`);
+    assert.equal(canonical.task.tasks[0].status, "done");
+    assert.equal(canonical.nextAction.classification, "complete");
+    const intake = JSON.parse(readFileSync(join(leadRoot, ".agents/data/tasks", taskId, "loop-intake.json"), "utf8"));
+    assert.equal(intake.authority, "fleet");
+    assert.ok(existsSync(join(leadRoot, ".agents/data/tasks", taskId, "requirement.md")));
+    assert.match(git(leadRoot, "show", "HEAD:src/a.txt"), /done/);
+  } finally { facade?.kill("SIGTERM"); service?.kill("SIGTERM"); rmSync(temp, { recursive: true, force: true }); }
 });

@@ -72,3 +72,6 @@ Installed entry points share a strict dependency-free argv parser. Parsing and c
 | A public command | CLI parsing, README/setup guidance, command reference, and package tests. |
 
 Use this guide with [Development](./development.md) and [Testing and release](./testing-and-release.md) before changing a cross-cutting boundary.
+
+
+The optional end-to-end loop coordinator is implemented for both authorities. Local mode runs a foreground supervisor over the canonical local state: Docker-isolated workers, a read-only lead sandbox whose structured proposals are applied by a host broker, and gate approval only through the trusted host terminal. Fleet mode runs the same loop against a coordination service: the service owns supervisor leases, gate checkpoints, and reviewer approval, workers execute in Docker with their own credentials, and Git integration is fenced per backend (SQLite on one host with a local volume, or PostgreSQL across hosts). Selecting a mode configures the loop; only an explicit `loop start` runs it. See [Coordination service](./coordination-service.md) for deployment and recovery constraints.

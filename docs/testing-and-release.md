@@ -27,6 +27,45 @@ node --test dist/test/unit/installer.test.js
 
 Choose the test closest to the changed boundary. For example, use installer tests for package inventory or documentation assertions, upgrade tests for migration semantics, and lifecycle-runtime tests when touching installed scripts. Continuation changes must also run `continuation-guard`, multi-item lifecycle runtime, context, and local/MCP lifecycle conformance coverage.
 
+## Loop, Docker, and PostgreSQL verification
+
+Loop orchestration tests are part of `npm test`. The ones that exercise real container isolation gate on fixture images plus environment flags; build the fixtures once with a local Docker daemon:
+
+```sh
+docker build -q -t aidlc-worker-isolation-test:local test/fixtures/docker/worker-isolation
+docker build -q -t aidlc-worker-multiturn-test:local test/fixtures/docker/worker-multiturn
+docker build -q -t aidlc-worker-fleet-e2e-test:local test/fixtures/docker/worker-fleet-e2e
+
+AIDLC_TEST_DOCKER=1 \
+AIDLC_TEST_WORKER_IMAGE=aidlc-worker-isolation-test:local \
+AIDLC_TEST_MULTITURN_IMAGE=aidlc-worker-multiturn-test:local \
+AIDLC_TEST_DOCKER_IMAGE=aidlc-worker-isolation-test:local \
+AIDLC_WORKER_DOCKER_IMAGE=aidlc-worker-fleet-e2e-test:local \
+npm test
+```
+
+- `AIDLC_TEST_DOCKER=1` builds and runs the adversarial lead-boundary container: the isolated lead must not write source or see lifecycle state, the Docker socket, host HOME, or reviewer credentials.
+- `AIDLC_TEST_WORKER_IMAGE` and `AIDLC_TEST_DOCKER_IMAGE` run the isolated Docker worker through the local batch dispatcher and the fleet Git handoff.
+- `AIDLC_TEST_MULTITURN_IMAGE` runs the multi-turn session HOME fixture against the turn limit.
+- `AIDLC_WORKER_DOCKER_IMAGE` is required on Linux for the real fleet end-to-end test (coordinator dispatch, isolated worker, Git integration, canonical completion, and G2 publication). Without it that test fails closed instead of skipping.
+
+Each fixture image contains only a fake provider CLI that emits the Codex JSONL protocol; no real Codex or Claude credentials or accounts are used, and the fake refuses to run when it can see `.git`, lifecycle state, or the Docker socket.
+
+Without these variables the Docker-gated tests skip, so a plain `npm test` is not loop-isolation verification.
+
+PostgreSQL fleet coverage runs against a real database and is not part of `npm test`:
+
+```sh
+docker run -d --rm --name aidlc-pg-test -e POSTGRES_PASSWORD=test -p 127.0.0.1:5433:5432 postgres:16-alpine
+docker exec aidlc-pg-test pg_isready -U postgres # repeat until ready
+TEST_POSTGRES_URL=postgres://postgres:test@127.0.0.1:5433/postgres \
+  node --test services/aidlc-coordination/test/*.test.mjs
+docker stop aidlc-pg-test
+```
+
+Without `TEST_POSTGRES_URL` the PostgreSQL tests skip with SQLite coverage still running; run the coordination service suites separately whenever `services/aidlc-coordination/` changes.
+
+
 ## Package smoke test
 
 Release verification must exercise the tarball rather than the source tree. From the repository root, build and pack locally, extract the archive, then run the extracted CLI against a clean temporary consumer project.

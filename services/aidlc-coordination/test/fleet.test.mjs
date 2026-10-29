@@ -7,7 +7,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PostgresCoordinationRepository } from "../src/coordination.mjs";
 
 const sha = "a".repeat(40);
@@ -40,6 +40,7 @@ test("fleet claims fence stale leads and workers, persist checkpoints, and repla
     assert.equal(worker.fleet.jobs.J1.epoch, 1);
     const checkpoint = await repo.apply("w", 4, "checkpoint", "worker1", "worker", { type: "job_checkpoint", jobId: "J1", epoch: 1, sessionId: "session-1", checkpoint: "turn 2" });
     assert.equal(checkpoint.fleet.jobs.J1.sessionId, "session-1");
+    await assert.rejects(() => repo.apply("w", 5, "changed-session", "worker1", "worker", { type: "job_checkpoint", jobId: "J1", epoch: 1, sessionId: "another-session", checkpoint: "turn 3" }), /session cannot change/);
     await assert.rejects(() => repo.apply("w", 5, "stale-worker", "worker1", "worker", { type: "job_report", jobId: "J1", epoch: 0, commitSha: sha, changedPaths: [] }), FleetConflict);
     const report = await repo.apply("w", 5, "report", "worker1", "worker", { type: "job_report", jobId: "J1", epoch: 1, commitSha: sha, changedPaths: ["src/a.ts"] });
     assert.equal(report.fleet.jobs.J1.state, "reported");
@@ -237,4 +238,114 @@ test("PostgreSQL fleet and canonical state enforce fencing and atomic reviewer a
     for(const table of ["state_gate_snapshots","state_events","state_idempotency","state_workspaces","fleet_idempotency","fleet_workspaces"]) await state.pool.query(`DELETE FROM ${table} WHERE workspace=$1`,[workspace]);
     await state.close();await fleet.close();
   }
+});
+
+test("tokenized supervisor claim fences same-identity contenders and atomically checkpoints approval", async () => {
+  const dir=mkdtempSync(join(tmpdir(),"aidlc-checkpoint-")); const file=join(dir,"state.db");
+  const fleet=new SqliteFleetRepository(file); let state=new SqliteStateRepository(file);
+  const ownerToken="a".repeat(64);
+  try {
+    await state.apply("w",0,"seed",{type:"upsertTask",taskId:"T1",task},"/workspace/project");
+    const claim=await fleet.apply("w",0,"claim-token","lead","lead",{type:"run_claim",taskId:"T1",leaseMs:60000,ownerToken});
+    assert.equal(JSON.stringify(claim).includes(ownerToken),false);
+    await assert.rejects(() => fleet.apply("w",1,"bad-heartbeat","lead","lead",{type:"run_heartbeat",taskId:"T1",epoch:1,leaseMs:60000,ownerToken:"b".repeat(64)}),/stale or expired/);
+    await assert.rejects(() => state.putGateSnapshot("w",1,"bad-snapshot","T1","G0_confirm","Review",1,undefined,"b".repeat(64),true),/stale or expired/);
+    const snap=await state.putGateSnapshot("w",1,"snapshot-token","T1","G0_confirm","Review",1,undefined,ownerToken,true);
+    assert.equal((await state.gateCheckpoint("w","T1")).status,"pending");
+    await assert.rejects(() => state.approveGate("w",0,"bad-approval","T1",snap.id,"human","/workspace/project"),/revision conflict/);
+    assert.equal((await state.gateCheckpoint("w","T1")).status,"pending");
+    const approved=await state.approveGate("w",1,"approve-token","T1",snap.id,"human","/workspace/project");
+    state.close(); state=new SqliteStateRepository(file);
+    const checkpoint=await state.gateCheckpoint("w","T1");
+    assert.equal(checkpoint.status,"approved"); assert.equal(checkpoint.approvalRevision,approved.revision); assert.equal(checkpoint.snapshotId,snap.id);
+    assert.deepEqual(await state.approveGate("w",1,"approve-token","T1",snap.id,"human","/workspace/project"),approved);
+    await fleet.apply("w",1,"release-token","lead","lead",{type:"run_release",taskId:"T1",epoch:1,ownerToken});
+    await assert.rejects(() => state.apply("w",approved.revision,"stale-token",{type:"upsertTask",taskId:"T1",task:approved.state.tasks.T1},"/workspace/project",1,ownerToken),/stale or expired/);
+  } finally {state.close();fleet.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("PostgreSQL tokenized checkpoint survives approval and rejects stale owners", { skip: !process.env.TEST_POSTGRES_URL }, async () => {
+  const workspace = `test-${randomUUID()}`;
+  const fleet = new PostgresFleetRepository(process.env.TEST_POSTGRES_URL);
+  const state = new PostgresStateRepository(process.env.TEST_POSTGRES_URL);
+  const ownerToken = "c".repeat(64);
+  try {
+    await state.apply(workspace, 0, "seed", { type: "upsertTask", taskId: "T1", task }, "/workspace/project");
+    await fleet.apply(workspace, 0, "claim", "lead", "lead", { type: "run_claim", taskId: "T1", leaseMs: 60000, ownerToken });
+    await assert.rejects(() => state.putGateSnapshot(workspace, 1, "bad", "T1", "G0_confirm", "Review", 1, undefined, "d".repeat(64), true), /stale or expired/);
+    const snapshot = await state.putGateSnapshot(workspace, 1, "snapshot", "T1", "G0_confirm", "Review", 1, undefined, ownerToken, true);
+    assert.equal((await state.gateCheckpoint(workspace, "T1")).status, "pending");
+    const approved = await state.approveGate(workspace, 1, "approve", "T1", snapshot.id, "human", "/workspace/project");
+    const checkpoint = await state.gateCheckpoint(workspace, "T1");
+    assert.equal(checkpoint.status, "approved");
+    assert.equal(Number(checkpoint.approvalRevision), approved.revision);
+    assert.equal(checkpoint.snapshotId, snapshot.id);
+    await fleet.apply(workspace, 1, "release", "lead", "lead", { type: "run_release", taskId: "T1", epoch: 1, ownerToken });
+    await assert.rejects(() => state.apply(workspace, approved.revision, "stale", { type: "upsertTask", taskId: "T1", task: approved.state.tasks.T1 }, "/workspace/project", 1, ownerToken), /stale or expired/);
+  } finally {
+    for (const table of ["state_gate_checkpoints", "state_gate_snapshots", "state_events", "state_idempotency", "state_workspaces", "fleet_idempotency", "fleet_workspaces"]) await state.pool.query(`DELETE FROM ${table} WHERE workspace=$1`, [workspace]);
+    await state.close(); await fleet.close();
+  }
+});
+
+test('supervised restart atomically validates approval checkpoint before claiming and consumes on fenced write', async () => {
+  const dir=mkdtempSync(join(tmpdir(),'fleet-restart-')), file=join(dir,'state.db');
+  const fleet=new SqliteFleetRepository(file), state=new SqliteStateRepository(file), supervisor='s'.repeat(64), run='r'.repeat(64);
+  try {
+    const active={...task,status:'active'};
+    await state.apply('w',0,'seed',{type:'upsertTask',taskId:'T1',task:active},'/workspace/project');
+    await fleet.apply('w',0,'super','lead','lead',{type:'supervisor_claim',taskId:'T1',leaseMs:60000,ownerToken:supervisor});
+    const digest=(value)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    const initial={type:'run_claim',taskId:'T1',leaseMs:60000,ownerToken:run,supervisorEpoch:1,supervisorOwnerToken:supervisor,expectedStateRevision:1,expectedTaskDigest:digest((await state.get('w')).state.tasks.T1)};
+    await assert.rejects(fleet.apply('w',1,'bad-digest','lead','lead',{...initial,expectedTaskDigest:'0'.repeat(64)}),/changed or is not runnable/);
+    await fleet.apply('w',1,'run','lead','lead',initial);
+    await state.apply('w',1,'wait',{type:'upsertTask',taskId:'T1',task},'/workspace/project',1,run,'lead');
+    const snapshot=await state.putGateSnapshot('w',2,'snap','T1','G0_confirm','Review',1,undefined,run,true,'lead');
+    await assert.rejects(state.putGateSnapshot('w',2,'snap','T1','G0_confirm','Changed review',1,undefined,run,true,'lead'),/idempotency payload/);
+    await fleet.apply('w',2,'release-run','lead','lead',{type:'run_release',taskId:'T1',epoch:1,ownerToken:run});
+    const approved=await state.approveGate('w',2,'approval','T1',snapshot.id,'human','/workspace/project',undefined,'reviewer');
+    await assert.rejects(state.approveGate('w',2,'approval','T1',snapshot.id,'changed','/workspace/project',undefined,'reviewer'),/idempotency payload/);
+    const restart={...initial,expectedStateRevision:approved.revision,expectedTaskDigest:digest(approved.state.tasks.T1),checkpointSnapshotId:snapshot.id,checkpointApprovalRevision:approved.revision};
+    await assert.rejects(fleet.apply('w',3,'bad-restart','lead','lead',{...restart,checkpointSnapshotId:'wrong'}),/checkpoint/);
+    await fleet.apply('w',3,'restart','lead','lead',restart);
+    assert.equal((await state.gateCheckpoint('w','T1')).status,'approved');
+    await state.apply('w',approved.revision,'progress',{type:'upsertTask',taskId:'T1',task:approved.state.tasks.T1},'/workspace/project',2,run,'lead');
+    assert.equal((await state.gateCheckpoint('w','T1')).status,'consumed');
+    await fleet.apply('w',4,'release-super','lead','lead',{type:'supervisor_release',taskId:'T1',epoch:1,ownerToken:supervisor});
+    await assert.rejects(state.apply('w',approved.revision,'progress',{type:'upsertTask',taskId:'T1',task:approved.state.tasks.T1},'/workspace/project',2,run,'lead'),/supervisor/);
+  } finally {state.close();fleet.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('PostgreSQL supervised restart validates and consumes checkpoint', { skip: !process.env.TEST_POSTGRES_URL }, async () => {
+  const fleet=new PostgresFleetRepository(process.env.TEST_POSTGRES_URL), state=new PostgresStateRepository(process.env.TEST_POSTGRES_URL), supervisor='s'.repeat(64), run='r'.repeat(64);
+  const workspace=`restart-${randomUUID()}`;
+  try {
+    const active={...task,status:'active'};
+    await state.apply(workspace,0,'seed',{type:'upsertTask',taskId:'T1',task:active},'/workspace/project');
+    await fleet.apply(workspace,0,'super','lead','lead',{type:'supervisor_claim',taskId:'T1',leaseMs:60000,ownerToken:supervisor});
+    const digest=(value)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    const initial={type:'run_claim',taskId:'T1',leaseMs:60000,ownerToken:run,supervisorEpoch:1,supervisorOwnerToken:supervisor,expectedStateRevision:1,expectedTaskDigest:digest((await state.get(workspace)).state.tasks.T1)};
+    await assert.rejects(fleet.apply(workspace,1,'bad-digest','lead','lead',{...initial,expectedTaskDigest:'0'.repeat(64)}),/changed or is not runnable/);
+    await fleet.apply(workspace,1,'run','lead','lead',initial);
+    await state.apply(workspace,1,'wait',{type:'upsertTask',taskId:'T1',task},'/workspace/project',1,run,'lead');
+    const snapshot=await state.putGateSnapshot(workspace,2,'snap','T1','G0_confirm','Review',1,undefined,run,true,'lead');
+    await assert.rejects(state.putGateSnapshot(workspace,2,'snap','T1','G0_confirm','Changed review',1,undefined,run,true,'lead'),/idempotency payload/);
+    await fleet.apply(workspace,2,'release-run','lead','lead',{type:'run_release',taskId:'T1',epoch:1,ownerToken:run});
+    const approved=await state.approveGate(workspace,2,'approval','T1',snapshot.id,'human','/workspace/project',undefined,'reviewer');
+    await assert.rejects(state.approveGate(workspace,2,'approval','T1',snapshot.id,'changed','/workspace/project',undefined,'reviewer'),/idempotency payload/);
+    const restart={...initial,expectedStateRevision:approved.revision,expectedTaskDigest:digest((await state.get(workspace)).state.tasks.T1),checkpointSnapshotId:snapshot.id,checkpointApprovalRevision:approved.revision};
+    await assert.rejects(fleet.apply(workspace,3,'bad-restart','lead','lead',{...restart,checkpointSnapshotId:'wrong'}),/checkpoint/);
+    await fleet.apply(workspace,3,'restart','lead','lead',restart);
+    assert.equal((await state.gateCheckpoint(workspace,'T1')).status,'approved');
+    await state.apply(workspace,approved.revision,'progress',{type:'upsertTask',taskId:'T1',task:approved.state.tasks.T1},'/workspace/project',2,run,'lead');
+    assert.equal((await state.gateCheckpoint(workspace,'T1')).status,'consumed');
+    const intent={workspace,taskId:'T1',epoch:2,ownerToken:run,operationId:'git-op',ref:'refs/heads/main',oldOid:'a'.repeat(40),newOid:'b'.repeat(40)};
+    assert.equal((await fleet.prepareGitOperation(intent)).status,'pending');
+    await assert.rejects(fleet.withGitFence(intent,async()=>{throw new Error('uncertain');}),/uncertain/);
+    assert.equal((await fleet.getGitOperation(intent)).status,'pending');
+    await fleet.withGitFence(intent,async ({assertValid,complete})=>{await assertValid();await complete();});
+    assert.equal((await fleet.getGitOperation(intent)).status,'complete');
+    await fleet.apply(workspace,4,'release-super','lead','lead',{type:'supervisor_release',taskId:'T1',epoch:1,ownerToken:supervisor});
+    await assert.rejects(state.apply(workspace,approved.revision,'progress',{type:'upsertTask',taskId:'T1',task:approved.state.tasks.T1},'/workspace/project',2,run,'lead'),/supervisor/);
+  } finally {for(const table of ['state_request_fingerprints','state_gate_checkpoints','state_gate_snapshots','state_events','state_idempotency','state_workspaces','fleet_git_operations','fleet_idempotency','fleet_workspaces']) await state.pool.query(`DELETE FROM ${table} WHERE workspace=$1`,[workspace]); await state.close();await fleet.close();}
 });

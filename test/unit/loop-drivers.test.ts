@@ -25,6 +25,16 @@ const fixture = async (name: string, body: string, run: (root: string) => Promis
   }
 };
 
+test("agent adapter registration and provider preflight are explicit and fail closed", async () => {
+  const { registerAgentAdapter, preflightAgentAdapter }: any = await import(modulePath);
+  assert.throws(() => registerAgentAdapter("codex", {}), /duplicate/);
+  assert.throws(() => registerAgentAdapter("bad/name", {}), /invalid/);
+  await assert.rejects(preflightAgentAdapter("codex", { env: { PATH: "/nonexistent-aidlc-bin" } }), /unavailable/);
+  await assert.rejects(preflightAgentAdapter("unknown-provider"), /Unknown agent/);
+  registerAgentAdapter("trusted-test", { command: "testcli", arguments: () => [], parse: async () => {} });
+  assert.throws(() => registerAgentAdapter("trusted-test", {}), /duplicate/);
+});
+
 test("Codex captures exact thread ID before completion and resumes by ID", { skip: process.platform === "win32" }, async () => {
   await fixture("codex", `const fs=require('node:fs'); fs.appendFileSync(process.env.FAKE_ARGS_PATH,JSON.stringify(process.argv.slice(2))+'\\n'); console.log(JSON.stringify({type:'thread.started',thread_id:'thread-123'})); console.log(JSON.stringify({type:'item.completed',item:{type:'command_execution',command:'node .agents/aidlc/scripts/state.mjs task next demo',exit_code:0,status:'completed'}})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'done'}})); console.log(JSON.stringify({type:'turn.completed'}));`, async (root) => {
     const argsPath = join(root, "args.jsonl"); process.env.FAKE_ARGS_PATH = argsPath;
@@ -38,6 +48,7 @@ test("Codex captures exact thread ID before completion and resumes by ID", { ski
     assert.deepEqual(calls[0].slice(0, 2), ["exec", "--json"]);
     assert.equal(calls[0][calls[0].indexOf("--sandbox") + 1], "workspace-write");
     assert.equal(calls[1][calls[1].indexOf("resume") + 1], "thread-123");
+    assert.ok(!calls.flat().includes("phase"));
     assert.ok(!calls.flat().includes("--last"));
     assert.ok(!calls.flat().includes("--dangerously-bypass-approvals-and-sandbox"));
     delete process.env.FAKE_ARGS_PATH;
@@ -53,7 +64,8 @@ test("Claude captures session, reports Bash completion, and resumes by ID", { sk
     assert.ok(events.some((event) => event.type === "lifecycle_command"));
     await runAgentTurn({ agent: "claude", root, sessionId: first.sessionId, prompt: "resume", timeoutMs: 2000 });
     const calls = readFileSync(argsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
-    assert.deepEqual(calls[0].slice(0, 4), ["-p", "--verbose", "--output-format", "stream-json"]);
+    assert.deepEqual(calls[0].slice(0, 6), ["-p", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json"]);
+    assert.ok(!calls.flat().includes("phase"));
     assert.equal(calls[0][calls[0].indexOf("--permission-mode") + 1], "acceptEdits");
     assert.equal(calls[1][calls[1].indexOf("--resume") + 1], "session-123");
     assert.ok(!calls.flat().includes("--dangerously-skip-permissions"));
@@ -119,4 +131,19 @@ test("command events and failure diagnostics never contain command or output", {
     assert.doesNotMatch(JSON.stringify({ events, diagnostics: result.diagnostics }), /arbitrarycredential|privatevalue/);
     assert.deepEqual(events.find((event: any) => event.type === "lifecycle_command"), { type: "lifecycle_command", exitCode: 1, status: "failed" });
   });
+});
+
+test("provider prompts are delivered through stdin without appearing in argv", { skip: process.platform === "win32" }, async () => {
+  for (const agent of ["codex", "claude"]) {
+    await fixture(agent, `let input=''; process.stdin.setEncoding('utf8'); process.stdin.on('data', x => input += x); process.stdin.on('end', () => { const fs=require('node:fs'); fs.writeFileSync(process.env.FAKE_ARGS_PATH,JSON.stringify({args:process.argv.slice(2),input})); ${agent === "codex" ? "console.log(JSON.stringify({type:'thread.started',thread_id:'thread-123'})); console.log(JSON.stringify({type:'turn.completed'}));" : "console.log(JSON.stringify({type:'result',session_id:'session-123',result:'done',is_error:false}));"} });`, async (root) => {
+      const capture = join(root, "capture.json"); process.env.FAKE_ARGS_PATH = capture;
+      const { runAgentTurn } = await load();
+      await runAgentTurn({ agent, root, prompt: "private requirement", timeoutMs: 2000 });
+      const data = JSON.parse(readFileSync(capture, "utf8"));
+      assert.ok(!JSON.stringify(data.args).includes("private requirement"));
+      if (agent === "codex") assert.equal(data.input, "private requirement");
+      else assert.equal(JSON.parse(data.input).message.content, "private requirement");
+      delete process.env.FAKE_ARGS_PATH;
+    });
+  }
 });

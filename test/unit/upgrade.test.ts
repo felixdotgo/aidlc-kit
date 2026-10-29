@@ -6,11 +6,33 @@ import test from "node:test";
 import { applyPlan, doctor, planInit, readManifest } from "../../src/installer.js";
 import { legacyV021AdapterContents } from "../../src/legacy.js";
 import type { InitOptions, PlannedWrite } from "../../src/model.js";
-import { defaultConfig } from "../../src/profiles.js";
+import { defaultConfig, loadProjectConfig } from "../../src/profiles.js";
 import { applyUpgrade, migrateLegacyBoard, planUpgrade } from "../../src/upgrade.js";
 
 const makeRoot = () => mkdtempSync(join(tmpdir(), "aidlc-upgrade-"));
 const options = (root: string): InitOptions => ({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false });
+
+test("upgrade previews explicit loop selection and preserves config when omitted", () => {
+  const root = makeRoot();
+  try {
+    applyPlan(root, planInit(options(root)));
+    const path = join(root, ".agents/config.json");
+    const original = readFileSync(path, "utf8");
+    assert.equal(loadProjectConfig(root).loop?.mode, "off");
+    const loop = { mode: "fleet" as const, agents: { lead: "claude" as const, workers: { one: "codex" as const, two: "claude" as const } } };
+    const plan = planUpgrade(root, loop);
+    assert.equal(plan.find((entry) => entry.path === ".agents/config.json")?.action, "update");
+    assert.equal(readFileSync(path, "utf8"), original);
+    const result = applyUpgrade(root, plan);
+    assert.equal(readFileSync(join(root, result.backup, ".agents/config.json"), "utf8"), original);
+    assert.deepEqual(loadProjectConfig(root).loop, loop);
+    const updated = readFileSync(path, "utf8");
+    const noChoice = planUpgrade(root);
+    assert.equal(noChoice.find((entry) => entry.path === ".agents/config.json")?.action, "preserve");
+    applyUpgrade(root, noChoice);
+    assert.equal(readFileSync(path, "utf8"), updated);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("current installation upgrades without touching project config or state", () => {
   const root = makeRoot();
@@ -34,11 +56,12 @@ test("upgrade migrates an existing legacy project config to .agents", () => {
     rmSync(join(root, ".agents/config.json"));
     mkdirSync(join(root, ".aidlc"), { recursive: true });
     writeFileSync(join(root, ".aidlc/config.json"), '{"schemaVersion":1,"legacy":true}\n');
-    const plan = planUpgrade(root);
+    const plan = planUpgrade(root, { mode: "local" });
     assert.equal(plan.find((item) => item.path === ".agents/config.json")?.action, "migrate");
     assert.equal(plan.find((item) => item.path === ".aidlc/config.json")?.action, "delete");
     applyUpgrade(root, plan);
     assert.match(readFileSync(join(root, ".agents/config.json"), "utf8"), /legacy/);
+    assert.equal(loadProjectConfig(root).loop?.mode, "local");
     assert.equal(existsSync(join(root, ".aidlc/config.json")), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -1,9 +1,9 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { findAdapterForUpgrade, resolvedAdaptersForUpgrade } from "./adapters.js";
-import { managedContentHash, readManifest } from "./installer.js";
+import { managedContentHash, planLoopSelection, readManifest } from "./installer.js";
 import { legacyV021AdapterContents, legacyV021Hashes } from "./legacy.js";
-import type { AgentId, FileSpec, PlannedWrite, TaskState, WorkflowState } from "./model.js";
+import type { AgentId, FileSpec, LoopConfig, PlannedWrite, TaskState, WorkflowState } from "./model.js";
 import { planProjectLayoutMigration } from "./project-migration.js";
 import { mergeManagedBlock } from "./managed-content.js";
 import { resolveProjectPath, resolveProjectPathWithoutSymlinks } from "./project-path.js";
@@ -102,7 +102,7 @@ const planManaged = (root: string, spec: FileSpec, installedHash: string | undef
   return { ...spec, content: next, action: "conflict", reason: legacy ? "legacy core differs from known baseline" : "managed file differs from installed hash" };
 };
 
-export const planUpgrade = (root: string): PlannedWrite[] => {
+export const planUpgrade = (root: string, loop?: LoopConfig): PlannedWrite[] => {
   const project = resolve(root);
   const installed = readManifest(project);
   const legacy = !installed && legacyManifest(project);
@@ -169,6 +169,7 @@ export const planUpgrade = (root: string): PlannedWrite[] => {
   }
   const manifest = manifestSpec(managed, selected);
   plan.push({ ...manifest, action: "update", reason: legacy ? "migrate manifest to schema v2" : "update manifest inventory" });
+  planLoopSelection(plan, loop);
   return plan;
 };
 

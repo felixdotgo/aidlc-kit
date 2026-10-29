@@ -27,7 +27,9 @@ When enabled, the remote workspace is canonical. Import/export is an explicit re
 
 ## Multi-machine loop deployment
 
-Fleet mode is separate from the default local service profile. The source checkout keeps its deployment template in `services/aidlc-coordination/`; human-run `mcp setup` copies it into the target project's `.agents/aidlc-coordination/`. Copy that directory's `.env.fleet.example` to a private `.env`, set the PostgreSQL password and three distinct credential classes (`MCP_FLEET_LEAD_TOKEN`, `MCP_FLEET_REVIEWER_TOKEN`, and the worker-ID-to-token JSON map `MCP_FLEET_WORKER_TOKENS`), then start the fleet profile. From a source checkout:
+The fleet service supports both approved storage backends: SQLite through one coordination service on one host with the database on a local volume (set `MCP_STATE_DATABASE=sqlite`, the default, and `MCP_STATE_SQLITE_PATH`), and PostgreSQL for deployments spanning multiple hosts or service instances. Each deployment keeps its chosen backend; there is no implicit fallback or migration between them. SQLite limits availability and write concurrency to that single host. Do not switch an existing authority automatically; follow the supported deployment below.
+
+Fleet mode is separate from the default local service profile. The source checkout keeps its deployment template in `services/aidlc-coordination/`; human-run `mcp setup` copies it into the target project's `.agents/aidlc-coordination/`. Copy that directory's `.env.fleet.example` to a private `.env`, set the database choice and three distinct credential classes (`MCP_FLEET_LEAD_TOKEN`, `MCP_FLEET_REVIEWER_TOKEN`, and the worker-ID-to-token JSON map `MCP_FLEET_WORKER_TOKENS`), then start the fleet profile. From a source checkout:
 
 ```sh
 docker compose --env-file .env --profile fleet -f services/aidlc-coordination/compose.yaml up -d fleet-coordination
@@ -35,7 +37,7 @@ docker compose --env-file .env --profile fleet -f services/aidlc-coordination/co
 
 For an installed project, use `-f .agents/aidlc-coordination/compose.yaml` instead.
 
-The default host binding is `127.0.0.1:8788`. For workers on other machines, expose `POST /mcp` through a TLS reverse proxy and set the binding deliberately. Fleet mode requires PostgreSQL and a shared Git remote. Give each worker an isolated worktree, a scoped branch, and its own worker credential. A process supervisor must restart the coordinator and workers; after restart they reacquire fenced leases and reconcile reported or uncertain Git results before retrying.
+The default host binding is `127.0.0.1:8788`. For workers on other machines, expose `POST /mcp` through a TLS reverse proxy and set the binding deliberately. Fleet mode requires the chosen database backend and a shared Git remote. Give each worker an isolated worktree, a scoped branch, and its own worker credential. A process supervisor must restart the supervisor, lead, and workers; after restart they reacquire fenced leases and reconcile reported or uncertain Git results before retrying.
 
 The lead credential can advance lifecycle state only while holding the current task epoch. Worker credentials can claim, checkpoint, and report assigned jobs but cannot mutate lifecycle state or approve gates. The reviewer credential can read pending gate snapshots and record a later explicit human approval against the snapshot and current revision. When the database, Git remote, or reviewer is unavailable, the run waits or fails closed; it does not fall back to local state.
 

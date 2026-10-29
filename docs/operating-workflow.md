@@ -112,3 +112,12 @@ If work continues in a fresh task, create that task at Confirm requirements and 
 - Put project-specific behaviour in project configuration or local rules, not in the package-managed workflow kernel.
 
 See [Configuration](./configuration.md) for project customisation and [Command reference](./command-reference.md) for package commands.
+
+
+## Optional end-to-end loop
+
+When the project enables `loop.mode`, `aidlc-workflow loop start` accepts a requirement once (interactive prompt or stdin), creates exactly one task under the configured authority, and runs the loop to the first gate or to completion. `loop status` reports the canonical task and gate checkpoint; `loop resume` continues after an interruption. The intake is idempotent: re-running `start` with the same task ID and requirement reuses the existing task, and it refuses to create a second task while another one is actionable.
+
+The loop never approves a gate itself. At each gate it publishes the review packet and waits; in local mode approval happens only through the trusted host terminal command, and in fleet mode only through the reviewer credential against the published snapshot and revision. After a real approval the running supervisor re-reads the canonical state and checkpoint, re-acquires its fenced lease, and resumes automatically. If the supervisor is not running at approval time, restart it and it reconciles from the checkpoint; a consumed, stale, or mismatched checkpoint stops for manual reconciliation instead of guessing. Restarting never resumes a paused or handed-off task, an outdated snapshot, or an uncertain Git result — those require the documented recovery actions.
+
+The supervisor runs in the foreground or under a process supervisor you choose; there is no background daemon. Workers execute in Docker with their own scoped credentials and never inherit host access. See [Command reference](./command-reference.md) for the loop commands and environment, and [Coordination service](./coordination-service.md) for fleet deployment, backends, and recovery.

@@ -7,9 +7,28 @@ import { adapters } from "../../src/adapters.js";
 import { applyPlan, doctor, planInit, planUninstall, readManifest, status } from "../../src/installer.js";
 import type { InitOptions } from "../../src/model.js";
 import { applyUpgrade } from "../../src/upgrade.js";
+import { loadProjectConfig } from "../../src/profiles.js";
 
 const makeRoot = () => mkdtempSync(join(tmpdir(), "aidlc-v1-"));
 const options = (root: string): InitOptions => ({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false });
+
+test("init previews optional loop mode and validates provider assignments", () => {
+  const root = makeRoot();
+  try {
+    const loop = { mode: "local" as const, agents: { lead: "codex" as const, workers: { a: "codex" as const, b: "claude" as const } } };
+    const plan = planInit({ ...options(root), loop });
+    const config = plan.find((item) => item.path === ".agents/config.json")!;
+    assert.equal(config.action, "create");
+    assert.deepEqual(JSON.parse(config.content).loop, loop);
+    assert.equal(existsSync(join(root, ".agents/config.json")), false);
+    applyPlan(root, plan);
+    assert.deepEqual(loadProjectConfig(root).loop, loop);
+    assert.throws(() => planInit({ ...options(root), loop: { mode: "fleet", agents: { lead: "codex", workers: { a: "bad" as "codex" } } } }), /workers/);
+    assert.throws(() => planInit({ ...options(root), loop: { mode: "local", token: "secret" } as never }), /supported fields/);
+    assert.throws(() => planInit({ ...options(root), loop: { mode: ["local"] } as never }), /valid mode/);
+    assert.throws(() => planInit({ ...options(root), loop: { mode: "local", agents: { lead: "codex", workers: { a: ["claude"] } } } as never }), /workers/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("package exposes only the npx-oriented workflow binary name", () => {
   const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8"));

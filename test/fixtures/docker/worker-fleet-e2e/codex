@@ -1,0 +1,16 @@
+#!/bin/sh
+# Fake worker provider CLI for the real fleet E2E test (AIDLC_WORKER_DOCKER_IMAGE).
+# A worker assignment prompt contains "Worker scope:" and must never see .git,
+# lifecycle state, or the Docker socket while completing the scoped change.
+if [ "$1" = --version ]; then echo fake-1; exit 0; fi
+prompt=$(cat)
+if [ -e /workspace/.git ] || [ -e /workspace/.agents/data ] || [ -e /var/run/docker.sock ]; then exit 9; fi
+case "$prompt" in
+  *"Worker scope:"*)
+    echo done > /workspace/src/a.txt
+    printf '%s\n' '{"type":"thread.started","thread_id":"worker-session"}' '{"type":"item.completed","item":{"type":"agent_message","text":"AI-DLC-ITEM-COMPLETE"}}' '{"type":"turn.completed"}'
+    ;;
+  *)
+    printf '%s\n' '{"type":"thread.started","thread_id":"lead-session"}' '{"type":"item.completed","item":{"type":"agent_message","text":"gate ready"}}' '{"type":"turn.completed"}'
+    ;;
+esac

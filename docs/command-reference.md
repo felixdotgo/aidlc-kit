@@ -5,10 +5,12 @@ All package commands operate on local files. The examples run version `0.0.1` th
 ## `init`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow init [path] [--agent <name[,name]> | --all] [--yes] [--dry-run] [--force]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
 ```
 
 Plans the installation, prints a preview, and then writes the workflow only after confirmation (or `--yes`). `--dry-run` prints the same plan without writing. If exactly one installed agent is detected, it can be selected automatically. In an interactive terminal, choose multiple agents with the checkbox prompt: use arrow keys to move, Space to toggle, A to toggle all, and Enter to confirm. For scripts and non-interactive terminals, use `--agent <name[,name]>` or `--all`.
+
+In interactive setup, choose a loop mode and, when enabled, the lead and worker providers. For non-interactive setup, omit loop options to keep the default off, or specify `--loop-mode local|fleet` together with `--loop-lead` and `--loop-workers` (for example, `--loop-workers a=codex,b=claude`). The preview includes the project config change. These settings only configure the loop; run `aidlc-workflow loop start` to actually start it.
 
 `--force` is for an intentional initial replacement of an unmanaged conflicting file. It is not an upgrade mechanism. If the project already has another workflow package version, use the human-run upgrade flow instead.
 
@@ -55,12 +57,28 @@ Previews the optional AI-DLC Coordination service configuration, then writes onl
 ## `upgrade`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow upgrade [path] [--dry-run]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude] [--loop-workers <id=provider,...>] [--dry-run]
 ```
 
 Upgrade is deliberately human-only. The command rejects `--yes` and `--force`; applying it requires an interactive terminal and an exact typed confirmation of the package version. Interactive confirmations use the same styled terminal prompt as `init`. Agents must not run, preview, detect, or suggest package upgrades on their own.
 
+An omitted loop selection preserves the existing config; an explicit selection appears in the preview and is included in the upgrade backup and rollback. Enabling a mode requires a lead and worker mapping.
+
 The upgrade plan handles supported legacy `.aidlc/` project data transactionally: identical paths are deduplicated, differing content or unsafe entries stop the plan, and an audit backup supports rollback. Review the preview before an authorised human applies it.
+
+## `loop`
+
+```sh
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow loop start|status|resume [options]
+```
+
+Options: `--task-id <id>` (optional for `start`, which derives one; required for `status`/`resume`), `--root <path>`, and `--mode local|fleet` (defaults to the configured `loop.mode`). `start` reads the requirement from an interactive prompt or stdin — the requirement is never passed as an argument. The command fails closed when the requested mode does not match the configured authority, when another task is actionable, or when a resume record is missing.
+
+`status` prints the canonical task, its derived next action, and — in fleet mode — the durable gate checkpoint. `start` and `resume` run the supervisor in the foreground until the next gate, a pause, a blocked state, or completion; the emitted events include each gate view and the waiting state.
+
+Local mode requires the Docker worker image configuration described in [Testing and release](./testing-and-release.md) plus the provider credential environment; approval happens through the trusted host terminal command `node .agents/aidlc/scripts/loop-gate.mjs <task-id>`, which refuses piped input.
+
+Fleet mode requires the running coordination service (`AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, lead `AIDLC_FLEET_TOKEN`, `AIDLC_FLEET_INTEGRATION_BRANCH`, and optionally `AIDLC_FLEET_GIT_REMOTE`); worker IDs must match the configured `loop.agents.workers`. The facade preflights the service and the integration branch and fails closed with a diagnosis instead of falling back to local. Fleet workers run separately through the fleet runner (`worker --once`) on each worker machine with `AIDLC_WORKER_DOCKER_IMAGE` and their own worker credential; a reviewer approves gates through the reviewer credential as documented in [Coordination service](./coordination-service.md).
 
 ## Installed lifecycle scripts
 
@@ -90,6 +108,16 @@ node .agents/aidlc/scripts/loop.mjs status <task-id> [--root PATH]
 The defaults are 12 turns and 10 minutes per turn; two completed turns without observable progress stop the run. The runner never grants human approval. An interactive client can resume by reading `task next` and reconciling local assignment metadata; fleet execution uses fenced service leases and the remote canonical state.
 
 If context preparation fails before an agent turn starts, the loop pauses with a reason; fix the context problem and use `resume`. An interrupted running turn with no captured session ID still requires inspection of canonical state before recovery.
+
+The fleet runner drives the supervised multi-worker flow against a coordination service. From the service deployment (a source checkout or the installed `.agents/aidlc-coordination/`), with the lead credential plus `AIDLC_FLEET_WORKER_IDS`, `AIDLC_FLEET_INTEGRATION_BRANCH`, and `AIDLC_FLEET_PROJECT_ROOT` set:
+
+```sh
+node .agents/aidlc-coordination/src/fleet-run.mjs supervisor <task-id>
+node .agents/aidlc-coordination/src/fleet-run.mjs coordinator <task-id> --once
+node .agents/aidlc-coordination/src/fleet-run.mjs worker --once
+```
+
+`supervisor` claims the task's supervisor lease, runs fenced lead turns through the coordinator, publishes each gate snapshot with its checkpoint in one service transaction, waits for the reviewer approval, and resumes automatically; it returns at a pause, blocked state, or completion, and never approves a gate. `coordinator --once` runs a single unattended pass without the supervisor lease. `worker --once` claims one ready assignment on a worker machine; it requires `AIDLC_WORKER_DOCKER_IMAGE` and that machine's worker credential and fails closed without them. `aidlc-workflow loop start --mode fleet` wraps the same supervisor with requirement intake and preflight.
 
 Fleet mode uses `remote-state.mjs` instead of local `state.mjs`. Set `AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, and `AIDLC_FLEET_PROJECT_ROOT`; lead mutations additionally require `AIDLC_FLEET_TOKEN` and the current `AIDLC_FLEET_LEAD_EPOCH`. Claim an epoch before creating or changing a task:
 

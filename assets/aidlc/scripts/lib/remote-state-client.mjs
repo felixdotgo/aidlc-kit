@@ -22,7 +22,7 @@ export const remoteConfig = (env = process.env) => {
   if (!url || !/^https?:\/\//.test(url) || !workspace || !token || !projectRoot?.startsWith("/") || !Number.isSafeInteger(leadEpoch) || leadEpoch < 1) {
     throw new Error("Remote state requires AIDLC_FLEET_URL, WORKSPACE, TOKEN, absolute PROJECT_ROOT, and positive LEAD_EPOCH");
   }
-  return { url, workspace, token, projectRoot, leadEpoch, integrationBranch: env.AIDLC_FLEET_INTEGRATION_BRANCH, gitRemote: env.AIDLC_FLEET_GIT_REMOTE ?? "origin" };
+  return { url, workspace, token, projectRoot, leadEpoch, leadOwnerToken: env.AIDLC_FLEET_LEAD_OWNER_TOKEN, integrationBranch: env.AIDLC_FLEET_INTEGRATION_BRANCH, gitRemote: env.AIDLC_FLEET_GIT_REMOTE ?? "origin" };
 };
 
 export const featureConfig = (env = process.env) => {
@@ -82,11 +82,11 @@ export const createRemoteStateClient = (config, call = callRemoteTool) => ({
   task: (taskId) => call(config, "task_get", { workspace: config.workspace, taskId, clientProjectRoot: config.projectRoot }),
   apply: (expectedRevision, taskId, task) => call(config, "state_apply", {
     workspace: config.workspace, expectedRevision, idempotencyKey: randomUUID(), clientProjectRoot: config.projectRoot,
-    leadEpoch: config.leadEpoch, command: { type: "upsertTask", taskId, task }
+    leadEpoch: config.leadEpoch, ...(config.leadOwnerToken ? { leadOwnerToken: config.leadOwnerToken } : {}), command: { type: "upsertTask", taskId, task }
   }),
   snapshot: (expectedRevision, taskId, gate, reviewText, integrationCommit) => call(config, "gate_snapshot_put", {
     workspace: config.workspace, expectedRevision, idempotencyKey: randomUUID(), taskId,
-    leadEpoch: config.leadEpoch, gate, reviewText, ...(integrationCommit ? { integrationCommit } : {})
+    leadEpoch: config.leadEpoch, ...(config.leadOwnerToken ? { leadOwnerToken: config.leadOwnerToken } : {}), gate, reviewText, ...(integrationCommit ? { integrationCommit } : {})
   }),
   featureGet: (featureId) => call(config, "feature_get", { workspace: config.workspace, featureId }),
   featureReady: (featureId) => call(config, "feature_ready", { workspace: config.workspace, featureId }),
