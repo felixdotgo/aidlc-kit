@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import { stdin, stdout } from "node:process";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
 import { installableAdapters } from "./adapters.js";
 import { applyPlan, detectedAgents, doctor, formatPlan, planInit, planUninstall, selectAgents, status } from "./installer.js";
 import type { AgentId, InitOptions, LoopConfig } from "./model.js";
@@ -26,6 +25,8 @@ const usage = `Usage:
 const interactive = (): boolean => Boolean(stdin.isTTY && stdout.isTTY);
 const prompts = async () => import("@inquirer/prompts");
 
+/* --- Argv helpers --------------------------------------------------------- */
+
 const value = (args: string[], name: string): string | undefined => {
   const index = args.indexOf(name);
   return index < 0 ? undefined : args[index + 1];
@@ -33,6 +34,8 @@ const value = (args: string[], name: string): string | undefined => {
 
 const flags = (args: string[]): Set<string> => new Set(args.filter((item) => item.startsWith("--")));
 const valueFlags = new Set(["--agent", "--storage", "--deployment", "--bind", "--workspace", "--poll-ms", "--token-env", "--providers", "--loop-mode", "--loop-lead", "--loop-workers"]);
+const COMMAND_KEYWORDS = ["init", "upgrade", "uninstall", "status", "doctor", "validate", "run", "list"] as const;
+
 const positional = (args: string[]): string[] => {
   const result: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
@@ -41,7 +44,20 @@ const positional = (args: string[]): string[] => {
   }
   return result;
 };
-const rootArg = (args: string[], fallback = "."): string => positional(args).find((item) => !["init", "upgrade", "uninstall", "status", "doctor", "validate", "run", "list"].includes(item)) ?? fallback;
+
+const rootArg = (args: string[], fallback = "."): string => positional(args).find((item) => !COMMAND_KEYWORDS.includes(item as never)) ?? fallback;
+
+/* --- Loop configuration --------------------------------------------------- */
+
+const parseWorkerMapping = (rawWorkers: string): Record<string, string> => {
+  const workers: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const entry of rawWorkers.split(",")) {
+    const parts = entry.split("=");
+    if (parts.length !== 2 || !parts[0] || !parts[1] || Object.hasOwn(workers, parts[0])) throw new Error("Invalid or duplicate loop worker mapping");
+    workers[parts[0]] = parts[1];
+  }
+  return workers;
+};
 
 const chooseLoop = async (args: string[], upgrade: boolean): Promise<LoopConfig | undefined> => {
   let mode = value(args, "--loop-mode");
@@ -66,14 +82,10 @@ const chooseLoop = async (args: string[], upgrade: boolean): Promise<LoopConfig 
     rawWorkers ??= await input({ message: "Workers (id=provider, comma separated)", default: "codex-worker=codex,claude-worker=claude" });
   }
   if (!lead || !rawWorkers) throw new Error("An enabled loop requires --loop-lead and --loop-workers");
-  const workers: Record<string, string> = Object.create(null) as Record<string, string>;
-  for (const entry of rawWorkers.split(",")) {
-    const parts = entry.split("=");
-    if (parts.length !== 2 || !parts[0] || !parts[1] || Object.hasOwn(workers, parts[0])) throw new Error("Invalid or duplicate loop worker mapping");
-    workers[parts[0]] = parts[1];
-  }
-  return validateLoopConfig({ mode, agents: { lead, workers } });
+  return validateLoopConfig({ mode, agents: { lead, workers: parseWorkerMapping(rawWorkers) } });
 };
+
+/* --- Option builders and shared flows -------------------------------------- */
 
 const initOptions = (args: string[]): InitOptions => ({
   root: rootArg(args),
@@ -116,7 +128,9 @@ const confirmGeneral = async (options: InitOptions, operation: string): Promise<
   return confirm({ message: `${operation} this plan?`, default: false });
 };
 
-const mcpSetupOptions = async (args: string[]): Promise<McpSetupOptions> => {
+/* --- MCP setup options ----------------------------------------------------- */
+
+const mcpSetupSelections = async (args: string[]): Promise<Partial<Omit<McpSetupOptions, "root" | "template" | "dryRun" | "enable">>> => {
   const selected = {
     deployment: value(args, "--deployment") as McpSetupOptions["deployment"] | undefined,
     storage: value(args, "--storage") as McpSetupOptions["storage"] | undefined,
@@ -136,70 +150,104 @@ const mcpSetupOptions = async (args: string[]): Promise<McpSetupOptions> => {
     if (!selected.providers.length) selected.providers = await checkbox({ message: "Project-management connectors to configure", choices: ["jira", "trello", "github-issues"].map((value) => ({ name: value, value })) });
   }
   if (!Number.isInteger(selected.pollMs) || selected.pollMs < 1_000 || selected.pollMs > 3_600_000) throw new Error("--poll-ms must be an integer from 1000 to 3600000");
-  return { root: rootArg(args), template: join(fileURLToPath(new URL("../services/aidlc-coordination", import.meta.url))), dryRun: flags(args).has("--dry-run"), deployment: selected.deployment!, storage: selected.storage!, bind: selected.bind!, workspace: selected.workspace!, pollMs: selected.pollMs, tokenEnv: selected.tokenEnv, providers: selected.providers, enable: flags(args).has("--enable") };
+  return selected;
+};
+
+const mcpSetupOptions = async (args: string[]): Promise<McpSetupOptions> => {
+  const selected = await mcpSetupSelections(args);
+  return { root: rootArg(args), template: join(fileURLToPath(new URL("../services/aidlc-coordination", import.meta.url))), dryRun: flags(args).has("--dry-run"), deployment: selected.deployment!, storage: selected.storage!, bind: selected.bind!, workspace: selected.workspace!, pollMs: selected.pollMs!, tokenEnv: selected.tokenEnv!, providers: selected.providers!, enable: flags(args).has("--enable") };
+};
+
+/* --- Command handlers ------------------------------------------------------ */
+
+const runLoopCommand = (args: string[]): void => {
+  const action = args[0];
+  if (!["start", "status", "resume"].includes(action)) throw new Error("Expected loop start, status, or resume");
+  const parsed = new Map<string, string>();
+  for (let index = 1; index < args.length; index += 2) {
+    const key = args[index], entry = args[index + 1];
+    if (!["--task-id", "--root", "--mode"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
+    parsed.set(key, entry);
+  }
+  const root = resolve(parsed.get("--root") ?? ".");
+  const script = join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs");
+  const child = spawnSync(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? ""], { stdio: "inherit" });
+  if (child.error) throw child.error;
+  if (child.status !== 0) process.exitCode = child.status ?? 1;
+};
+
+const runInit = async (args: string[]): Promise<void> => {
+  const options = { ...await chooseAgents(initOptions(args)), loop: await chooseLoop(args, false) };
+  const plan = planInit(options);
+  preview("INIT", plan);
+  if (plan.some((item) => item.action === "conflict")) throw new Error("No files were written because the plan contains conflicts.");
+  if (!await confirmGeneral(options, "Apply")) return;
+  if (plan.some((item) => item.action === "migrate" || item.action === "delete")) {
+    const result = applyUpgrade(options.root, plan);
+    console.log(`Installed local AI-DLC workflow assets and migrated legacy data. Backup: ${result.backup}; changed: ${result.changed}`);
+  } else {
+    applyPlan(options.root, plan);
+    console.log("Installed local AI-DLC workflow assets.");
+  }
+};
+
+const runUninstall = async (args: string[]): Promise<void> => {
+  const options = initOptions(args);
+  const plan = planUninstall(options.root);
+  preview("UNINSTALL", plan);
+  if (!await confirmGeneral(options, "Remove")) return;
+  applyPlan(options.root, plan);
+  console.log("Removed eligible managed assets; project config and state were preserved.");
+};
+
+const runUpgrade = async (args: string[]): Promise<void> => {
+  if (flags(args).has("--yes") || flags(args).has("--force")) throw new Error("upgrade does not support --yes or --force; apply requires a human interactive TTY confirmation");
+  const root = rootArg(args);
+  const plan = planUpgrade(root, await chooseLoop(args, true));
+  preview("UPGRADE", plan);
+  if (plan.some((item) => item.action === "conflict")) throw new Error("Upgrade contains conflicts; no files were written.");
+  if (flags(args).has("--dry-run")) return;
+  if (!interactive()) throw new Error("Upgrade apply requires an interactive TTY. AI and non-interactive processes must not apply upgrades.");
+  const expected = packageVersion();
+  const { input } = await prompts();
+  if ((await input({ message: `Type ${expected} to apply this user-initiated upgrade` })).trim() !== expected) throw new Error("Upgrade confirmation did not match the target version");
+  const result = applyUpgrade(root, plan);
+  console.log(`Upgrade complete. Backup: ${result.backup}; changed: ${result.changed}`);
+};
+
+const runMcpSetup = async (args: string[]): Promise<void> => {
+  const options = await mcpSetupOptions(args.slice(1));
+  const plan = planMcpSetup(options);
+  console.log(`◆ MCP SETUP preview — ${options.dryRun ? "no files will be written" : "review before applying"}`);
+  console.log(JSON.stringify(plan, null, 2));
+  if (options.dryRun) return;
+  if (!await confirmGeneral({ ...initOptions(args), root: options.root }, "Apply MCP setup")) return;
+  applyMcpSetup(options);
+  console.log(`MCP setup written to ${plan.target}. MCP remains ${options.enable ? "enabled" : "disabled"}; start Docker explicitly with docker compose --env-file .env -f ${join(plan.target, "compose.yaml")} up -d.`);
 };
 
 const main = async (): Promise<void> => {
   const [command = "help", ...args] = process.argv.slice(2);
   if (command === "help" || command === "--help") return void console.log(usage);
-  if (command === "loop") {
-    const action = args[0];
-    if (!["start", "status", "resume"].includes(action)) throw new Error("Expected loop start, status, or resume");
-    const parsed = new Map<string, string>();
-    for (let index = 1; index < args.length; index += 2) {
-      const key = args[index], entry = args[index + 1];
-      if (!["--task-id", "--root", "--mode"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
-      parsed.set(key, entry);
-    }
-    const root = resolve(parsed.get("--root") ?? ".");
-    const script = join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs");
-    const child = spawnSync(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? ""], { stdio: "inherit" });
-    if (child.error) throw child.error;
-    if (child.status !== 0) process.exitCode = child.status ?? 1;
-    return;
-  }
+  if (command === "loop") return void runLoopCommand(args);
   if (command === "status") return void console.log(status(rootArg(args)));
   if (command === "doctor") {
     const result = doctor(rootArg(args), flags(args).has("--strict"));
-    console.log(result); if (result.startsWith("ERROR:")) process.exitCode = 1; return;
-  }
-  if (command === "init") {
-    const options = { ...await chooseAgents(initOptions(args)), loop: await chooseLoop(args, false) }; const plan = planInit(options); preview("INIT", plan);
-    if (plan.some((item) => item.action === "conflict")) throw new Error("No files were written because the plan contains conflicts.");
-    if (!await confirmGeneral(options, "Apply")) return;
-    const migratesLegacyData = plan.some((item) => item.action === "migrate" || item.action === "delete");
-    if (migratesLegacyData) {
-      const result = applyUpgrade(options.root, plan);
-      console.log(`Installed local AI-DLC workflow assets and migrated legacy data. Backup: ${result.backup}; changed: ${result.changed}`);
-    } else {
-      applyPlan(options.root, plan); console.log("Installed local AI-DLC workflow assets.");
-    }
+    console.log(result);
+    if (result.startsWith("ERROR:")) process.exitCode = 1;
     return;
   }
-  if (command === "uninstall") {
-    const options = initOptions(args); const plan = planUninstall(options.root); preview("UNINSTALL", plan);
-    if (!await confirmGeneral(options, "Remove")) return;
-    applyPlan(options.root, plan); console.log("Removed eligible managed assets; project config and state were preserved."); return;
+  if (command === "init") return void await runInit(args);
+  if (command === "uninstall") return void await runUninstall(args);
+  if (command === "upgrade") return void await runUpgrade(args);
+  if (command === "mcp" && args[0] === "setup") return void await runMcpSetup(args);
+  if (command === "profile" && args[0] === "validate") {
+    const root = rootArg(args.slice(1));
+    const config = loadProjectConfig(root);
+    const profiles = resolveProfiles(root, config.extends);
+    console.log(`OK: ${profiles.map((item) => item.id).join(" → ")}`);
+    return;
   }
-  if (command === "upgrade") {
-    if (flags(args).has("--yes") || flags(args).has("--force")) throw new Error("upgrade does not support --yes or --force; apply requires a human interactive TTY confirmation");
-    const root = rootArg(args); const plan = planUpgrade(root, await chooseLoop(args, true)); preview("UPGRADE", plan);
-    if (plan.some((item) => item.action === "conflict")) throw new Error("Upgrade contains conflicts; no files were written.");
-    if (flags(args).has("--dry-run")) return;
-    if (!interactive()) throw new Error("Upgrade apply requires an interactive TTY. AI and non-interactive processes must not apply upgrades.");
-    const expected = packageVersion();
-    const { input } = await prompts();
-    if ((await input({ message: `Type ${expected} to apply this user-initiated upgrade` })).trim() !== expected) throw new Error("Upgrade confirmation did not match the target version");
-    const result = applyUpgrade(root, plan); console.log(`Upgrade complete. Backup: ${result.backup}; changed: ${result.changed}`); return;
-  }
-  if (command === "mcp" && args[0] === "setup") {
-    const options = await mcpSetupOptions(args.slice(1)); const plan = planMcpSetup(options);
-    console.log(`◆ MCP SETUP preview — ${options.dryRun ? "no files will be written" : "review before applying"}`); console.log(JSON.stringify(plan, null, 2));
-    if (options.dryRun) return;
-    if (!await confirmGeneral({ ...initOptions(args), root: options.root }, "Apply MCP setup")) return;
-    applyMcpSetup(options); console.log(`MCP setup written to ${plan.target}. MCP remains ${options.enable ? "enabled" : "disabled"}; start Docker explicitly with docker compose --env-file .env -f ${join(plan.target, "compose.yaml")} up -d.`); return;
-  }
-  if (command === "profile" && args[0] === "validate") { const root = rootArg(args.slice(1)); const config = loadProjectConfig(root); const profiles = resolveProfiles(root, config.extends); console.log(`OK: ${profiles.map((item) => item.id).join(" → ")}`); return; }
   throw new Error(`Unknown command: ${command}`);
 };
 

@@ -5,6 +5,7 @@ import { resolveProjectPath } from "./project-path.js";
 
 const safePath = (root: string, relative: string): string => resolveProjectPath(root, relative, "Unsafe migration path");
 
+/* Legacy `.aidlc/...` path translation into the canonical `.agents/` layout. */
 const legacyReference = (value: string): string => {
   if (value === ".aidlc/config.json") return ".agents/config.json";
   if (value === ".aidlc/index") return ".agents/index";
@@ -16,6 +17,7 @@ const legacyReference = (value: string): string => {
 
 const rewriteStrings = (value: unknown): unknown => Array.isArray(value) ? value.map((entry) => typeof entry === "string" ? legacyReference(entry) : entry) : value;
 
+/** Rewrites legacy `.aidlc/` path references inside the JSON file formats that are known to hold them. */
 const rewriteKnownJson = (relative: string, content: Buffer): { content: string; changed: boolean } | undefined => {
   const isConfig = relative === "config.json";
   const isProfile = /^profiles\/.+\/profile\.json$/.test(relative);
@@ -61,6 +63,7 @@ const legacyDestination = (relative: string): string => {
   return `.agents/project/${relative}`;
 };
 
+/** Plans the copy of one legacy file into its destination, including a tracked delete of the source. */
 const planMigrationFile = (project: string, plan: PlannedWrite[], sourcePath: string, destinationPath: string, legacyRelative: string): void => {
   const source = safePath(project, sourcePath);
   const payload = migrationPayload(legacyRelative, readFileSync(source));
@@ -92,6 +95,7 @@ const planMigrationFile = (project: string, plan: PlannedWrite[], sourcePath: st
   }
 };
 
+/** Walks the legacy `.aidlc/` tree, refusing symlinks and special entries with a conflicted plan entry. */
 const planLegacyTreeMigration = (project: string, plan: PlannedWrite[]): void => {
   const legacyRoot = safePath(project, ".aidlc");
   if (!existsSync(legacyRoot)) return;
@@ -112,6 +116,7 @@ const planLegacyTreeMigration = (project: string, plan: PlannedWrite[]): void =>
   visit(legacyRoot);
 };
 
+/** Rewrites legacy `.aidlc/` references inside an already-installed canonical project config. */
 const planExistingConfigRewrite = (project: string, plan: PlannedWrite[]): void => {
   const path = ".agents/config.json";
   const target = safePath(project, path);
@@ -122,6 +127,7 @@ const planExistingConfigRewrite = (project: string, plan: PlannedWrite[]): void 
   if (item) Object.assign(item, { content: rewritten.content, action: "migrate", reason: "rewrite legacy .aidlc references in canonical project config" });
 };
 
+/** Moves the legacy `.agents/data/state/{repo-map,specs-index}` files into the data/index directory. */
 const planLegacyIndexMigration = (project: string, plan: PlannedWrite[]): void => {
   for (const name of ["repo-map.md", "specs-index.md"]) {
     const source = `.agents/data/state/${name}`;
@@ -129,6 +135,7 @@ const planLegacyIndexMigration = (project: string, plan: PlannedWrite[]): void =
   }
 };
 
+/** Plans the full legacy-layout migration: config rewrite, `.aidlc/` tree, and legacy index files. */
 export const planProjectLayoutMigration = (project: string, plan: PlannedWrite[]): void => {
   planExistingConfigRewrite(project, plan);
   planLegacyTreeMigration(project, plan);

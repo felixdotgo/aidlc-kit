@@ -35,7 +35,7 @@ export const readManifest = (root: string): WorkflowManifest | undefined => {
     return value.schemaVersion === 2 && typeof value.packageVersion === "string" && value.workflow === "AI-DLC" && value.source === "local-package-assets" && value.remoteUpdates === false && value.managedBy === "aidlc-workflow" && Array.isArray(value.adapters) && validFiles ? value as WorkflowManifest : undefined;
   } catch {
     return undefined;
-  }
+  } /* intentional: a malformed manifest is treated as "not installed" */
 };
 
 export const detectedAgents = (root: string): AgentId[] => installableAdapters().filter((adapter) => adapter.detect(root)).map((adapter) => adapter.id);
@@ -84,6 +84,27 @@ export const planLoopSelection = (plan: PlannedWrite[], selection?: LoopConfig):
   config.reason = "explicit loop mode selection";
 };
 
+/** Merges a later owner of an already-planned shared managed-block path into the emitted entry. */
+const mergeIntoPlannedBlock = (root: string, previous: PlannedWrite, spec: FileSpec): void => {
+  const target = safeTarget(root, spec.path);
+  const current = existsSync(target) ? readFileSync(target, "utf8") : "";
+  previous.content = mergeManagedBlock(spec, previous.content);
+  previous.action = existsSync(target) ? (previous.content === current ? "skip" : "update") : "create";
+  previous.reason = existsSync(target) ? "managed prompt block" : "new managed prompt";
+};
+
+/** Plans managed workflow files, the manifest, and project-owned files; later block owners merge in line. */
+const planManagedWrites = (root: string, files: FileSpec[], force: boolean, installed: WorkflowManifest | undefined): PlannedWrite[] => {
+  const plan: PlannedWrite[] = [];
+  for (const spec of files) {
+    const previous = spec.strategy === "managed-block" ? plan.find((item) => item.path === spec.path && ["create", "update", "skip"].includes(item.action)) : undefined;
+    if (!previous) plan.push(planFile(root, spec, force, installed));
+    else mergeIntoPlannedBlock(root, previous, spec);
+  }
+  return plan;
+};
+
+/** Plans an init transaction: managed workflow files, manifest, and project-owned files. */
 export const planInit = (options: InitOptions): PlannedWrite[] => {
   const root = resolve(options.root);
   const installed = readManifest(root);
@@ -94,21 +115,13 @@ export const planInit = (options: InitOptions): PlannedWrite[] => {
   const agentFiles = selected.flatMap((id) => findAdapter(id)?.files() ?? []).map((file) => ({ ...file, ownershipClass: "managed" as const }));
   const managedFiles = [...coreWorkflowFiles(), ...agentFiles];
   const files = [...managedFiles, manifestSpec(managedFiles, selected), ...initialProjectFiles()];
-  const plan: PlannedWrite[] = [];
-  for (const spec of files) {
-    const previous = spec.strategy === "managed-block" ? plan.find((item) => item.path === spec.path && ["create", "update", "skip"].includes(item.action)) : undefined;
-    if (!previous) { plan.push(planFile(root, spec, options.force, installed)); continue; }
-    const target = safeTarget(root, spec.path);
-    const current = existsSync(target) ? readFileSync(target, "utf8") : "";
-    previous.content = mergeManagedBlock(spec, previous.content);
-    previous.action = existsSync(target) ? (previous.content === current ? "skip" : "update") : "create";
-    previous.reason = existsSync(target) ? "managed prompt block" : "new managed prompt";
-  }
+  const plan = planManagedWrites(root, files, options.force, installed);
   planProjectLayoutMigration(root, plan);
   planLoopSelection(plan, options.loop);
   return plan;
 };
 
+/** Applies a planned init/uninstall transaction to disk. */
 export const applyPlan = (root: string, plan: PlannedWrite[]): void => {
   for (const write of plan.filter((item) => item.action === "delete")) rmSync(safeTarget(root, write.path), { force: true });
   for (const write of plan.filter((item) => ["create", "update", "migrate"].includes(item.action))) {
@@ -123,7 +136,7 @@ export const formatPlan = (plan: PlannedWrite[]): string => plan.map((item) => `
 const hasOwnedManifest = (root: string): boolean => {
   const path = join(resolve(root), ".agents/aidlc/manifest.json");
   if (!existsSync(path)) return false;
-  try { return JSON.parse(readFileSync(path, "utf8")).managedBy === "aidlc-workflow"; } catch { return false; }
+  try { return JSON.parse(readFileSync(path, "utf8")).managedBy === "aidlc-workflow"; } catch { return false; } /* intentional: a malformed/missing manifest is not owned */
 };
 
 const removeManagedBlock = (current: string, owner: string): string => {
@@ -132,55 +145,81 @@ const removeManagedBlock = (current: string, owner: string): string => {
   return current.replace(new RegExp(`${start}[\\s\\S]*?${end}\\n?`, "g"), "").replace(/\n{3,}/g, "\n\n").trimEnd();
 };
 
+/** One manifest inventory record: the current spec to compare against plus the hash it was installed with. */
+interface InstalledEntry { spec: FileSpec; hash?: string }
+
+/** Maps one manifest inventory record onto its current spec and installed hash. */
+const uninstallEntry = (key: string, item: ManifestInventoryItem, currentSpecs: FileSpec[]): InstalledEntry => {
+  const separator = key.lastIndexOf("#");
+  const path = separator > 0 ? key.slice(0, separator) : key;
+  const owner = separator > 0 ? key.slice(separator + 1) : item.owner;
+  const spec = currentSpecs.find((candidate) => candidate.path === path && (candidate.strategy !== "managed-block" || candidate.owner === owner)) ?? { path, owner, strategy: item.strategy, content: "", ownershipClass: "managed" as const };
+  return { spec, hash: item.hash };
+};
+
+/** Groups installed specs (or all current specs without a manifest) by path; shared blocks carry multiple owners. */
+const uninstallGroups = (installed: WorkflowManifest | undefined, currentSpecs: FileSpec[]): Map<string, Array<InstalledEntry>> => {
+  const entries = installed ? Object.entries(installed.files).map(([key, item]) => uninstallEntry(key, item, currentSpecs)) : currentSpecs.map((spec) => ({ spec }));
+  const groups = new Map<string, Array<InstalledEntry>>();
+  for (const entry of entries) groups.set(entry.spec.path, [...(groups.get(entry.spec.path) ?? []), entry]);
+  return groups;
+};
+
+/** Removes each verified owner block from a shared file; stops at the first user-modified block. */
+const stripManagedBlocks = (group: Array<InstalledEntry>, current: string): { next: string; modified?: FileSpec } => {
+  let next = current;
+  let modified: FileSpec | undefined;
+  for (const { spec, hash } of group) {
+    const block = managedBlock(spec, next);
+    // A v0.2.1 single-marker block cannot be removed safely; retain ownership instead of orphaning it.
+    if (!block) { if (next.includes(`<!-- aidlc-installer:${spec.owner} -->`)) modified = spec; continue; }
+    if (contentHash(block) !== (hash ?? contentHash(spec.content.trimEnd()))) { modified = spec; break; }
+    next = removeManagedBlock(next, spec.owner);
+  }
+  return { next, modified };
+};
+
+/** Decides the plan entry for a whole-file (non shared-block) path. */
+const uninstallWholeFile = (group: Array<InstalledEntry>, exists: boolean, current: string): PlannedWrite => {
+  if (!exists) return { ...group[0].spec, action: "skip", reason: "not installed" };
+  if (!group.some((entry) => entry.spec.strategy === "managed-block")) {
+    const { spec, hash } = group[0];
+    const installedHash = hash ?? contentHash(spec.content);
+    return contentHash(current) === installedHash ? { ...spec, action: "delete", reason: "remove unchanged managed file" } : { ...spec, action: "preserve", reason: "managed file was modified" };
+  }
+  const { next, modified } = stripManagedBlocks(group, current);
+  const legacyResidue = group.find(({ spec }) => next.includes(`<!-- aidlc-installer:${spec.owner} -->`));
+  const ownerSpec = group[0].spec;
+  if (modified) return { ...modified, action: "preserve", reason: "managed block was modified" };
+  if (legacyResidue) return { ...legacyResidue.spec, action: "preserve", reason: "legacy prompt marker requires manual removal" };
+  if (next === current) return { ...ownerSpec, action: "skip", reason: "owned block not found" };
+  if (next) return { ...ownerSpec, content: `${next}\n`, action: "update", reason: "remove owned prompt block" };
+  return { ...ownerSpec, content: "", action: "delete", reason: "remove owned prompt file" };
+};
+
+/** Keeps the ownership manifest only while modified managed files remain on disk. */
+const manifestDisposition = (plan: PlannedWrite[]): PlannedWrite => {
+  const preserved = plan.some((item) => item.action === "preserve");
+  return { path: ".agents/aidlc/manifest.json", owner: "aidlc-core", content: "", ownershipClass: "managed", action: preserved ? "preserve" : "delete", reason: preserved ? "retained while modified managed files remain" : "remove ownership manifest" };
+};
+
+/** Plans an uninstall transaction that removes only unchanged managed assets. */
 export const planUninstall = (root: string): PlannedWrite[] => {
   const project = resolve(root);
   if (!hasOwnedManifest(project)) throw new Error("No aidlc-workflow ownership manifest found; refusing to remove files.");
   const installed = readManifest(project);
   const currentSpecs = [...coreWorkflowFiles(), ...resolvedAdapters().flatMap((adapter) => adapter.files()).map((file) => ({ ...file, ownershipClass: "managed" as const }))];
-  const entries = installed
-    ? Object.entries(installed.files).map(([key, item]): { spec: FileSpec; hash?: string } => {
-      const separator = key.lastIndexOf("#");
-      const path = separator > 0 ? key.slice(0, separator) : key;
-      const owner = separator > 0 ? key.slice(separator + 1) : item.owner;
-      const spec = currentSpecs.find((candidate) => candidate.path === path && (candidate.strategy !== "managed-block" || candidate.owner === owner)) ?? { path, owner, strategy: item.strategy, content: "", ownershipClass: "managed" as const };
-      return { spec, hash: item.hash };
-    })
-    : currentSpecs.map((spec) => ({ spec }));
-  const grouped = new Map<string, Array<{ spec: FileSpec; hash?: string }>>();
-  for (const entry of entries) grouped.set(entry.spec.path, [...(grouped.get(entry.spec.path) ?? []), entry]);
   const plan: PlannedWrite[] = [];
-  for (const [path, group] of grouped) {
+  for (const [path, group] of uninstallGroups(installed, currentSpecs)) {
     const target = safeTarget(project, path);
     const exists = existsSync(target);
-    const current = exists ? readFileSync(target, "utf8") : "";
-    if (!exists) { plan.push({ ...group[0].spec, action: "skip", reason: "not installed" }); continue; }
-    if (!group.some((entry) => entry.spec.strategy === "managed-block")) {
-      const { spec, hash } = group[0];
-      const installedHash = hash ?? contentHash(spec.content);
-      plan.push(contentHash(current) === installedHash ? { ...spec, action: "delete", reason: "remove unchanged managed file" } : { ...spec, action: "preserve", reason: "managed file was modified" });
-      continue;
-    }
-    let next = current;
-    let modified: FileSpec | undefined;
-    for (const { spec, hash } of group) {
-      const block = managedBlock(spec, next);
-      // A v0.2.1 single-marker block cannot be removed safely; retain ownership instead of orphaning it.
-      if (!block) { if (next.includes(`<!-- aidlc-installer:${spec.owner} -->`)) modified = spec; continue; }
-      if (contentHash(block) !== (hash ?? contentHash(spec.content.trimEnd()))) { modified = spec; break; }
-      next = removeManagedBlock(next, spec.owner);
-    }
-    const ownerSpec = group[0].spec;
-    const legacyResidue = group.find(({ spec }) => next.includes(`<!-- aidlc-installer:${spec.owner} -->`));
-    if (modified) plan.push({ ...modified, action: "preserve", reason: "managed block was modified" });
-    else if (legacyResidue) plan.push({ ...legacyResidue.spec, action: "preserve", reason: "legacy prompt marker requires manual removal" });
-    else if (next === current) plan.push({ ...ownerSpec, action: "skip", reason: "owned block not found" });
-    else if (next) plan.push({ ...ownerSpec, content: `${next}\n`, action: "update", reason: "remove owned prompt block" });
-    else plan.push({ ...ownerSpec, content: "", action: "delete", reason: "remove owned prompt file" });
+    plan.push(uninstallWholeFile(group, exists, exists ? readFileSync(target, "utf8") : ""));
   }
-  plan.push({ path: ".agents/aidlc/manifest.json", owner: "aidlc-core", content: "", ownershipClass: "managed", action: plan.some((item) => item.action === "preserve") ? "preserve" : "delete", reason: plan.some((item) => item.action === "preserve") ? "retained while modified managed files remain" : "remove ownership manifest" });
+  plan.push(manifestDisposition(plan));
   return plan;
 };
 
+/** Reports installed workflow version, schema, and detected agents. */
 export const status = (root: string): string => {
   const manifest = readManifest(root);
   const legacyPath = join(resolve(root), ".agents/aidlc/manifest.json");
@@ -192,6 +231,24 @@ export const status = (root: string): string => {
   ].join("\n");
 };
 
+/** Path portion of a manifest inventory key (`path#owner` for shared managed blocks). */
+const inventoryKeyPath = (key: string): string => {
+  const separator = key.lastIndexOf("#");
+  return separator > 0 ? key.slice(0, separator) : key;
+};
+
+/** Manifest inventory paths whose on-disk content no longer matches the recorded owner hash. */
+const modifiedManagedPaths = (root: string, manifest: WorkflowManifest): string[] => {
+  const modified = Object.entries(manifest.files).filter(([key, item]) => {
+    const target = safeTarget(root, inventoryKeyPath(key));
+    if (!existsSync(target)) return true;
+    const spec = { owner: item.owner, strategy: item.strategy };
+    return managedContentHash(spec, readFileSync(target, "utf8")) !== item.hash;
+  });
+  return [...new Set(modified.map(([key]) => inventoryKeyPath(key)))];
+};
+
+/** Validates the installed workflow manifest and local config/state. */
 export const doctor = (root: string, strict = false): string => {
   const manifestPath = join(resolve(root), ".agents/aidlc/manifest.json");
   if (!existsSync(manifestPath)) return "ERROR: .agents/aidlc/manifest.json is missing. Run npx @felixdotgo/aidlc-kit init --yes.";
@@ -202,13 +259,7 @@ export const doctor = (root: string, strict = false): string => {
   const manifest = readManifest(root);
   if (!manifest) return strict ? "ERROR: legacy manifest requires an explicit user-run npm/npx upgrade." : "WARN: legacy manifest detected; no registry check was performed.";
   try { loadProjectConfig(root); loadState(root); } catch (error) { return `ERROR: local config/state is invalid: ${error instanceof Error ? error.message : String(error)}`; }
-  const modified = [...new Set(Object.entries(manifest.files).filter(([key, item]) => {
-    const separator = key.lastIndexOf("#");
-    const target = safeTarget(root, separator > 0 ? key.slice(0, separator) : key);
-    if (!existsSync(target)) return true;
-    const spec = { owner: item.owner, strategy: item.strategy };
-    return managedContentHash(spec, readFileSync(target, "utf8")) !== item.hash;
-  }).map(([key]) => key.includes("#") ? key.slice(0, key.lastIndexOf("#")) : key))];
+  const modified = modifiedManagedPaths(root, manifest);
   if (modified.length) return `${strict ? "ERROR" : "WARN"}: managed integrity differs: ${modified.join(", ")}`;
   return `OK: local workflow ${manifest.packageVersion} is valid; remote updates are disabled.`;
 };
