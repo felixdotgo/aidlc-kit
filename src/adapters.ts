@@ -1,3 +1,8 @@
+/**
+ * Coding-tool adapters. Each adapter describes the managed prompt blocks, config
+ * files, and skill files installed for one supported coding tool (Claude, Codex,
+ * OpenCode). The `instruction` text is shared verbatim across adapters.
+ */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Adapter, AgentId, FileSpec } from "./model.js";
@@ -8,15 +13,17 @@ const hasManagedBlock = (root: string, path: string, owner: string): boolean => 
   try {
     const content = readFileSync(target, "utf8");
     return content.includes(`<!-- aidlc-installer:${owner}:start -->`) || content.includes(`<!-- aidlc-installer:${owner} -->`);
-  } catch { return false; }
+  } catch { return false; } /* intentional: an unreadable prompt file is treated as not containing the block */
 };
 
+/** Builds a managed prompt block for one adapter-owned file. */
 const adapterFile = (owner: string, path: string, body: string): FileSpec => ({
   path,
   owner,
   content: `<!-- aidlc-installer:${owner}:start -->\n${body}<!-- aidlc-installer:${owner}:end -->\n`
 });
 
+/** Shared AI-DLC instruction text installed into each tool's primary prompt file. */
 const instruction = (agent: string, adapter: AgentId) => [
   `# AI-DLC for ${agent}`,
   "",

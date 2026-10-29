@@ -1,3 +1,7 @@
+/**
+ * Backlog tracker integration: resolves tracker credentials from the environment
+ * and builds the HTTP requests used to mirror lifecycle phase transitions.
+ */
 import type { TrackerConfig } from "./model.js";
 
 export interface TrackerDiagnostic { code: "TRACKER_DISABLED" | "TRACKER_AUTH" | "TRACKER_RATE_LIMIT" | "TRACKER_REQUEST"; message: string; retryable: boolean; }
@@ -8,6 +12,7 @@ export type TrackerResolution =
   | { enabled: false; diagnostic: TrackerDiagnostic }
   | { enabled: true; config: TrackerConfig; token: string };
 
+/** Resolves a tracker configuration into either an enabled resolution (with token) or a disabled diagnostic. */
 export const resolveTracker = (config: TrackerConfig | undefined, environment: NodeJS.ProcessEnv = process.env): TrackerResolution => {
   if (!config) return { enabled: false, diagnostic: { code: "TRACKER_DISABLED", message: "Tracker is not configured; Git-only mode is active.", retryable: false } };
   const token = environment[config.tokenEnv];
@@ -21,6 +26,7 @@ const form = (values: Record<string, string | number>): URLSearchParams => {
   return body;
 };
 
+/** Executes a single Backlog request, mapping HTTP failures to retryable diagnostics. */
 export const executeBacklog = async (resolution: TrackerResolution, request: BacklogRequest, fetcher: FetchLike = fetch): Promise<{ ok: true; body: unknown } | { ok: false; diagnostic: TrackerDiagnostic }> => {
   if (!resolution.enabled) return { ok: false, diagnostic: resolution.diagnostic };
   const response = await fetcher(`${resolution.config.spaceUrl}/api/v2/${request.path.replace(/^\//, "")}`, {
@@ -34,6 +40,7 @@ export const executeBacklog = async (resolution: TrackerResolution, request: Bac
   return { ok: true, body: await response.json() };
 };
 
+/** Builds the Backlog PATCH request that mirrors a lifecycle phase transition for an issue. */
 export const gateUpdate = (config: TrackerConfig, issue: string, phase: "clarify" | "plan" | "build" | "wrap" | "done", idempotencyKey: string): BacklogRequest => {
   const comment = `[aidlc:${idempotencyKey}] ${phase}`;
   if (config.workflow === "waterfall") {

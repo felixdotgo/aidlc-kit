@@ -1,3 +1,8 @@
+/**
+ * Project profiles and configuration. Loads `.agents/config.json`, validates
+ * every nested section (loop, tracker, MCP, risk, context), and resolves the
+ * effective configuration by merging built-in and local profiles.
+ */
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { LOOP_PROVIDERS } from "./model.js";
@@ -28,6 +33,7 @@ const object = (value: unknown, label: string): Record<string, unknown> => {
   return value as Record<string, unknown>;
 };
 
+/** Validates and normalizes a loop-execution configuration block. */
 export const validateLoopConfig = (value: unknown): LoopConfig => {
   if (value === undefined) return { mode: "off" };
   const item = object(value, "config.loop");
@@ -89,6 +95,7 @@ const mcp = (value: unknown): McpConfig => {
   return { enabled: true, endpoint: item.endpoint, workspace: item.workspace, ...(item.tokenEnv === undefined ? {} : { tokenEnv: item.tokenEnv }), ...(item.pollMs === undefined ? {} : { pollMs: Number(item.pollMs) }), ...(providers === undefined ? {} : { providers: providers as McpConfig["providers"] }) };
 };
 
+/** Validates a single profile file (built-in or local). */
 export const validateProfile = (value: unknown, label = "profile"): Profile => {
   const item = object(value, label);
   if (item.schemaVersion !== 1 || typeof item.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(item.id) || typeof item.topology !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(item.topology)) throw new Error(`${label} has an unsupported schema, id, or topology`);
@@ -123,6 +130,7 @@ export const defaultConfig = (): ProjectConfig => ({
   loop: { mode: "off" }
 });
 
+/** Loads and validates `.agents/config.json`, falling back to the default config when absent. */
 export const loadProjectConfig = (root: string): ProjectConfig => {
   const path = join(resolve(root), ".agents/config.json");
   if (!existsSync(path)) return defaultConfig();
@@ -161,6 +169,7 @@ const readLocalProfile = (root: string, id: string): Profile | undefined => {
   return validateProfile(JSON.parse(readFileSync(path, "utf8")), id);
 };
 
+/** Resolves a list of profile ids into an ordered, cycle-free list of profiles. */
 export const resolveProfiles = (root: string, ids: string[]): Profile[] => {
   const resolved: Profile[] = [];
   const visiting = new Set<string>();
@@ -180,6 +189,7 @@ export const resolveProfiles = (root: string, ids: string[]): Profile[] => {
 };
 
 const stable = (values: string[]): string[] => [...new Set(values)];
+/** Merges built-in and local profiles with the project config into the effective configuration. */
 export const resolveEffectiveConfig = (root: string, config: ProjectConfig) => {
   const profiles = resolveProfiles(root, config.extends);
   return {
@@ -195,6 +205,7 @@ export const resolveEffectiveConfig = (root: string, config: ProjectConfig) => {
   };
 };
 
+/** Expands rule include patterns into concrete markdown file paths inside the project. */
 export const includedRuleFiles = (root: string, patterns: string[]): string[] => {
   const project = resolve(root);
   const realProject = realpathSync(project);
