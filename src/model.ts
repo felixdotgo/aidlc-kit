@@ -1,3 +1,4 @@
+/* Domain enumerations for the task lifecycle. */
 export type AgentId = string;
 export type StateMutationMode = "native" | "scripted";
 export type Phase = "clarify" | "plan" | "build" | "wrap" | "done";
@@ -7,6 +8,7 @@ export type RiskLevel = "low" | "normal" | "high" | "regulated";
 export type DecisionStatus = "unresolved" | "approved" | "changed" | "dropped";
 export type HandoffKind = "repair_exhausted" | "review_exhausted" | "g2_failed" | "release_failed" | "structural_change" | "other";
 
+/* Installation-adapter contracts: every supported coding tool is adapted to the same kernel. */
 export interface FileSpec {
   path: string;
   content: string;
@@ -46,6 +48,7 @@ export interface LoopConfig {
   agents?: { lead: LoopAgent; workers: Record<string, LoopAgent> };
 }
 
+/* Workflow-configuration contracts: profiles, project config, coordination, and tracker integration. */
 export interface CommandSpec {
   command: string;
   args: string[];
@@ -95,6 +98,7 @@ export interface TrackerConfig {
   mapping: { statuses?: Partial<Record<"clarify" | "plan" | "build" | "wrap" | "done", number>>; gateFieldId?: number };
 }
 
+/* Canonical task and state record contracts (schema v1–v4). */
 export interface TaskDecision {
   id: string;
   label: string;

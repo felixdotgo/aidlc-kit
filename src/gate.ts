@@ -4,12 +4,13 @@ import { resolveProjectPathWithoutSymlinks } from "./project-path.js";
 import { hasAreaVerification, hasReview, isLegacyG2Wait, nextAction, repairBounds, transitionDiagnostics, transitionTask } from "./state.js";
 
 const safeArtifactTarget = (root: string, path: string): string => resolveProjectPathWithoutSymlinks(root, path, "Unsafe artifact path", "Artifact path crosses a symlink");
+
 const artifactContent = (root: string, path: string | undefined): string | undefined => {
   if (!path) return undefined;
   try {
     const target = safeArtifactTarget(root, path);
     return existsSync(target) ? readFileSync(target, "utf8") : undefined;
-  } catch { return undefined; }
+  } catch { return undefined; } /* intentional: unreadable/unsafe artifact is treated as absent */
 };
 
 const artifactDiagnostics = (root: string, task: TaskState, names: Array<keyof TaskState["artifacts"]>): Diagnostic[] => names.flatMap((name) => {
@@ -22,34 +23,51 @@ const artifactDiagnostics = (root: string, task: TaskState, names: Array<keyof T
   }
 });
 
-export const checkGate = (root: string, state: WorkflowState, taskId: string, gate: Gate): Diagnostic[] => {
-  const task = state.tasks[taskId];
-  if (!task) return [{ level: "ERROR", code: "TASK_UNKNOWN", message: `Unknown task: ${taskId}` }];
+const missingHeadings = (content: string, headings: string[]): string[] => headings.filter((heading) => !content.includes(heading));
+
+const confirmGateDiagnostics = (root: string, task: TaskState): Diagnostic[] => {
+  const diagnostics: Diagnostic[] = artifactDiagnostics(root, task, ["intent"]);
+  const content = artifactContent(root, task.artifacts.intent);
+  if (content !== undefined) for (const heading of missingHeadings(content, ["## 📋 Problem", "## 🗺️ Affected areas", "## 💭 Assumptions", "## ❓ Open questions", "## 🎯 Scope"])) diagnostics.push({ level: "ERROR", code: "INTENT_HEADING", message: `Intent is missing ${heading}` });
+  return diagnostics;
+};
+
+const reviewGateDiagnostics = (root: string, task: TaskState): Diagnostic[] => {
+  const diagnostics: Diagnostic[] = artifactDiagnostics(root, task, ["intent", "design", "workplan"]);
+  diagnostics.push(...transitionDiagnostics(task, "build").filter((item) => item.code === "UNRESOLVED_DECISION"));
+  const content = artifactContent(root, task.artifacts.design);
+  if (content !== undefined) for (const heading of missingHeadings(content, ["## 🧩 Solution per affected area", "## 📌 Spec traceability", "## 🔗 Cross-service contracts", "## ⚠️ Risks / edge cases"])) diagnostics.push({ level: "ERROR", code: "DESIGN_HEADING", message: `Design is missing ${heading}` });
+  return diagnostics;
+};
+
+const codeReviewGateDiagnostics = (root: string, task: TaskState): Diagnostic[] => {
+  const diagnostics: Diagnostic[] = artifactDiagnostics(root, task, ["intent", "design", "workplan"]);
+  if (task.tasks.some((item) => item.status !== "done" && item.status !== "deferred")) diagnostics.push({ level: "ERROR", code: "TASKS_OPEN", message: "Build tasks remain open" });
+  for (const area of task.areas) if (!hasAreaVerification(task, area)) diagnostics.push({ level: "ERROR", code: "VERIFY_EVIDENCE", message: `Latest post-G1 verification evidence must pass for affected area: ${area}` });
+  if (!hasReview(task)) diagnostics.push({ level: "ERROR", code: "REVIEW_EVIDENCE", message: "Latest post-G1 review evidence must pass" });
+  const bounds = repairBounds(task);
+  if (!isLegacyG2Wait(task) && (bounds.verifyExhausted || bounds.reviewExhausted)) diagnostics.push({ level: "ERROR", code: "REPAIR_BOUND", message: "Repair bound exhausted; record a durable handoff instead of presenting G2" });
+  return diagnostics;
+};
+
+const generalGateDiagnostics = (taskId: string, task: TaskState, gate: Gate): Diagnostic[] => {
   const diagnostics: Diagnostic[] = [];
   if (task.gate !== gate) diagnostics.push({ level: "ERROR", code: "GATE_STATE", message: `Task is at ${task.gate}, not ${gate}` });
   if (task.status === "closed" || task.status === "superseded") diagnostics.push({ level: "ERROR", code: "TASK_TERMINAL", message: `Terminal task cannot approve ${gate}` });
   if (task.handoff) diagnostics.push({ level: "ERROR", code: "TASK_HANDOFF", message: `Task has unresolved handoff: ${task.handoff.reason}` });
   if (task.id !== taskId) diagnostics.push({ level: "ERROR", code: "TASK_ID", message: "Task key and id differ" });
   if (!task.title.trim() || !task.areas.length) diagnostics.push({ level: "ERROR", code: "TASK_FIELDS", message: "Task title and affected areas are required" });
-  if (gate === "G0_confirm") {
-    diagnostics.push(...artifactDiagnostics(root, task, ["intent"]));
-    const content = artifactContent(root, task.artifacts.intent);
-    if (content !== undefined) for (const heading of ["## 📋 Problem", "## 🗺️ Affected areas", "## 💭 Assumptions", "## ❓ Open questions", "## 🎯 Scope"]) if (!content.includes(heading)) diagnostics.push({ level: "ERROR", code: "INTENT_HEADING", message: `Intent is missing ${heading}` });
-  }
-  if (gate === "G1_review") {
-    diagnostics.push(...artifactDiagnostics(root, task, ["intent", "design", "workplan"]));
-    diagnostics.push(...transitionDiagnostics(task, "build").filter((item) => item.code === "UNRESOLVED_DECISION"));
-    const content = artifactContent(root, task.artifacts.design);
-    if (content !== undefined) for (const heading of ["## 🧩 Solution per affected area", "## 📌 Spec traceability", "## 🔗 Cross-service contracts", "## ⚠️ Risks / edge cases"]) if (!content.includes(heading)) diagnostics.push({ level: "ERROR", code: "DESIGN_HEADING", message: `Design is missing ${heading}` });
-  }
-  if (gate === "G2_codereview") {
-    diagnostics.push(...artifactDiagnostics(root, task, ["intent", "design", "workplan"]));
-    if (task.tasks.some((item) => item.status !== "done" && item.status !== "deferred")) diagnostics.push({ level: "ERROR", code: "TASKS_OPEN", message: "Build tasks remain open" });
-    for (const area of task.areas) if (!hasAreaVerification(task, area)) diagnostics.push({ level: "ERROR", code: "VERIFY_EVIDENCE", message: `Latest post-G1 verification evidence must pass for affected area: ${area}` });
-    if (!hasReview(task)) diagnostics.push({ level: "ERROR", code: "REVIEW_EVIDENCE", message: "Latest post-G1 review evidence must pass" });
-    const bounds = repairBounds(task);
-    if (!isLegacyG2Wait(task) && (bounds.verifyExhausted || bounds.reviewExhausted)) diagnostics.push({ level: "ERROR", code: "REPAIR_BOUND", message: "Repair bound exhausted; record a durable handoff instead of presenting G2" });
-  }
+  return diagnostics;
+};
+
+/** Runs all diagnostics for a gate and returns them (empty-ish with GATE_OK when clean). */
+export const checkGate = (root: string, state: WorkflowState, taskId: string, gate: Gate): Diagnostic[] => {
+  const task = state.tasks[taskId];
+  if (!task) return [{ level: "ERROR", code: "TASK_UNKNOWN", message: `Unknown task: ${taskId}` }];
+  const diagnostics: Diagnostic[] = generalGateDiagnostics(taskId, task, gate);
+  if (gate === "G0_confirm") diagnostics.push(...confirmGateDiagnostics(root, task));
+  if (gate === "G1_review") diagnostics.push(...reviewGateDiagnostics(root, task));
+  if (gate === "G2_codereview") diagnostics.push(...codeReviewGateDiagnostics(root, task));
   if (!diagnostics.length) diagnostics.push({ level: "INFO", code: "GATE_OK", message: `${gate} checks passed for ${taskId}` });
   return diagnostics;
 };

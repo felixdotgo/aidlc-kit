@@ -9,10 +9,13 @@ const assetRoot = fileURLToPath(new URL("../assets/.agents/aidlc", import.meta.u
 
 const phaseFile = (phase: Phase): string => phase === "done" ? "phase-wrap.md" : `phase-${phase}.md`;
 const readAsset = (path: string): string => readFileSync(join(assetRoot, path), "utf8");
+
+/** Keeps only the latest test/lint/review record per (kind, area, gate) and strips prose details. */
 const requiredEvidence = (task: TaskState) => task.evidence.filter((item, index, entries) => {
   const key = `${item.kind}:${item.area ?? ""}:${item.gate ?? ""}`;
   return !entries.slice(index + 1).some((candidate) => `${candidate.kind}:${candidate.area ?? ""}:${candidate.gate ?? ""}` === key);
 }).map(({ detail: _detail, ...item }) => item);
+/** Compact canonical view of the task for a phase packet; `itemId` narrows execution items only. */
 const compactTask = (task: TaskState, itemId?: string): string => JSON.stringify({
   id: task.id,
   title: task.title,
