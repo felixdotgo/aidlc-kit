@@ -95,6 +95,20 @@ The TypeScript implementation powers the package CLI. Installed projects use a d
 
 Likewise, a public configuration or schema change must update its validator, JSON schema, installed assets, package inventory, documentation, and tests together.
 
+## Code style and conventions
+
+Adopted as the project baseline (approved decision `D1-convention-standard` on task `refactor-source-readability`):
+
+- **Strict TypeScript, no new dependencies for tooling.** Keep `strict` mode; enforce via `npm run lint` (`tsc --noEmit`). No ESLint/Prettier for now.
+- **File size targets.** Aim for ≤250 lines per source file and ≤60 lines per function; split by domain responsibility when exceeded.
+- **Module boundaries.** One responsibility per module; a facade module may re-export a public API for compatibility (for example `src/state.ts`).
+- **Naming.** Descriptive camelCase for functions/variables, `PascalCase` for types/interfaces, `SCREAMING_SNAKE_CASE` for true constants; file names match their primary export.
+- **Error handling.** Fail with typed, one-line errors; never swallow exceptions silently; validate inputs before I/O.
+- **Dependencies.** Pass dependencies (fetch, clock, environment) explicitly as parameters; avoid module-level mutable state.
+- **Public API.** Document exported symbols with JSDoc when the contract is non-obvious.
+- **Behavior preservation.** Refactors must not change CLI output, state schema, file layout, or installed assets; run parity tests.
+- **Verification.** Run the narrowest relevant test while iterating; `npm test` + `npm run lint` before handing off.
+
 ## Safe implementation rules
 
 - Resolve all project-relative paths through the shared path helpers; reject traversal and symlink escape.
