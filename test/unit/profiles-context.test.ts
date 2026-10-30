@@ -148,3 +148,28 @@ test("effective config merges parent then child then project with stable arrays 
     assert.equal(effective.profiles.at(-1)?.topology, "company/monorepo");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("defaultConfig includes $schema", () => {
+  assert.equal(defaultConfig().$schema, "./aidlc/schemas/config.schema.json");
+});
+
+test("loadProjectConfig round-trips $schema and preserves the value", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-schema-roundtrip-"));
+  try {
+    mkdirSync(join(root, ".agents"), { recursive: true });
+    const value = "./aidlc/schemas/config.schema.json";
+    writeFileSync(join(root, ".agents/config.json"), JSON.stringify({ ...defaultConfig(), $schema: value }));
+    assert.equal(loadProjectConfig(root).$schema, value);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("loadProjectConfig throws on invalid $schema", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-schema-invalid-"));
+  try {
+    mkdirSync(join(root, ".agents"), { recursive: true });
+    writeFileSync(join(root, ".agents/config.json"), JSON.stringify({ ...defaultConfig(), $schema: 42 }));
+    assert.throws(() => loadProjectConfig(root), (error: unknown) => error instanceof Error && error.message === "config.$schema must be a string of at most 512 characters");
+    writeFileSync(join(root, ".agents/config.json"), JSON.stringify({ ...defaultConfig(), $schema: "x".repeat(513) }));
+    assert.throws(() => loadProjectConfig(root), (error: unknown) => error instanceof Error && error.message === "config.$schema must be a string of at most 512 characters");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

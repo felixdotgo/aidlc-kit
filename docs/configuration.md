@@ -22,6 +22,18 @@ Each installed project owns its workflow configuration at `.agents/config.json`.
 
 Commands are stored as executable and argument arrays. Do not replace them with shell strings: this keeps execution inspectable and avoids accidental shell interpretation.
 
+## Optional `$schema` key
+
+The generated `.agents/config.json` includes an optional top-level `$schema` key pointing at the relative path `./aidlc/schemas/config.schema.json` (the schema installed under `.agents/aidlc/schemas/`). Editors use it for autocompletion and validation of the configuration file, and it has no runtime effect. New installs receive it automatically through `init`; existing installs can add it manually:
+
+```json
+{
+  "$schema": "./aidlc/schemas/config.schema.json"
+}
+```
+
+The value must be a string of at most 512 characters. The path is relative so validation works offline without a network dependency.
+
 G0, G1, and G2 always require explicit human approval. Configuration cannot auto-pass a gate.
 
 ## Configuration layers

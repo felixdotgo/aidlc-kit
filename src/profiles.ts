@@ -118,6 +118,7 @@ export const validateProfile = (value: unknown, label = "profile"): Profile => {
 };
 
 export const defaultConfig = (): ProjectConfig => ({
+  $schema: "./aidlc/schemas/config.schema.json",
   schemaVersion: 2,
   extends: ["topology/single"],
   specs: { roots: [] },
@@ -147,7 +148,13 @@ export const loadProjectConfig = (root: string): ProjectConfig => {
   })) as Partial<Record<AgentId, StateMutationMode>>;
   const maxChars = Number(context.maxChars ?? 16_000);
   if (!Number.isInteger(maxChars) || maxChars < 4_000 || maxChars > 128_000) throw new Error("context.maxChars must be an integer from 4000 to 128000");
+  let schema: string | undefined;
+  if (item.$schema !== undefined) {
+    if (typeof item.$schema !== "string" || item.$schema.length > 512) throw new Error("config.$schema must be a string of at most 512 characters");
+    schema = item.$schema;
+  }
   return {
+    $schema: schema,
     schemaVersion: Number(item.schemaVersion) as 1 | 2 | 3,
     extends: strings(item.extends ?? ["topology/single"], "config.extends"),
     specs: { roots: strings(object(item.specs ?? {}, "config.specs").roots ?? [], "config.specs.roots").map((entry) => safeRelative(entry, "config.specs.roots")) },

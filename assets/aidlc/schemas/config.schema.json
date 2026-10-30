@@ -13,7 +13,8 @@
     "context": { "type": "object", "required": ["maxChars"], "properties": { "maxChars": { "type": "integer", "minimum": 4000, "maximum": 128000 } } },
     "agentState": { "type": "object", "additionalProperties": { "enum": ["native", "scripted"] } },
     "tracker": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" }, "provider": { "enum": ["backlog"] }, "spaceUrl": { "type": "string", "format": "uri" }, "project": { "type": "string", "minLength": 1 }, "tokenEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }, "workflow": { "enum": ["waterfall", "scrum"] }, "mapping": { "type": "object", "properties": { "statuses": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 1 } }, "gateFieldId": { "type": "integer", "minimum": 1 } } } } },
-    "mcp": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" }, "endpoint": { "type": "string", "format": "uri" }, "workspace": { "type": "string", "minLength": 1 }, "tokenEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }, "pollMs": { "type": "integer", "minimum": 1000, "maximum": 3600000 }, "providers": { "type": "array", "items": { "enum": ["jira", "trello", "github-issues"] }, "uniqueItems": true } } }
+    "mcp": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" }, "endpoint": { "type": "string", "format": "uri" }, "workspace": { "type": "string", "minLength": 1 }, "tokenEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }, "pollMs": { "type": "integer", "minimum": 1000, "maximum": 3600000 }, "providers": { "type": "array", "items": { "enum": ["jira", "trello", "github-issues"] }, "uniqueItems": true } } },
+    "$schema": { "type": "string", "maxLength": 512 }
   },
   "$defs": {
     "command": {

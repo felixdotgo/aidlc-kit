@@ -66,6 +66,7 @@ export interface Profile {
 }
 
 export interface ProjectConfig {
+  $schema?: string;
   schemaVersion: 1 | 2 | 3;
   extends: string[];
   specs: { roots: string[] };
