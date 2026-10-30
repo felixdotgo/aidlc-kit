@@ -96,3 +96,13 @@ The service checks lifecycle invariants across the whole before/after snapshot, 
 In default shared-token mode, these guards keep remote history tamper-evident but do not authenticate approvals: `source` remains provenance supplied by a client. Fleet mode binds separate lead, worker, and reviewer credentials to server-side roles, and only a reviewer credential can call the atomic gate approval tool. The service cannot inspect client project artifacts, so the lead must run local artifact checks before publishing a review snapshot; the service enforces structural gate readiness and snapshot revision at approval.
 
 `work_item_request` is intentionally only a credential-free preflight for Jira, Trello, or GitHub Issues. It reports the required environment variable names and never returns a reusable token, Authorization header, or token-bearing URL. External updates remain opt-in and must be made outside the lifecycle transaction.
+
+## Service health, logging, and image
+
+The service exposes an unauthenticated, static `GET /healthz` that returns `200 {"ok":true}` without reading state, version, or workspace data. It is registered before the auth middleware and is used by the container `HEALTHCHECK` and compose healthchecks.
+
+Every request emits one compact JSON line to stderr on response finish, of the form `{"ts":...,"method":...,"path":...,"status":...,"principal":...,"ms":...}` (principal is the fleet principal id when present, otherwise omitted). Logging never includes headers, request bodies, Authorization headers, or tokens.
+
+The McpServer version is read from the `version` field of the `package.json` next to the service root (`new URL("../package.json", import.meta.url)`), falling back to `"0.0.0-dev"` when missing or unreadable. In source checkouts the service package has no version field, so the fallback applies; the bundled image receives the package version through build-time injection.
+
+The container image is now built in two stages (both `node:24-bookworm-slim`, so the `better-sqlite3` ABI matches), installs dependencies in the build stage, and runs as the non-root `node` user with a `HEALTHCHECK` against `/healthz`. The compose `aidlc-coordination` and `fleet-coordination` services also define matching healthchecks.

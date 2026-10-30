@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
@@ -10,12 +11,14 @@ import { CoordinationConflict, SqliteCoordinationRepository, createCoordinationR
 import { FleetConflict, SqliteFleetRepository, createFleetRepository, featureReady, validateCanonicalFeature } from "./fleet.mjs";
 import { nextAction } from "./lifecycle-core.mjs";
 
+let serviceVersion = "0.0.0-dev";
+try { const parsed = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")); if (parsed?.version) serviceVersion = parsed.version; } catch {}
 const result = (value) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }] });
 const failure = (error) => ({ isError: true, content: [{ type: "text", text: JSON.stringify(error instanceof RevisionConflict ? { code: "REVISION_CONFLICT", current: error.current } : error instanceof CoordinationConflict ? { code: "COORDINATION_CONFLICT", current: error.current } : error instanceof FleetConflict ? { code: "FLEET_CONFLICT", current: error.current, message: error.message } : { code: "STATE_ERROR", message: error instanceof Error ? error.message : String(error) }) }] });
 const workspace = z.string().min(1).max(128);
 
 export const buildServer = (repository, coordination = new SqliteCoordinationRepository(), fleet = new SqliteFleetRepository(), identity = null) => {
-  const server = new McpServer({ name: "aidlc-coordination", version: "0.1.0" });
+  const server = new McpServer({ name: "aidlc-coordination", version: serviceVersion });
   const requireRole = (...allowed) => { if (identity && !allowed.includes(identity.role)) throw new Error("credential role is not authorized for this operation"); };
   const actorFor = (actor) => identity ? { id: identity.id, role: { lead: "admin", worker: "commenter", reviewer: "reader" }[identity.role] } : actor;
   server.registerTool("state_get", { description: "Pull the current workflow state and derived index for a workspace.", inputSchema: z.object({ workspace }) }, async ({ workspace: id }) => { try { return result(await repository.get(id)); } catch (error) { return failure(error); } });
@@ -77,9 +80,11 @@ if (fleetEnabled && (fleetCredentials.length < 3 || fleetCredentials.some((entry
 const equalToken = (left,right) => { const a=Buffer.from(left); const b=Buffer.from(right); return a.length===b.length && timingSafeEqual(a,b); };
 const principalFor = (authorization) => fleetCredentials.find((entry) => equalToken(authorization,`Bearer ${entry.token}`));
 const app = createMcpExpressApp({ host });
+app.use((req, res, next) => { const started=Date.now(); res.on("finish", () => { const entry={ts:new Date().toISOString(),method:req.method,path:req.path,status:res.statusCode}; const principal=req.fleetPrincipal?.id; if (principal) entry.principal=principal; entry.ms=Date.now()-started; process.stderr.write(JSON.stringify(entry)+"\n"); }); next(); });
+app.get("/healthz", (req, res) => res.status(200).json({ ok: true }));
 app.use((req, res, next) => {
   if (fleetEnabled) { const principal=principalFor(req.headers.authorization ?? ""); if (!principal) return res.status(401).json({ error: "unauthorized" }); req.fleetPrincipal={id:principal.id,role:principal.role}; return next(); }
-  if (!token || req.headers.authorization === `Bearer ${token}`) return next();
+  if (!token || equalToken(req.headers.authorization ?? "", `Bearer ${token}`)) return next();
   res.status(401).json({ error: "unauthorized" });
 });
 app.post("/mcp", async (req, res) => {
@@ -88,6 +93,6 @@ app.post("/mcp", async (req, res) => {
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
 });
-const listener = app.listen(port, host, () => console.error(`aidlc MCP state service listening at http://${host}:${port}/mcp`));
+const listener = app.listen(port, host, () => { const actual = (typeof listener.address === "function" && listener.address()) ? listener.address().port : port; console.error(`aidlc MCP state service listening at http://${host}:${actual}/mcp`); });
 const shutdown = async () => { listener.close(); await repository.close(); await coordination.close(); await fleet?.close(); };
 process.once("SIGINT", shutdown); process.once("SIGTERM", shutdown);

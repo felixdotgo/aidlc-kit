@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.mjs",
     "test": "node --test test/*.test.mjs",
-    "lint": "node --check src/repository.mjs && node --check src/coordination.mjs && node --check src/fleet.mjs && node --check src/fleet-client.mjs && node --check src/fleet-run.mjs && node --check src/server.mjs"
+    "lint": "node -e \"const { readdirSync } = require('node:fs'); const { execFileSync } = require('node:child_process'); for (const file of readdirSync('src').filter((name) => name.endsWith('.mjs'))) execFileSync(process.execPath, ['--check', 'src/' + file], { stdio: 'inherit' });\""
   },
   "dependencies": {
     "@modelcontextprotocol/express": "^2.0.0",
