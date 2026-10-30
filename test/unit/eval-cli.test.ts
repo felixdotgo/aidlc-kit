@@ -25,7 +25,7 @@ test("repository evaluator CLI reads development config and writes non-overwriti
 
 test("repository evaluator policy targets the pinned OpenCode runner", () => {
   const config = JSON.parse(readFileSync(resolve("dev/evaluator/config.json"), "utf8"));
-  const runner = config.runners["opencode-gpt6"];
+  const runner = config.runners["opencode-beam"];
   assert.equal(runner.command, "node");
   assert.deepEqual(runner.args, ["./dist/dev/evaluator/runners/opencode.js"]);
   assert.equal(runner.adapter, "opencode");

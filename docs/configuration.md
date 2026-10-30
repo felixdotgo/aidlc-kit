@@ -42,10 +42,10 @@ Built-in topology profiles are:
 Arrays are stable-deduplicated. Command keys are last-wins, so a project can replace a profile command intentionally. Validate the resolved profile chain with:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit profile validate .
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit profile validate .
 ```
 
-This command uses the npm package at version `0.0.1`. To run from a source checkout instead, see the [development guide](./development.md).
+This command uses the npm package at version `0.1.1`. To run from a source checkout instead, see the [development guide](./development.md).
 
 ## Rules, project data, and managed assets
 

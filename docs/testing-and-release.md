@@ -77,7 +77,7 @@ AIDLC_TEST_PROJECT="$(mktemp -d /tmp/aidlc-project.XXXXXX)"
 
 npm run build
 npm pack --pack-destination "$AIDLC_PACK_DIR"
-tar -xzf "$AIDLC_PACK_DIR/felixdotgo-aidlc-kit-0.0.1.tgz" -C "$AIDLC_EXTRACT_DIR"
+tar -xzf "$AIDLC_PACK_DIR/felixdotgo-aidlc-kit-0.1.1.tgz" -C "$AIDLC_EXTRACT_DIR"
 node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" init "$AIDLC_TEST_PROJECT" --agent codex --dry-run
 node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" init "$AIDLC_TEST_PROJECT" --agent codex --yes
 node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" status "$AIDLC_TEST_PROJECT"
@@ -100,7 +100,7 @@ node dist/dev/evaluator/cli.js run --runner local-simulated
 
 Runners exchange JSON, and reports capture transport, transcript, normalised events, usage, and diagnostics. Real Codex, Claude Code, or OpenCode runs can consume credentials and model budget; they are not required for ordinary development verification.
 
-The pinned `opencode-gpt6` runner uses adapter `opencode` with model `opencode-go/gpt-6-luna`, version `opencode-2.2.0`, protocol version `2`, real evidence, and a 300000 ms timeout. It runs `opencode run --format json --standalone --auto` once per turn, resumes with `--session`, and writes `opencode.json` containing `{"mcp": {}}` into each scenario workspace so project MCP servers do not leak into the evaluation. OpenCode resolves its project directory from the inherited `PWD`, not the spawned process working directory, so the runner and the loop driver pin `PWD` to the workspace; without that pin, commands would silently run in the invoking repository. OpenCode has no environment-credential mode, so the runner reuses the local Console authentication; the residual risk is that user plugins or agents can still load. That isolation is workspace configuration, not a security boundary.
+The pinned `opencode-beam` runner uses adapter `opencode` with model `opencode-go/beam-free`, version `opencode-2.2.0`, protocol version `2`, real evidence, and a 300000 ms timeout; the `economy` category is pinned to the lighter `opencode-go/beam-free#medium` variant so heavier turns stay inside that timeout. It runs `opencode run --format json --standalone --auto` once per turn, resumes with `--session`, and writes `opencode.json` containing `{"mcp": {}}` into each scenario workspace so project MCP servers do not leak into the evaluation. OpenCode resolves its project directory from the inherited `PWD`, not the spawned process working directory, so the runner and the loop driver pin `PWD` to the workspace; without that pin, commands would silently run in the invoking repository. OpenCode has no environment-credential mode, so the runner reuses the local Console authentication; the residual risk is that user plugins or agents can still load. That isolation is workspace configuration, not a security boundary.
 
 The release-eligible `aidlc-official-agentic` suite is version `2.5.0`. Its `supported-adapters` scenario asks the agent to explain that the workflow supports Codex, Claude Code, and OpenCode without executing remote code or shell strings. The suite also includes `build-multi-item-continuation`, which starts with three canonical build items and requires one agent run to complete all of them, record verification/review evidence, and stop only at a ready G2. This complements unit guards by exercising the model-facing continuation contract.
 
@@ -126,17 +126,17 @@ Publishing, tagging, committing, and pushing are separate human-authorised actio
 
 ## First npm publication
 
-The first release is `@felixdotgo/aidlc-kit@0.0.1`, with public access and the `latest` dist-tag. Complete the release checks and the project's human review gates before publishing.
+The first release is `@felixdotgo/aidlc-kit@0.1.1`, with public access and the `latest` dist-tag. Complete the release checks and the project's human review gates before publishing.
 
 From the repository root, sign in to an npm account with permission to publish to the `@felixdotgo` scope and confirm the active account:
 
 ```sh
 npm login --registry https://registry.npmjs.org
 npm whoami --registry https://registry.npmjs.org
-npm view @felixdotgo/aidlc-kit@0.0.1 version --registry https://registry.npmjs.org
+npm view @felixdotgo/aidlc-kit@0.1.1 version --registry https://registry.npmjs.org
 ```
 
-An unpublished package normally returns `404` from `npm view`; that response does not establish scope ownership or publish permission. If `0.0.1` already exists, stop: npm versions cannot be overwritten. If `npm whoami` returns `401`, sign in again before publishing.
+An unpublished package normally returns `404` from `npm view`; that response does not establish scope ownership or publish permission. If `0.1.1` already exists, stop: npm versions cannot be overwritten. If `npm whoami` returns `401`, sign in again before publishing.
 
 After inspecting the local tarball and documentation, publish from the repository root:
 
@@ -149,8 +149,8 @@ npm publish --access public --tag latest --registry https://registry.npmjs.org
 Confirm the published version, dist-tag and artifact metadata:
 
 ```sh
-npm view @felixdotgo/aidlc-kit@0.0.1 version dist.tarball dist.integrity --json --registry https://registry.npmjs.org
+npm view @felixdotgo/aidlc-kit@0.1.1 version dist.tarball dist.integrity --json --registry https://registry.npmjs.org
 npm view @felixdotgo/aidlc-kit dist-tags --json --registry https://registry.npmjs.org
 ```
 
-Expect version `0.0.1`, a tarball URL and integrity value, and `latest` pointing to `0.0.1`. Git tags, GitHub releases, commits, and pushes require their own delivery authorisation.
+Expect version `0.1.1`, a tarball URL and integrity value, and `latest` pointing to `0.1.1`. Git tags, GitHub releases, commits, and pushes require their own delivery authorisation.

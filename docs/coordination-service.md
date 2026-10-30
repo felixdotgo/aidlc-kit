@@ -7,11 +7,11 @@ The optional AI-DLC Coordination service is a separate Docker-deployable authori
 Preview a configuration first. Outside an interactive terminal, provide all four selection flags.
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit mcp setup . --dry-run \
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit mcp setup . --dry-run \
   --deployment docker --storage sqlite --bind localhost --workspace engineering
 ```
 
-This command uses the npm package at version `0.0.1`. To run from a source checkout instead, see the [development guide](./development.md).
+This command uses the npm package at version `0.1.1`. To run from a source checkout instead, see the [development guide](./development.md).
 
 Remove `--dry-run` and confirm to create `.agents/aidlc-coordination/` and update `.agents/config.json`. Setup does not start Docker. Copy `.env.example` to a secret-managed `.env`, review it, then start explicitly:
 

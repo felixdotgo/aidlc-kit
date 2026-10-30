@@ -15,11 +15,11 @@ Workflow assets are bundled with the package, `remoteUpdates` is `false`, and no
 Run these commands from your existing project's directory to preview the installation, then apply it:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-kit init . --agent codex --dry-run
-npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-kit init . --agent codex --yes
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit init . --agent codex --dry-run
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit init . --agent codex --yes
 ```
 
-`npx` may ask permission to download the package on first use. These examples pin version `0.1.0`. After installation, the project's lifecycle scripts run locally without `npx` or a registry connection.
+`npx` may ask permission to download the package on first use. These examples pin version `0.1.1`. After installation, the project's lifecycle scripts run locally without `npx` or a registry connection.
 
 Use the adapter that matches the coding tool:
 
@@ -34,8 +34,8 @@ Use `--all` to install every supported adapter. Codex installs workspace-write s
 Confirm the installed project locally:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-kit status .
-npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-kit doctor . --strict
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit status .
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit doctor . --strict
 ```
 
 ## Documentation

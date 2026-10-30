@@ -250,13 +250,13 @@ test("OpenCode driver fails closed when a resumed turn has no captured session",
 
 test("development-only evaluator runners use the approved timeouts", () => {
   const config = JSON.parse(readFileSync(resolve("dev/evaluator/config.json"), "utf8"));
-  for (const id of ["codex-luna", "claude-sonnet", "claude-haiku", "opencode-gpt6"]) assert.equal(config.runners[id].timeoutMs, 300_000);
+  for (const id of ["codex-luna", "claude-sonnet", "claude-haiku", "opencode-beam"]) assert.equal(config.runners[id].timeoutMs, 300_000);
   assert.equal(config.runners["local-simulated"].timeoutMs, 120_000);
   assert.equal(config.runners["codex-luna"].modelsByCategory.continuation, "gpt-6-sol");
   assert.equal(config.runners["codex-luna"].version, "codex-cli-0.156.1");
-  assert.equal(config.runners["opencode-gpt6"].adapter, "opencode");
-  assert.equal(config.runners["opencode-gpt6"].model, "opencode-go/gpt-6-luna");
-  assert.equal(config.runners["opencode-gpt6"].version, "opencode-2.2.0");
-  assert.equal(config.runners["opencode-gpt6"].evidenceKind, "real");
-  assert.deepEqual(Object.keys(config.runners["opencode-gpt6"].modelsByCategory).sort(), Object.keys(config.runners["codex-luna"].modelsByCategory).sort());
+  assert.equal(config.runners["opencode-beam"].adapter, "opencode");
+  assert.equal(config.runners["opencode-beam"].model, "opencode-go/beam-free");
+  assert.equal(config.runners["opencode-beam"].version, "opencode-2.2.0");
+  assert.equal(config.runners["opencode-beam"].evidenceKind, "real");
+  assert.deepEqual(Object.keys(config.runners["opencode-beam"].modelsByCategory).sort(), Object.keys(config.runners["codex-luna"].modelsByCategory).sort());
 });

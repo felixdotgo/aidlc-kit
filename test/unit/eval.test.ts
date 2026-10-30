@@ -10,7 +10,7 @@ import { verifyReleaseEvidence } from "../../dev/evaluator/release.js";
 import { validateState } from "../../src/state.js";
 
 const suite = loadEvalSuite();
-const packageVersion = "0.1.0";
+const packageVersion = "0.1.1";
 const result = (id: string, category: string, model: string): EvalScenarioResult => ({ id, category, model, repeat: 1, completed: true, score: 10, assertions: [{ id: "a1", dimension: "state", severity: "critical", passed: true, detail: "ok" }], usage: { contextChars: 100, latencyMs: 10 }, diagnostics: [] });
 const report = (runner: string, adapter: string, evidenceKind: "real" | "simulated" = "real"): EvalReport => {
   const model = `${runner}-model`; const results = suite.scenarios.map((scenario) => result(scenario.id, scenario.category, model));
