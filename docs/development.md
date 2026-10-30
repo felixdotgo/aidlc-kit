@@ -35,6 +35,7 @@ The asset build copies `assets/aidlc/` and `skills/` into `dist/assets/.agents/`
 | Command | Purpose |
 | --- | --- |
 | `npm run build` | Rebuild bundled workflow assets and compile TypeScript into `dist/`. |
+| `npm run sync-core` | Copy `assets/aidlc/scripts/lib/store.mjs` to `services/aidlc-coordination/src/lifecycle-core.mjs` byte-identically. |
 | `npm run lint` | Type-check without emitting files. |
 | `npm test` | Build, then run every compiled unit test with Node's test runner. |
 | `node --test dist/test/unit/<file>.test.js` | Run a focused compiled test after building. |
@@ -94,6 +95,8 @@ Do not introduce a second lifecycle board or hand-edit canonical state. The inst
 The TypeScript implementation powers the package CLI. Installed projects use a dependency-free mirror under `assets/aidlc/scripts/`. Changes to shared lifecycle, state, gate, profile, or context behaviour must preserve parity between these paths and add coverage for both package and installed-runtime execution.
 
 Likewise, a public configuration or schema change must update its validator, JSON schema, installed assets, package inventory, documentation, and tests together.
+
+The dual-core sync rule: after editing `assets/aidlc/scripts/lib/store.mjs`, run `npm run sync-core` so `services/aidlc-coordination/src/lifecycle-core.mjs` stays byte-identical.
 
 ## Code style and conventions
 

@@ -16,6 +16,10 @@ npm test
 
 If a test depends on child processes and a sandbox returns `EPERM`, rerun it in an appropriate local environment before deciding that the product failed.
 
+## Lifecycle core sync
+
+The TypeScript core (`src/state.ts`) and the dependency-free installed/runtime core (`assets/aidlc/scripts/lib/store.mjs`, mirrored to `services/aidlc-coordination/src/lifecycle-core.mjs`) must stay byte-identical. After editing `assets/aidlc/scripts/lib/store.mjs`, run `npm run sync-core` to copy it into the coordination service, then commit both files together. The byte-identity conformance test (`test/unit/lifecycle-core-conformance.test.ts`) enforces this link.
+
 ## Focused tests
 
 Build first, then invoke a compiled test file directly:
