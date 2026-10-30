@@ -26,7 +26,7 @@ test("task-next guard rejects final responses across multi-item and premature G2
     assert.equal(envelope.continuation.command, command);
     assert.equal(envelope.continuation.itemId, "T2");
     assert.equal(envelope.continuation.remainingItems, 1);
-    const stderrRecord = JSON.parse(active.stderr.split("\n")[0].replace(/^CONTINUATION_REQUIRED: /, ""));
+    const stderrRecord = JSON.parse((active.stderr.split("\n")[0] ?? "").replace(/^CONTINUATION_REQUIRED: /, ""));
     assert.deepEqual({ taskId: stderrRecord.taskId, command: stderrRecord.command }, { taskId: task.id, command });
     assert.ok(stderrRecord.reason.length > 0);
 
@@ -34,7 +34,7 @@ test("task-next guard rejects final responses across multi-item and premature G2
     writeFileSync(statePath, `${JSON.stringify({ schemaVersion: 3, tasks: { [task.id]: task }, archive: {} })}\n`);
     const premature = run(); assert.equal(premature.status, 2); assert.match(premature.stdout, /premature G2/);
 
-    task.tasks[1].status = "done";
+    task.tasks[1]!.status = "done";
     writeFileSync(statePath, `${JSON.stringify({ schemaVersion: 3, tasks: { [task.id]: task }, archive: {} })}\n`);
     const unverified = run(); assert.equal(unverified.status, 2); assert.match(unverified.stdout, /verification and adversarial review/);
 

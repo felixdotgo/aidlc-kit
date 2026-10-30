@@ -56,16 +56,16 @@ test("drivers apply least-privilege permissions to initial and resumed turns", {
           assert.ok(!args.some((arg) => arg.startsWith("permissions.aidlc_eval="))); assert.ok(!args.includes('default_permissions="aidlc_eval"'));
           assert.ok(!args.includes("--approve-for-me")); assert.ok(!args.includes("danger-full-access")); assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
         } else {
-          const allowed = args[args.indexOf("--allowedTools") + 1];
+          const allowed = args[args.indexOf("--allowedTools") + 1]!;
           assert.match(allowed, /Bash\(node verify\.mjs\)/); assert.doesNotMatch(allowed, /bad;command/);
           assert.ok(allowed.includes(`Bash(node ${root}/.agents/aidlc/scripts/*)`));
-          assert.ok(args.includes("--strict-mcp-config")); assert.ok(args.includes('{"mcpServers":{}}')); assert.match(args[args.indexOf("--append-system-prompt") + 1], /canonical nextAction loop/);
+          assert.ok(args.includes("--strict-mcp-config")); assert.ok(args.includes('{"mcpServers":{}}')); assert.match(args[args.indexOf("--append-system-prompt") + 1]!, /canonical nextAction loop/);
           assert.ok(!args.includes("bypassPermissions")); assert.ok(!args.includes("--dangerously-skip-permissions"));
         }
       }
       if (driver === "codex") {
         const stdin = JSON.parse(readFileSync(stdinPath, "utf8")); assert.equal(stdin.characterDevice, true); assert.equal(stdin.content, "");
-        const resumed = calls[1];
+        const resumed = calls[1]!;
         assert.ok(resumed.indexOf("--skip-git-repo-check") < resumed.indexOf("resume"));
         assert.ok(resumed.indexOf("-C") < resumed.indexOf("resume"));
         assert.equal(resumed[resumed.indexOf("-C") + 1], root);
@@ -84,7 +84,7 @@ test("Codex driver resumes its captured thread for a validated continuation guar
     const result = run("codex", root, root, { FAKE_ARGS_PATH: argsPath, FAKE_GUARD: guard }); assert.equal(result.status, 0, result.stderr);
     const payload = JSON.parse(result.stdout); const calls = readFileSync(argsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
     assert.equal(payload.transport, "completed"); assert.equal(calls.length, 2); assert.ok(payload.events.some((event: { type: string }) => event.type === "continuation-guard"));
-    assert.equal(calls[1][calls[1].indexOf("resume") + 1], "fixture-thread"); assert.match(calls[1].at(-1) ?? "", /Evaluator control turn/); assert.match(calls[1].at(-1) ?? "", /context\.mjs eval-task/);
+    assert.equal(calls[1]![calls[1]!.indexOf("resume") + 1], "fixture-thread"); assert.match(calls[1]!.at(-1) ?? "", /Evaluator control turn/); assert.match(calls[1]!.at(-1) ?? "", /context\.mjs eval-task/);
     assert.doesNotMatch(payload.diagnostics.join("\n"), /commandFailed/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -121,7 +121,7 @@ test("Claude does not auto-approve configured commands for custom suites", { ski
     executable(root, "claude", `const fs=require("node:fs"); fs.writeFileSync(process.env.FAKE_ARGS_PATH,JSON.stringify(process.argv.slice(2))); console.log(JSON.stringify({type:"result",result:"OK",session_id:"fixture"}));`);
     const result = spawnSync(process.execPath, [resolve("dist/dev/evaluator/runners/claude.js")], { input: request(root, 1, "custom-suite"), encoding: "utf8", env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ""}`, FAKE_ARGS_PATH: argsPath, AIDLC_EVAL_TIMEOUT_MS: "10000" } });
     assert.equal(result.status, 0, result.stderr);
-    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[]; const allowed = args[args.indexOf("--allowedTools") + 1];
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[]; const allowed = args[args.indexOf("--allowedTools") + 1]!;
     assert.doesNotMatch(allowed, /verify\.mjs/); assert.match(allowed, /Bash\(node \.agents\/aidlc\/scripts\/\*\)/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -230,8 +230,8 @@ else { console.log(JSON.stringify({type:"tool_use",timestamp:1,sessionID:sid,par
     const payload = JSON.parse(result.stdout) as { transport: string; transcript: string; events: Array<{ type: string }>; diagnostics: string[] };
     const calls = readFileSync(argsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
     assert.equal(payload.transport, "completed"); assert.equal(calls.length, 2); assert.ok(payload.events.some((event) => event.type === "continuation-guard"));
-    assert.equal(calls[1][calls[1].indexOf("--session") + 1], "fixture-session");
-    assert.match(calls[1].at(-1) ?? "", /Evaluator control turn/); assert.match(calls[1].at(-1) ?? "", /context\.mjs eval-task/);
+    assert.equal(calls[1]![calls[1]!.indexOf("--session") + 1], "fixture-session");
+    assert.match(calls[1]!.at(-1) ?? "", /Evaluator control turn/); assert.match(calls[1]!.at(-1) ?? "", /context\.mjs eval-task/);
     assert.match(payload.transcript, /guard seen/); assert.match(payload.transcript, /continued/);
     assert.doesNotMatch(payload.diagnostics.join("\n"), /commandFailed/);
   } finally { rmSync(root, { recursive: true, force: true }); }

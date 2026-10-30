@@ -11,7 +11,7 @@ test("gate requires new matching approval and exact checkpoint evidence", async 
   const checkpoint = makeGateCheckpoint({ taskId: "task-a", authority: "local", snapshot: waiting(), result: { gate: "G0_confirm" } });
   assert.equal((await checkGateCheckpoint({ checkpoint, snapshot: waiting() })).status, "wait");
   assert.equal((await checkGateCheckpoint({ checkpoint, snapshot: approved() })).status, "resume");
-  const stale = approved(); stale.task.evidence[0].gate = "G1_review";
+  const stale = approved(); stale.task.evidence[0]!.gate = "G1_review";
   assert.equal((await checkGateCheckpoint({ checkpoint, snapshot: stale })).status, "blocked");
   const paused = approved(); paused.task.status = "paused";
   assert.equal((await checkGateCheckpoint({ checkpoint, snapshot: paused })).status, "blocked");

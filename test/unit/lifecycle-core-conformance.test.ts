@@ -18,18 +18,18 @@ test("MCP lifecycle core and local lifecycle state reject and accept the same tr
   const local: WorkflowState = { schemaVersion: 3, tasks: { "core-fixture": task() }, archive: {} };
   const remote = structuredClone(local);
   assert.doesNotThrow(() => validateState(local)); assert.doesNotThrow(() => core.validateState(remote));
-  assert.deepEqual(core.transitionDiagnostics(remote.tasks["core-fixture"], "plan"), transitionDiagnostics(local.tasks["core-fixture"], "plan"));
+  assert.deepEqual(core.transitionDiagnostics(remote.tasks["core-fixture"], "plan"), transitionDiagnostics(local.tasks["core-fixture"]!, "plan"));
   assert.throws(() => transitionTask(local, "core-fixture", "plan"), /G0 approval/);
   assert.throws(() => core.transitionTask(remote, "core-fixture", "plan"), /G0 approval/);
   const approval = { kind: "approval" as const, gate: "G0_confirm" as const, source: "fixture", result: "pass" as const, recordedAt: "2026-01-01T00:00:01.000Z" };
-  local.tasks["core-fixture"].evidence.push(approval); remote.tasks["core-fixture"].evidence.push(approval);
+  local.tasks["core-fixture"]!.evidence.push(approval); remote.tasks["core-fixture"]!.evidence.push(approval);
   transitionTask(local, "core-fixture", "plan"); core.transitionTask(remote, "core-fixture", "plan");
-  assert.equal(Number.isNaN(Date.parse(local.tasks["core-fixture"].updatedAt)), false);
-  assert.equal(Number.isNaN(Date.parse(remote.tasks["core-fixture"].updatedAt)), false);
-  remote.tasks["core-fixture"].updatedAt = local.tasks["core-fixture"].updatedAt;
+  assert.equal(Number.isNaN(Date.parse(local.tasks["core-fixture"]!.updatedAt)), false);
+  assert.equal(Number.isNaN(Date.parse(remote.tasks["core-fixture"]!.updatedAt)), false);
+  remote.tasks["core-fixture"]!.updatedAt = local.tasks["core-fixture"]!.updatedAt;
   assert.deepEqual(remote, local);
 
-  const localTask = local.tasks["core-fixture"];
+  const localTask = local.tasks["core-fixture"]!;
   localTask.phase = "build"; localTask.gate = "G2_codereview";
   localTask.tasks = [{ id: "T1", label: "First", status: "done" }, { id: "T2", label: "Second", status: "todo" }];
   const remoteTask = structuredClone(localTask);
@@ -53,7 +53,7 @@ test("MCP and local cores share build-boundary, verification, reopen, and self-t
   assert.throws(() => core.transitionTask(remote, remoteTask.id, "build"), /Cannot transition/);
   handoffTask(local, localTask.id, "structural_change", "new design", "review", "2026-01-01T00:00:04.000Z"); core.handoffTask(remote, remoteTask.id, "structural_change", "new design", "review", "2026-01-01T00:00:04.000Z");
   reopenTask(local, localTask.id, "plan", "replan", "human", "2026-01-01T00:00:05.000Z"); core.reopenTask(remote, remoteTask.id, "plan", "replan", "human", "2026-01-01T00:00:05.000Z");
-  assert.equal(localTask.tasks[0].status, "todo"); assert.deepEqual(remote.tasks[remoteTask.id], localTask);
+  assert.equal(localTask.tasks[0]!.status, "todo"); assert.deepEqual(remote.tasks[remoteTask.id], localTask);
 });
 
 test("MCP and local cores agree that a gateless wait continues wrap", async () => {
@@ -98,14 +98,14 @@ test("MCP and local cores stamp and honour legacy G2 waits identically", async (
   const local: WorkflowState = { schemaVersion: 4, tasks: { [fixture.id]: fixture }, archive: {} };
   const remote = structuredClone(local);
   assert.equal(nextAction(fixture).classification, "blocked");
-  assert.equal(core.nextAction(remote.tasks[fixture.id]).classification, "blocked");
+  assert.equal(core.nextAction(remote.tasks[fixture.id]!).classification, "blocked");
   assert.deepEqual(stampLegacyG2Waits(local), [fixture.id]);
   assert.deepEqual(core.stampLegacyG2Waits(remote), [fixture.id]);
-  assert.deepEqual(remote.tasks[fixture.id], local.tasks[fixture.id]);
-  assert.equal(local.tasks[fixture.id].legacyG2Wait?.source, legacyG2WaitSource);
+  assert.deepEqual(remote.tasks[fixture.id]!, local.tasks[fixture.id]);
+  assert.equal(local.tasks[fixture.id]!.legacyG2Wait?.source, legacyG2WaitSource);
   assert.equal(core.legacyG2WaitSource, legacyG2WaitSource);
-  assert.deepEqual(core.nextAction(remote.tasks[fixture.id]), nextAction(local.tasks[fixture.id]));
-  assert.equal(nextAction(local.tasks[fixture.id]).classification, "await_user");
+  assert.deepEqual(core.nextAction(remote.tasks[fixture.id]!), nextAction(local.tasks[fixture.id]!));
+  assert.equal(nextAction(local.tasks[fixture.id]!).classification, "await_user");
   assert.doesNotThrow(() => validateState(local)); assert.doesNotThrow(() => core.validateState(remote));
 });
 

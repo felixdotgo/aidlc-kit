@@ -119,7 +119,7 @@ test("context failures before the driver pause safely and permit resume after re
       writeFileSync(join(taskDir, "intent.md"), intent);
       const contextPath = join(root, ".agents/aidlc/scripts/context.mjs");
       const originalContext = readFileSync(contextPath, "utf8");
-      writeFileSync(contextPath, brokenContext);
+      writeFileSync(contextPath, brokenContext!);
       const { runLoop } = await loadRuntime();
       let calls = 0;
       const driver = async ({ onSessionId }: { onSessionId: (id: string) => void }) => {

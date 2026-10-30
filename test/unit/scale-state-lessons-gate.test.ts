@@ -36,8 +36,8 @@ test("schema v3 compacts 100 terminal tasks and keeps bounded catalog reads", ()
     const first = listTaskSummaries(state, { includeArchive: true });
     assert.equal(first.items.length, 20); assert.equal(first.total, 100); assert.equal(first.nextCursor, "20");
     const second = listTaskSummaries(state, { includeArchive: true, cursor: Number(first.nextCursor) });
-    assert.equal(second.items.length, 20); assert.notEqual(second.items[0].id, first.items[0].id);
-    const id = first.items[0].id;
+    assert.equal(second.items.length, 20); assert.notEqual(second.items[0]!.id, first.items[0]!.id);
+    const id = first.items[0]!.id;
     assert.equal(loadTask(root, id, state)?.id, id);
     assert.ok(existsSync(join(root, `.agents/data/state/archive/${id}.json`)));
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -61,7 +61,7 @@ test("lesson search uses the bounded derived index and detects catalog drift", (
     assert.equal(searchLessons(root, state, "archived task", ["runtime"])[0]?.id, "avoid-full-state");
     renameSync(hidden, archiveDir);
 
-    state.archive![task.id].digest = "0".repeat(64);
+    state.archive![task.id]!.digest = "0".repeat(64);
     assert.throws(() => searchLessons(root, state, "archived", ["runtime"]), /stale/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -109,7 +109,7 @@ test("state compaction recovers only a valid unreferenced archive orphan", () =>
       writeFileSync(conflictingPath, "not-json\n");
       const conflictingRetry: WorkflowState = { schemaVersion: 3, tasks: { [completed.id]: completed }, archive: {} };
       assert.throws(() => saveState(conflictingRoot, conflictingRetry), /Archived task record conflicts/);
-      assert.equal(conflictingRetry.tasks[completed.id].status, "done");
+      assert.equal(conflictingRetry.tasks[completed.id]!.status, "done");
     } finally { rmSync(conflictingRoot, { recursive: true, force: true }); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

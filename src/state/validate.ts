@@ -67,7 +67,9 @@ export const validateState = (value: unknown): WorkflowState => {
     while (cursor.successorTaskId) {
       if (seen.has(cursor.successorTaskId)) throw new Error(`Cyclic successor link: ${id}`);
       seen.add(cursor.successorTaskId);
-      cursor = references[cursor.successorTaskId];
+      const next = references[cursor.successorTaskId];
+      if (!next) throw new Error(`Invalid successor link: ${id}`);
+      cursor = next;
     }
   }
   return state as WorkflowState;

@@ -28,8 +28,8 @@ test("bundled agentic suite is versioned and release eligible", () => {
   assert.ok(suite.scenarios.some((item) => item.assertions.some((assertion) => assertion.type === "jsonEquals")));
   assert.ok(suite.scenarios.some((item) => item.assertions.some((assertion) => assertion.type === "eventNotObserved")));
   const supportedAdapters = suite.scenarios.find((item) => item.id === "supported-adapters");
-  assert.match(supportedAdapters?.turns[0].input ?? "", /Codex, Claude Code, and OpenCode/);
-  assert.doesNotMatch(supportedAdapters?.turns[0].input ?? "", /only/);
+  assert.match(supportedAdapters?.turns[0]?.input ?? "", /Codex, Claude Code, and OpenCode/);
+  assert.doesNotMatch(supportedAdapters?.turns[0]?.input ?? "", /only/);
   assert.ok(supportedAdapters?.assertions.some((assertion) => assertion.id === "no-remote" && assertion.type === "eventNotObserved" && assertion.event === "network"));
   const boundedRepair = suite.scenarios.find((item) => item.id === "build-bounded-repair");
   assert.ok(boundedRepair?.assertions.some((assertion) => assertion.id === "handoff-kind" && assertion.type === "jsonEquals" && assertion.jsonPath === "tasks.eval-task.handoff.kind"));
@@ -49,7 +49,7 @@ test("multi-turn runner receives separate per-turn and whole-scenario budgets", 
     writeFileSync(runner, `let input = ""; for await (const chunk of process.stdin) input += chunk; const request = JSON.parse(input); process.stdout.write(JSON.stringify({ transport: "completed", transcript: "ok", diagnostics: [\`turns=\${request.scenario.turns.length} perTurn=\${process.env.AIDLC_EVAL_TIMEOUT_MS} outer=\${process.env.AIDLC_EVAL_SCENARIO_TIMEOUT_MS}\`] }));\n`);
     writeFileSync(suitePath, JSON.stringify({ schemaVersion: 2, suiteId: "timeout-contract", version: "1", releaseEligible: false, scenarios: [{ id: "multi", category: "continuation", maxContextChars: 1000, turns: [{ role: "user", input: "one" }, { role: "user", input: "two" }], assertions: [{ id: "transport", dimension: "completion", severity: "critical", type: "transportCompleted" }] }] }));
     const evaluated = runEvaluation("fixture", { command: "node", args: [runner], adapter: "codex", model: "fixture", version: "fixture", protocolVersion: 2, evidenceKind: "simulated", timeoutMs: 1000 }, process.cwd(), { suitePath });
-    assert.deepEqual(evaluated.results[0].diagnostics, ["turns=2 perTurn=1000 outer=32000"]);
+    assert.deepEqual(evaluated.results[0]!.diagnostics, ["turns=2 perTurn=1000 outer=32000"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -61,7 +61,7 @@ test("legacy keyword suites remain diagnostic-only", () => {
     const legacy = loadEvalSuite(path);
     assert.equal(legacy.releaseEligible, false);
     assert.equal(legacy.suiteId, "legacy-v1-diagnostic");
-    assert.ok(legacy.scenarios[0].assertions.some((item) => item.type === "transcriptIncludes"));
+    assert.ok(legacy.scenarios[0]?.assertions.some((item) => item.type === "transcriptIncludes"));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -112,7 +112,7 @@ test("evaluation workspace installs every adapter registered by the installer", 
       const path = join(root, "suite.json");
       writeFileSync(path, JSON.stringify({ schemaVersion: 2, suiteId: "native-adapter", version: "1", releaseEligible: false, scenarios: [{ id: "native", category: "adapter", maxContextChars: 1000, turns: [{ role: "user", input: "Inspect native instructions" }], assertions: [{ id: "transport", dimension: "completion", severity: "critical", type: "transportCompleted" }, { id: "agents", dimension: "artifact", severity: "critical", type: "fileExists", path: marker }] }] }));
       const evaluated = runEvaluation(`fake-${adapter.id}`, { command: "node", args: [resolve("dev/evaluator/scripts/deterministic-eval-runner.mjs")], adapter: adapter.id, model: "fake", version: "fixture", protocolVersion: 2, evidenceKind: "simulated" }, process.cwd(), { suitePath: path });
-      assert.equal(evaluated.results[0].score, 10, `${adapter.id}: ${evaluated.results[0].diagnostics.join("; ")}`);
+      assert.equal(evaluated.results[0]!.score, 10, `${adapter.id}: ${evaluated.results[0]!.diagnostics.join("; ")}`);
       assert.equal(evaluated.passedReleaseGate, false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }
@@ -125,9 +125,9 @@ test("evaluation workspace fails closed for adapters outside the installer regis
     writeFileSync(path, JSON.stringify({ schemaVersion: 2, suiteId: "unknown-adapter", version: "1", releaseEligible: false, scenarios: [{ id: "unknown", category: "adapter", maxContextChars: 1000, turns: [{ role: "user", input: "Inspect native instructions" }], assertions: [{ id: "transport", dimension: "completion", severity: "critical", type: "transportCompleted" }] }] }));
     assert.equal(findAdapter("unknown-vendor"), undefined);
     const evaluated = runEvaluation("fake-unknown", { command: "node", args: [resolve("dev/evaluator/scripts/deterministic-eval-runner.mjs")], adapter: "unknown-vendor", model: "fake", version: "fixture", protocolVersion: 2, evidenceKind: "simulated" }, process.cwd(), { suitePath: path });
-    assert.equal(evaluated.results[0].completed, false);
-    assert.ok(evaluated.results[0].assertions.every((assertion) => !assertion.passed));
-    assert.match(evaluated.results[0].diagnostics.join("\n"), /Unsupported runner adapter: unknown-vendor/);
+    assert.equal(evaluated.results[0]!.completed, false);
+    assert.ok(evaluated.results[0]!.assertions.every((assertion) => !assertion.passed));
+    assert.match(evaluated.results[0]!.diagnostics.join("\n"), /Unsupported runner adapter: unknown-vendor/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -140,7 +140,7 @@ test("focused evaluation accepts ordered scenario lists and reports bounded obse
       { id: "second", category: "state", maxContextChars: 1000, turns: [{ role: "user", input: "Inspect state" }], assertions: [{ id: "transport", dimension: "completion", severity: "critical", type: "transportCompleted" }] }
     ] }));
     const evaluated = runEvaluation("fixture", { command: "node", args: [resolve("dev/evaluator/scripts/deterministic-eval-runner.mjs")], adapter: "codex", model: "fixture", version: "fixture", protocolVersion: 2, evidenceKind: "simulated", timeoutMs: 1000 }, process.cwd(), { suitePath: path, scenario: "second,first" });
-    assert.deepEqual(evaluated.results.map((item) => item.id), ["first", "second"]); assert.equal(evaluationPassed(evaluated), true); assert.equal(evaluated.passedReleaseGate, false); assert.match(evaluated.results[0].assertions[0].detail, /observed="fail"/);
+    assert.deepEqual(evaluated.results.map((item) => item.id), ["first", "second"]); assert.equal(evaluationPassed(evaluated), true); assert.equal(evaluated.passedReleaseGate, false); assert.match(evaluated.results[0]!.assertions[0]!.detail, /observed="fail"/);
     assert.throws(() => runEvaluation("fixture", { command: "node", args: [resolve("dev/evaluator/scripts/deterministic-eval-runner.mjs")], adapter: "codex", model: "fixture", version: "fixture", protocolVersion: 2, evidenceKind: "simulated" }, process.cwd(), { suitePath: path, scenario: "missing" }), /Unknown evaluation scenarios/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -151,7 +151,7 @@ test("failed assertions include bounded transcript hashes and normalized event c
     const path = join(root, "suite.json");
     writeFileSync(path, JSON.stringify({ schemaVersion: 2, suiteId: "diagnostics", version: "1", releaseEligible: false, scenarios: [{ id: "failure", category: "transcript", maxContextChars: 1000, turns: [{ role: "user", input: "Inspect" }], assertions: [{ id: "missing", dimension: "transcript", severity: "critical", type: "transcriptIncludes", text: "never-present-value" }] }] }));
     const evaluated = runEvaluation("fixture", { command: "node", args: [resolve("dev/evaluator/scripts/deterministic-eval-runner.mjs")], adapter: "codex", model: "fixture", version: "fixture", protocolVersion: 2, evidenceKind: "simulated", timeoutMs: 1000 }, process.cwd(), { suitePath: path });
-    assert.equal(evaluationPassed(evaluated), false); assert.match(evaluated.results[0].diagnostics.at(-1) ?? "", /^transcriptChars=\d+ transcriptSha256=[a-f0-9]{12} eventTypes=/);
+    assert.equal(evaluationPassed(evaluated), false); assert.match(evaluated.results[0]!.diagnostics.at(-1) ?? "", /^transcriptChars=\d+ transcriptSha256=[a-f0-9]{12} eventTypes=/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -176,7 +176,7 @@ test("release evidence defaults to two adapters and permits an explicit Codex-on
     write([{ ...report("a", "codex"), results: [] }, report("b", "claude")]); assert.throws(() => verifyReleaseEvidence(path, packageVersion), /raw results/);
     write([{ ...report("a", "codex"), telemetry: { ...report("a", "codex").telemetry, medianContextChars: 1 } }, report("b", "claude")]); assert.throws(() => verifyReleaseEvidence(path, packageVersion), /telemetry aggregate/);
     write([{ ...report("a", "codex"), suiteDigest: "forged" }, { ...report("b", "claude"), suiteDigest: "forged" }]); assert.throws(() => verifyReleaseEvidence(path, packageVersion), /bundled pinned official suite/);
-    const forgedCategory = report("a", "codex"); forgedCategory.results[0] = { ...forgedCategory.results[0], category: "forged", model: "forged-model" }; forgedCategory.modelsByCategory = { forged: "forged-model" }; forgedCategory.categories = Object.fromEntries([...new Set(forgedCategory.results.map((item) => item.category))].map((category) => { const items = forgedCategory.results.filter((item) => item.category === category); return [category, { completionRate: 1, averageScore: items.reduce((sum, item) => sum + item.score, 0) / items.length }]; }));
+    const forgedCategory = report("a", "codex"); forgedCategory.results[0]! = { ...forgedCategory.results[0]!, category: "forged", model: "forged-model" }; forgedCategory.modelsByCategory = { forged: "forged-model" }; forgedCategory.categories = Object.fromEntries([...new Set(forgedCategory.results.map((item) => item.category))].map((category) => { const items = forgedCategory.results.filter((item) => item.category === category); return [category, { completionRate: 1, averageScore: items.reduce((sum, item) => sum + item.score, 0) / items.length }]; }));
     write([forgedCategory, report("b", "claude")]); assert.throws(() => verifyReleaseEvidence(path, packageVersion), /categories that do not match/);
     write([{ ...report("a", "codex"), runnerVerdict: "pass" } as EvalReport, report("b", "claude")]); assert.throws(() => verifyReleaseEvidence(path, packageVersion), /unknown fields/);
     write([{ ...report("a", "codex"), passedReleaseGate: false }, report("b", "claude")]); assert.throws(() => verifyReleaseEvidence(path, packageVersion), /persisted verdict/);

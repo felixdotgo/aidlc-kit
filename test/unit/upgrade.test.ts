@@ -307,7 +307,7 @@ test("legacy BOARD migration preserves prose and reconstructs approval history",
     const doc = ".agents/data/tasks/in-progress/01-01-2026-legacy.md";
     writeFileSync(join(root, doc), "---\ntask_id: 2026-0101-legacy\ntype: infra\nlanguage: en\n---\n# Legacy\n");
     writeFileSync(join(root, ".agents/data/state/BOARD.md"), "# AI-DLC BOARD\n\n| id | title | phase | gate | status | branch | submodules | doc |\n|----|-------|-------|------|--------|--------|------------|-----|\n| `2026-0101-legacy` | Legacy | build | G2_codereview | active | — | root | `.agents/data/tasks/in-progress/01-01-2026-legacy.md` |\n");
-    const migrated = migrateLegacyBoard(root); const task = migrated.state.tasks["2026-0101-legacy"];
+    const migrated = migrateLegacyBoard(root); const task = migrated.state.tasks["2026-0101-legacy"]!;
     assert.equal(task.phase, "build");
     assert.equal(task.language, "en");
     assert.ok(task.evidence.some((item) => item.gate === "G0_confirm"));
@@ -325,7 +325,7 @@ test("recognized v0.2.1 core and adapter migrate end-to-end without conflicts", 
     mkdirSync(join(root, ".agents/data/tasks/open"), { recursive: true });
     writeFileSync(join(root, ".agents/aidlc/manifest.json"), '{"schemaVersion":1,"workflow":"AI-DLC","source":"local-package-assets","remoteUpdates":false,"managedBy":"aidlc-workflow"}\n');
     writeFileSync(join(root, ".agents/aidlc/rules/gate-check.md"), "# Gate-check command (AI-DLC · project rule)\n\n> Project-specific executable for the gate self-check. The **generic contract** (what the command must accept/return, when to run it, manual fallback) lives in `.agents/aidlc/conventions.md §3`; this file holds the concrete command for THIS repo.\n\n## Command\n\n## Caveats\n");
-    writeFileSync(join(root, "AGENTS.md"), legacyV021AdapterContents["AGENTS.md"]);
+    writeFileSync(join(root, "AGENTS.md"), legacyV021AdapterContents["AGENTS.md"]!);
     const doc = ".agents/data/tasks/open/01-01-2026-legacy.md";
     writeFileSync(join(root, doc), "---\ntask_id: 2026-0101-legacy\ntype: infra\nlanguage: en\n---\n# Legacy\n");
     writeFileSync(join(root, ".agents/data/state/BOARD.md"), `# AI-DLC BOARD\n\n| id | title | phase | gate | status | branch | submodules | doc |\n|----|-------|-------|------|--------|--------|------------|-----|\n| \`2026-0101-legacy\` | Legacy | clarify | G0_confirm | blocked_on_user | — | root | \`${doc}\` |\n`);

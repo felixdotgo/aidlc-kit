@@ -14,8 +14,10 @@ test("packed tarball initializes a clean local project without a registry instal
     assert.ok(npmCli, "npm_execpath is required to create the local package tarball");
     const packed = spawnSync(process.execPath, [npmCli, "pack", "--ignore-scripts", "--json", "--pack-destination", archiveDir], { cwd: resolve("."), encoding: "utf8" });
     assert.equal(packed.status, 0, packed.stderr);
-    const [{ filename }] = JSON.parse(packed.stdout) as Array<{ filename: string }>;
-    const archive = join(archiveDir, filename);
+    const packedResult = JSON.parse(packed.stdout) as Array<{ filename: string }>;
+    const filename = packedResult[0]?.filename;
+    assert.ok(filename, "npm pack did not report a filename");
+    const archive = join(archiveDir, filename!);
     assert.ok(existsSync(archive), "npm pack did not create a local tarball");
 
     const extracted = join(root, "extracted"); mkdirSync(extracted);

@@ -14,7 +14,7 @@ const safePath = (root: string, relative: string): string => resolveProjectPath(
 const parseFrontmatter = (content: string): Record<string, string> => {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
-  return Object.fromEntries(match[1].split("\n").flatMap((line) => {
+  return Object.fromEntries((match[1] ?? "").split("\n").flatMap((line) => {
     const separator = line.indexOf(":");
     return separator < 0 ? [] : [[line.slice(0, separator).trim(), line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "")]];
   }));
@@ -33,27 +33,27 @@ const legacyEvidence = (phase: TaskState["phase"], recordedAt: string): TaskStat
 /** Maps one legacy BOARD row to a canonical task, copying its prose files into the stable artifact layout. */
 const taskFromLegacyRow = (root: string, files: FileSpec[], row: string[], recordedAt: string): TaskState => {
   const [id, title, phaseRaw, gateRaw, statusRaw, branch, areasRaw, doc] = row;
-  const oldDoc = safePath(root, doc);
+  const oldDoc = safePath(root, doc ?? "");
   const source = existsSync(oldDoc) ? readFileSync(oldDoc, "utf8") : "";
   const frontmatter = parseFrontmatter(source);
   const stableDir = `.agents/data/tasks/${id}`;
   const prosePath = `${stableDir}/intent-design.md`;
   const workplanPath = `${stableDir}/workplan.md`;
   if (source) files.push({ path: prosePath, owner: "aidlc-state", ownershipClass: "state", content: source });
-  const oldWorkplan = doc.replace(/\.md$/, ".workplan.md");
+  const oldWorkplan = (doc ?? "").replace(/\.md$/, ".workplan.md");
   if (existsSync(safePath(root, oldWorkplan))) files.push({ path: `${stableDir}/legacy-workplan.md`, owner: "aidlc-state", ownershipClass: "state", content: readFileSync(safePath(root, oldWorkplan), "utf8") });
-  const phase = ["clarify", "plan", "build", "wrap", "done"].includes(phaseRaw) ? phaseRaw as TaskState["phase"] : "clarify";
-  const gate = ["none", "G0_confirm", "G1_review", "G2_codereview"].includes(gateRaw) ? gateRaw as TaskState["gate"] : "G0_confirm";
+  const phase = (phaseRaw !== undefined && ["clarify", "plan", "build", "wrap", "done"].includes(phaseRaw) ? phaseRaw : "clarify") as TaskState["phase"];
+  const gate = (gateRaw !== undefined && ["none", "G0_confirm", "G1_review", "G2_codereview"].includes(gateRaw) ? gateRaw : "G0_confirm") as TaskState["gate"];
   return {
-    id,
-    title,
-    type: (["feature", "bug", "refactor", "infra"].includes(frontmatter.type) ? frontmatter.type : "infra") as TaskState["type"],
+    id: id ?? "",
+    title: title ?? "",
+    type: (["feature", "bug", "refactor", "infra"].includes(frontmatter.type ?? "") ? frontmatter.type : "infra") as TaskState["type"],
     phase,
     gate,
-    status: (["active", "blocked_on_user", "paused", "done"].includes(statusRaw) ? statusRaw : "paused") as TaskState["status"],
+    status: (statusRaw !== undefined && ["active", "blocked_on_user", "paused", "done"].includes(statusRaw) ? statusRaw : "paused") as TaskState["status"],
     language: frontmatter.language === "en" ? "en" : "vi",
     risk: "normal",
-    areas: areasRaw.split(",").map((area) => area.trim()).filter(Boolean),
+    areas: (areasRaw ?? "").split(",").map((area) => area.trim()).filter(Boolean),
     branch: branch || "—",
     artifacts: { intent: source ? prosePath : undefined, design: source ? prosePath : undefined, workplan: workplanPath },
     decisions: [],

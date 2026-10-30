@@ -19,10 +19,10 @@ test("item DAG exposes only ready work and blocks premature completion", () => {
   current.tasks = [{ id: "A", label: "A", status: "todo" }, { id: "B", label: "B", status: "todo", dependsOn: ["A"] }];
   assert.deepEqual(readyTaskItems(current), { ready: ["A"], blocked: [{ id: "B", waitingOn: ["A"] }] });
   assert.equal(nextAction(current).itemId, "A");
-  current.tasks[1].status = "done";
+  current.tasks[1]!.status = "done";
   assert.throws(() => readyTaskItems(current), /incomplete prerequisites/);
-  current.tasks[1].status = "todo";
-  current.tasks[0].dependsOn = ["B"];
+  current.tasks[1]!.status = "todo";
+  current.tasks[0]!.dependsOn = ["B"];
   assert.throws(() => readyTaskItems(current), /Cyclic execution dependency/);
 });
 
@@ -38,7 +38,7 @@ test("feature manifest rejects missing/cyclic links and derives ready tasks", as
     assert.deepEqual(readyFeatureTasks(feature, state).ready.map((item: { id: string }) => item.id), ["first"]);
     first.phase = "done"; first.gate = "none"; first.status = "done";
     assert.deepEqual(readyFeatureTasks(feature, state).ready.map((item: { id: string }) => item.id), ["second"]);
-    feature.tasks[0].dependsOn = ["second"];
+    feature.tasks[0]!.dependsOn = ["second"];
     assert.throws(() => saveFeature(root, feature, state), /Cyclic feature dependency/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

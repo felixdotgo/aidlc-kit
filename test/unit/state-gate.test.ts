@@ -22,9 +22,9 @@ test("state machine enforces approvals, decisions, verification, and review", ()
   transitionTask(state, current.id, "plan");
   current.evidence.push({ kind: "approval", gate: "G1_review", source: "user", result: "pass", recordedAt: "2026-01-01T00:00:02.000Z" });
   assert.throws(() => transitionTask(state, current.id, "build"), /unresolved/);
-  current.decisions[0].status = "approved";
+  current.decisions[0]!.status = "approved";
   transitionTask(state, current.id, "build");
-  current.tasks[0].status = "done";
+  current.tasks[0]!.status = "done";
   assert.throws(() => transitionTask(state, current.id, "wrap"), /current-build verification/);
   current.evidence.push({ kind: "test", source: "npm test", result: "pass", recordedAt: "2026-01-01T00:00:03.000Z" });
   current.evidence.push({ kind: "review", source: "diff review", result: "pass", recordedAt: "2026-01-01T00:00:04.000Z" });
@@ -36,7 +36,7 @@ test("state machine enforces approvals, decisions, verification, and review", ()
 });
 
 test("a gateless wrap wait routes back to run_phase instead of an unapprovable gate", () => {
-  const current = task(); current.phase = "wrap"; current.gate = "none"; current.status = "blocked_on_user"; current.decisions[0].status = "approved"; current.tasks[0].status = "done";
+  const current = task(); current.phase = "wrap"; current.gate = "none"; current.status = "blocked_on_user"; current.decisions[0]!.status = "approved"; current.tasks[0]!.status = "done";
   const action = nextAction(current);
   assert.equal(action.classification, "run_phase");
   assert.match(action.reason, /gateless/);
@@ -45,7 +45,7 @@ test("a gateless wrap wait routes back to run_phase instead of an unapprovable g
 test("rendered workplans are deterministic and gate checks require artifacts/evidence", () => {
   const root = mkdtempSync(join(tmpdir(), "aidlc-state-"));
   try {
-    const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0].status = "approved"; current.tasks[0].status = "done";
+    const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0]!.status = "approved"; current.tasks[0]!.status = "done";
     current.evidence.push({ kind: "approval", gate: "G1_review", source: "user", result: "pass", recordedAt: "2026-01-01T00:00:01.000Z" });
     for (const path of Object.values(current.artifacts)) {
       mkdirSync(join(root, path!, ".."), { recursive: true });
@@ -64,7 +64,7 @@ test("rendered workplans are deterministic and gate checks require artifacts/evi
 test("G2 requires verification evidence for every affected area", () => {
   const root = mkdtempSync(join(tmpdir(), "aidlc-areas-"));
   try {
-    const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.areas = ["api", "web"]; current.decisions[0].status = "approved"; current.tasks[0].status = "done";
+    const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.areas = ["api", "web"]; current.decisions[0]!.status = "approved"; current.tasks[0]!.status = "done";
     current.evidence.push({ kind: "approval", gate: "G1_review", source: "user", result: "pass", recordedAt: "2026-01-01T00:00:01.000Z" });
     for (const path of Object.values(current.artifacts)) { mkdirSync(join(root, path!, ".."), { recursive: true }); writeFileSync(join(root, path!), "artifact\n"); }
     current.evidence.push({ kind: "test", area: "api", source: "api test", result: "pass", recordedAt: new Date().toISOString() });
@@ -79,7 +79,7 @@ test("G2 requires verification evidence for every affected area", () => {
 test("current-build verification uses append order and evaluates test and lint independently", () => {
   const root = mkdtempSync(join(tmpdir(), "aidlc-latest-"));
   try {
-    const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0].status = "approved"; current.tasks[0].status = "done";
+    const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0]!.status = "approved"; current.tasks[0]!.status = "done";
     for (const path of Object.values(current.artifacts)) { mkdirSync(join(root, path!, ".."), { recursive: true }); writeFileSync(join(root, path!), "artifact\n"); }
     current.evidence.push(
       { kind: "test", area: "root", source: "old pass", result: "pass", recordedAt: "2026-01-01T00:00:00.000Z" },
@@ -118,7 +118,7 @@ test("atomic gate approval is idempotent and exposes the next action", () => {
 
 test("build nextAction routes deterministically through every actionable item", () => {
   const current = task();
-  current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0].status = "approved";
+  current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0]!.status = "approved";
   current.tasks = [
     { id: "T1", label: "First", status: "done" },
     { id: "T2", label: "Second", status: "todo" },
@@ -129,12 +129,12 @@ test("build nextAction routes deterministically through every actionable item", 
   assert.equal(inProgress.itemId, "T3"); assert.equal(inProgress.remainingItems, 2);
   assert.match(inProgress.command ?? "", /--item T3$/);
 
-  current.tasks[2].status = "done";
+  current.tasks[2]!.status = "done";
   const todo = nextAction(current);
   assert.equal(todo.itemId, "T2"); assert.equal(todo.remainingItems, 1);
   assert.match(todo.reason, /1 actionable item/);
 
-  current.tasks[1].status = "deferred";
+  current.tasks[1]!.status = "deferred";
   const verify = nextAction(current);
   assert.equal(verify.classification, "run_phase"); assert.equal(verify.itemId, undefined); assert.equal(verify.remainingItems, 0);
   assert.match(verify.reason, /verification, adversarial review, and G2/);
@@ -183,7 +183,7 @@ test("state validation rejects phase-gate and done-status drift", () => {
 });
 
 test("durable handoff blocks invalid G2 approval guidance and close is terminal without claiming completion", () => {
-  const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0].status = "approved";
+  const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0]!.status = "approved";
   const state: WorkflowState = { schemaVersion: 2, tasks: { [current.id]: current } };
   current.status = "blocked_on_user";
   assert.equal(nextAction(current).classification, "run_phase");
@@ -202,7 +202,7 @@ test("durable handoff blocks invalid G2 approval guidance and close is terminal 
 });
 
 test("supersede links a fresh successor atomically and rejects invalid or conflicting links", () => {
-  const predecessor = task(); predecessor.phase = "build"; predecessor.gate = "G2_codereview"; predecessor.decisions[0].status = "approved";
+  const predecessor = task(); predecessor.phase = "build"; predecessor.gate = "G2_codereview"; predecessor.decisions[0]!.status = "approved";
   const successor = task(); successor.id = "2026-0002-successor"; successor.title = "Successor"; successor.artifacts = { intent: `.agents/data/tasks/${successor.id}/intent.md`, design: `.agents/data/tasks/${successor.id}/design.md`, workplan: `.agents/data/tasks/${successor.id}/workplan.md` };
   const state: WorkflowState = { schemaVersion: 2, tasks: { [predecessor.id]: predecessor, [successor.id]: successor } };
   supersedeTask(state, predecessor.id, successor.id, "Move release blocker", "user", "2026-01-01T00:00:01.000Z");
@@ -217,7 +217,7 @@ test("supersede links a fresh successor atomically and rejects invalid or confli
 });
 
 test("reopen G1 invalidates the prior approval before returning to plan", () => {
-  const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0].status = "approved";
+  const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0]!.status = "approved";
   current.tasks = [{ id: "T1", label: "Rebuild", status: "done" }, { id: "T2", label: "Deferred", status: "deferred" }];
   current.evidence.push(
     { kind: "approval", gate: "G1_review", source: "old approval", result: "pass", recordedAt: "2026-01-01T00:00:01.000Z" },
@@ -231,7 +231,7 @@ test("reopen G1 invalidates the prior approval before returning to plan", () => 
   assert.deepEqual(current.tasks.map((item) => item.status), ["todo", "deferred"]);
   assert.throws(() => transitionTask(state, current.id, "build"), /G1 approval/);
   current.evidence.push({ kind: "approval", gate: "G1_review", source: "new approval after clock rollback", result: "pass", recordedAt: "2026-01-01T00:00:00.500Z" });
-  transitionTask(state, current.id, "build"); current.tasks[0].status = "done";
+  transitionTask(state, current.id, "build"); current.tasks[0]!.status = "done";
   current.evidence.push(
     { kind: "test", area: "root", source: "new test", result: "pass", recordedAt: "2026-01-01T00:00:06.000Z" },
     { kind: "review", source: "new review", result: "pass", recordedAt: "2026-01-01T00:00:07.000Z" }
@@ -249,7 +249,7 @@ test("self-transition is rejected without clearing a validated gate wait", () =>
 });
 
 test("repair bounds force a durable handoff instead of endless repair loops", () => {
-  const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0].status = "approved"; current.tasks[0].status = "done";
+  const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0]!.status = "approved"; current.tasks[0]!.status = "done";
   current.evidence.push({ kind: "approval", gate: "G1_review", source: "user", result: "pass", recordedAt: "2026-01-01T00:00:01.000Z" });
   current.evidence.push({ kind: "test", area: "root", source: "npm test", result: "fail", recordedAt: "2026-01-01T00:00:02.000Z" });
   current.evidence.push({ kind: "test", area: "root", source: "npm test", result: "fail", recordedAt: "2026-01-01T00:00:03.000Z" });
@@ -257,7 +257,7 @@ test("repair bounds force a durable handoff instead of endless repair loops", ()
   current.evidence.push({ kind: "lint", area: "root", source: "npm run lint", result: "fail", recordedAt: "2026-01-01T00:00:04.000Z" });
   const blocked = nextAction(current);
   assert.equal(blocked.classification, "blocked");
-  assert.match(blocked.actions?.[0].command ?? "", /--kind repair_exhausted/);
+  assert.match(blocked.actions?.[0]!.command ?? "", /--kind repair_exhausted/);
   const diagnostics = checkGate("/nonexistent-root", { schemaVersion: 1, tasks: { [current.id]: current } }, current.id, "G2_codereview");
   assert.ok(diagnostics.some((item) => item.code === "REPAIR_BOUND"));
   current.evidence.push({ kind: "approval", gate: "G1_review", source: "user", result: "pass", recordedAt: "2026-01-01T00:00:05.000Z" });
@@ -267,7 +267,7 @@ test("repair bounds force a durable handoff instead of endless repair loops", ()
 test("only a migration-stamped legacy G2 wait bypasses the repair bound, and the stamp is consumed on exit", () => {
   const root = mkdtempSync(join(tmpdir(), "aidlc-legacy-g2-"));
   try {
-    const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.status = "blocked_on_user"; current.decisions[0].status = "approved"; current.tasks[0].status = "done";
+    const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.status = "blocked_on_user"; current.decisions[0]!.status = "approved"; current.tasks[0]!.status = "done";
     current.evidence.push(
       { kind: "approval", gate: "G1_review", source: "human", result: "pass", recordedAt: "2026-01-01T00:00:01.000Z" },
       { kind: "test", area: "root", source: "test", result: "fail", recordedAt: "2026-01-01T00:00:02.000Z" },
@@ -300,7 +300,7 @@ test("only a migration-stamped legacy G2 wait bypasses the repair bound, and the
 });
 
 test("legacy G2 wait markers are schema-v4-only and valid only on a ready G2 wait", () => {
-  const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.status = "blocked_on_user"; current.decisions[0].status = "approved"; current.tasks[0].status = "done";
+  const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.status = "blocked_on_user"; current.decisions[0]!.status = "approved"; current.tasks[0]!.status = "done";
   current.evidence.push(
     { kind: "approval", gate: "G1_review", source: "human", result: "pass", recordedAt: "2026-01-01T00:00:01.000Z" },
     { kind: "test", area: "root", source: "test", result: "pass", recordedAt: "2026-01-01T00:00:02.000Z" },
@@ -319,14 +319,14 @@ test("legacy G2 wait markers are schema-v4-only and valid only on a ready G2 wai
 });
 
 test("two failed review passes exhaust the review bound", () => {
-  const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0].status = "approved"; current.tasks[0].status = "done";
+  const current = task(); current.phase = "build"; current.gate = "G2_codereview"; current.decisions[0]!.status = "approved"; current.tasks[0]!.status = "done";
   current.evidence.push({ kind: "approval", gate: "G1_review", source: "user", result: "pass", recordedAt: "2026-01-01T00:00:01.000Z" });
   current.evidence.push({ kind: "review", source: "diff review", result: "fail", recordedAt: "2026-01-01T00:00:02.000Z" });
   assert.equal(nextAction(current).classification, "run_phase");
   current.evidence.push({ kind: "review", source: "diff review", result: "fail", recordedAt: "2026-01-01T00:00:03.000Z" });
   const blocked = nextAction(current);
   assert.equal(blocked.classification, "blocked");
-  assert.match(blocked.actions?.[0].command ?? "", /--kind review_exhausted/);
+  assert.match(blocked.actions?.[0]!.command ?? "", /--kind review_exhausted/);
 });
 
 test("paused and handed-off tasks expose structured recovery actions", () => {

@@ -84,13 +84,15 @@ export const reduceTaskLedger = (events: readonly TaskLedgerEvent[]): { task: Ta
   const sibling = [...children.values()].find((items) => items.length > 1);
   if (sibling) throw new Error(`Concurrent ledger events require resolution: ${sibling.map((event) => event.id).join(", ")}`);
   const visited = new Set<string>();
-  let current = roots[0];
+  const rootEvent = roots[0];
+  if (!rootEvent) throw new Error("Ledger must have exactly one root event");
+  let current = rootEvent;
   while (true) {
     if (visited.has(current.digest)) throw new Error("Ledger event cycle");
     visited.add(current.digest);
     const next = children.get(current.digest) ?? [];
     if (!next.length) break;
-    current = next[0];
+    current = next[0]!;
   }
   if (visited.size !== events.length) throw new Error("Ledger contains disconnected events");
   return { task: current.snapshot, headDigest: current.digest };

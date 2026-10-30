@@ -6,6 +6,8 @@
     "rootDir": ".",
     "outDir": "dist",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": true

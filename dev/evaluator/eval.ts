@@ -48,8 +48,8 @@ export interface EvalReport {
 }
 
 const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const median = (values: number[]): number | "notMeasured" => values.length ? [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] : "notMeasured";
-const p95 = (values: number[]): number | "notMeasured" => values.length ? [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1] : "notMeasured";
+const median = (values: number[]): number | "notMeasured" => values.length ? [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]! : "notMeasured";
+const p95 = (values: number[]): number | "notMeasured" => values.length ? [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]! : "notMeasured";
 const total = (values: number[]): number | "notMeasured" => values.length ? values.reduce((sum, value) => sum + value, 0) : "notMeasured";
 const inside = (root: string, path: string): string => { const target = resolve(root, path); const fromRoot = relative(resolve(root), target); if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) throw new Error(`Path escapes evaluation workspace: ${path}`); return target; };
 const bounded = (value: unknown): string => { const rendered = JSON.stringify(value); const text = rendered === undefined ? String(value) : rendered; return text.length <= 240 ? text : `${text.slice(0, 237)}...`; };
@@ -211,11 +211,11 @@ export const reportIntegrityErrors = (report: EvalReport): string[] => {
   const assertions = report.results.flatMap((item) => item.assertions);
   for (const dimension of new Set(assertions.map((item) => item.dimension))) {
     const items = assertions.filter((item) => item.dimension === dimension); const expected = items.filter((item) => item.passed).length / items.length;
-    if (!(dimension in report.dimensions) || !equalMetric(report.dimensions[dimension], expected)) errors.push(`dimension aggregate mismatch: ${dimension}`);
+    if (!(dimension in report.dimensions) || !equalMetric(report.dimensions[dimension]!, expected)) errors.push(`dimension aggregate mismatch: ${dimension}`);
   }
   for (const category of new Set(report.results.map((item) => item.category))) {
     const items = report.results.filter((item) => item.category === category); const expectedCompletion = items.filter((item) => item.completed).length / items.length; const expectedScore = items.reduce((sum, item) => sum + item.score, 0) / items.length;
-    if (!report.categories[category] || !close(report.categories[category].completionRate, expectedCompletion) || !close(report.categories[category].averageScore, expectedScore)) errors.push(`category aggregate mismatch: ${category}`);
+    if (!report.categories[category] || !close(report.categories[category]!.completionRate, expectedCompletion) || !close(report.categories[category]!.averageScore, expectedScore)) errors.push(`category aggregate mismatch: ${category}`);
   }
   return errors;
 };

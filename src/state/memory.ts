@@ -80,6 +80,7 @@ export const retireAgenticMemory = (root: string, id: string, reason: string, re
   const index = registry.entries.findIndex((entry) => entry.id === id);
   if (index < 0) throw new Error(`Unknown active agentic memory entry: ${id}`);
   const [entry] = registry.entries.splice(index, 1);
+  if (!entry) throw new Error(`Unknown active agentic memory entry: ${id}`);
   registry.retired.push({ ...entry, retiredBy, retiredAt, reason });
   registry.retired.sort((left, right) => right.retiredAt.localeCompare(left.retiredAt) || left.id.localeCompare(right.id));
   saveMemoryRegistry(root, registry);

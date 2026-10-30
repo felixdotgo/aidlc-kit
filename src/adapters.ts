@@ -88,7 +88,7 @@ export const adapters: readonly Adapter[] = [
       { ...adapterFile("claude", "CLAUDE.md", instruction("Claude Code", "claude")), strategy: "managed-block" },
       { path: ".claude/settings.local.json", owner: "claude", content: claudeLocalSettings },
       ...(["clarify:Confirm requirements", "plan:Approve plan", "build:Review implementation", "wrap:none", "index:none"] as const).map((entry) => {
-        const [phase, gate] = entry.split(":");
+        const [phase, gate] = entry.split(":") as [string, string];
         return adapterFile("claude", `.claude/skills/aidlc-${phase}/SKILL.md`, claudeSkill(phase, gate));
       })
     ]

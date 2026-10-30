@@ -4,7 +4,7 @@ import { phases, phaseGate, terminal } from "./shared.js";
 export const latestApproval = (task: TaskState, gate: Gate) => {
   for (let index = task.evidence.length - 1; index >= 0; index -= 1) {
     const item = task.evidence[index];
-    if (item.kind === "approval" && item.gate === gate) return item;
+    if (item && item.kind === "approval" && item.gate === gate) return item;
   }
   return undefined;
 };
@@ -14,7 +14,7 @@ export const buildBoundary = (task: TaskState): number | undefined => {
   let boundary: number | undefined;
   for (let index = 0; index < task.evidence.length; index += 1) {
     const item = task.evidence[index];
-    if (item.kind === "approval" && item.gate === "G1_review" && item.result === "pass") boundary = index;
+    if (item && item.kind === "approval" && item.gate === "G1_review" && item.result === "pass") boundary = index;
   }
   return boundary;
 };
@@ -27,7 +27,7 @@ const currentBuildEvidence = (task: TaskState): TaskState["evidence"] => {
 };
 
 const latestInOrder = (items: TaskState["evidence"], predicate: (item: TaskState["evidence"][number]) => boolean) => {
-  for (let index = items.length - 1; index >= 0; index -= 1) if (predicate(items[index])) return items[index];
+  for (let index = items.length - 1; index >= 0; index -= 1) { const item = items[index]; if (item && predicate(item)) return item; }
   return undefined;
 };
 
@@ -54,11 +54,11 @@ export const repairBounds = (task: TaskState): RepairBounds => {
   const evidence = currentBuildEvidence(task);
   const verifyFailures: Record<string, number> = {};
   for (const item of evidence) if (["test", "lint"].includes(item.kind) && item.result === "fail") {
-    const area = item.area ?? (task.areas.length === 1 ? task.areas[0] : "unscoped");
+    const area = item.area ?? (task.areas.length === 1 ? task.areas[0]! : "unscoped");
     verifyFailures[area] = (verifyFailures[area] ?? 0) + 1;
   }
   const reviewFailures = evidence.filter((item) => item.kind === "review" && item.result === "fail").length;
-  const exhaustedAreas = Object.keys(verifyFailures).filter((area) => verifyFailures[area] >= 3).sort();
+  const exhaustedAreas = Object.keys(verifyFailures).filter((area) => (verifyFailures[area] ?? 0) >= 3).sort();
   return { verifyFailures, reviewFailures, exhaustedAreas, verifyExhausted: exhaustedAreas.length > 0, reviewExhausted: reviewFailures >= 2 };
 };
 
