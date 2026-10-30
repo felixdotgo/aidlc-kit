@@ -181,15 +181,15 @@ const stripManagedBlocks = (group: Array<InstalledEntry>, current: string): { ne
 
 /** Decides the plan entry for a whole-file (non shared-block) path. */
 const uninstallWholeFile = (group: Array<InstalledEntry>, exists: boolean, current: string): PlannedWrite => {
-  if (!exists) return { ...group[0].spec, action: "skip", reason: "not installed" };
+  if (!exists) return { ...group[0]!.spec, action: "skip", reason: "not installed" };
   if (!group.some((entry) => entry.spec.strategy === "managed-block")) {
-    const { spec, hash } = group[0];
+    const { spec, hash } = group[0]!;
     const installedHash = hash ?? contentHash(spec.content);
     return contentHash(current) === installedHash ? { ...spec, action: "delete", reason: "remove unchanged managed file" } : { ...spec, action: "preserve", reason: "managed file was modified" };
   }
   const { next, modified } = stripManagedBlocks(group, current);
   const legacyResidue = group.find(({ spec }) => next.includes(`<!-- aidlc-installer:${spec.owner} -->`));
-  const ownerSpec = group[0].spec;
+  const ownerSpec = group[0]!.spec;
   if (modified) return { ...modified, action: "preserve", reason: "managed block was modified" };
   if (legacyResidue) return { ...legacyResidue.spec, action: "preserve", reason: "legacy prompt marker requires manual removal" };
   if (next === current) return { ...ownerSpec, action: "skip", reason: "owned block not found" };
@@ -231,6 +231,17 @@ export const status = (root: string): string => {
   ].join("\n");
 };
 
+export const statusData = (root: string): { workflow: string; installedVersion: string; schema: string; detectedAgents: string[] } => {
+  const manifest = readManifest(root);
+  const legacyPath = join(resolve(root), ".agents/aidlc/manifest.json");
+  return {
+    workflow: manifest || existsSync(legacyPath) ? "installed" : "not installed",
+    installedVersion: manifest?.packageVersion ?? (existsSync(legacyPath) ? "legacy/unknown" : "none"),
+    schema: `${manifest?.schemaVersion ?? (existsSync(legacyPath) ? "legacy" : "none")}`,
+    detectedAgents: detectedAgents(root)
+  };
+};
+
 /** Path portion of a manifest inventory key (`path#owner` for shared managed blocks). */
 const inventoryKeyPath = (key: string): string => {
   const separator = key.lastIndexOf("#");
@@ -262,4 +273,10 @@ export const doctor = (root: string, strict = false): string => {
   const modified = modifiedManagedPaths(root, manifest);
   if (modified.length) return `${strict ? "ERROR" : "WARN"}: managed integrity differs: ${modified.join(", ")}`;
   return `OK: local workflow ${manifest.packageVersion} is valid; remote updates are disabled.`;
+};
+
+export const doctorData = (root: string, strict = false): { level: "ok" | "warn" | "error"; message: string; strict: boolean } => {
+  const message = doctor(root, strict);
+  const level = message.startsWith("ERROR:") ? "error" : message.startsWith("WARN:") ? "warn" : "ok";
+  return { level, message, strict };
 };

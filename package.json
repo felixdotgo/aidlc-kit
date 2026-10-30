@@ -37,6 +37,8 @@
     "build": "node scripts/build-assets.mjs && tsc -p tsconfig.json",
     "sync-core": "node scripts/sync-core.mjs",
     "test": "npm run build && node --test dist/test/unit/*.test.js",
+    "test:fast": "node --test dist/test/unit/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage dist/test/unit/*.test.js",
     "lint": "tsc --noEmit -p tsconfig.json",
     "release:check": "node dist/dev/evaluator/release-check.js .agents/project/release-eval.json --adapters opencode",
     "prepublishOnly": "npm test && npm run lint && npm run release:check"

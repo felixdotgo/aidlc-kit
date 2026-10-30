@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { installableAdapters } from "./adapters.js";
-import { applyPlan, detectedAgents, doctor, formatPlan, planInit, planUninstall, selectAgents, status } from "./installer.js";
+import { applyPlan, detectedAgents, doctor, doctorData, formatPlan, planInit, planUninstall, selectAgents, status, statusData } from "./installer.js";
 import type { AgentId, InitOptions, LoopConfig } from "./model.js";
 import { LOOP_PROVIDERS } from "./model.js";
 import { loadProjectConfig, resolveProfiles, validateLoopConfig } from "./profiles.js";
@@ -16,11 +16,13 @@ const usage = `Usage:
   npx @felixdotgo/aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead ${LOOP_PROVIDERS.join("|")}] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
   npx @felixdotgo/aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead ${LOOP_PROVIDERS.join("|")}] [--loop-workers <id=provider,...>] [--dry-run]
   npx @felixdotgo/aidlc-kit uninstall [path] [--yes] [--dry-run]
-  npx @felixdotgo/aidlc-kit status [path]
-  npx @felixdotgo/aidlc-kit doctor [path] [--strict]
+  npx @felixdotgo/aidlc-kit status [path] [--json]
+  npx @felixdotgo/aidlc-kit doctor [path] [--strict] [--json]
   npx @felixdotgo/aidlc-kit profile validate [path]
   npx @felixdotgo/aidlc-kit loop start|status|resume [--task-id ID] [--root PATH] [--mode local|fleet]
-  npx @felixdotgo/aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--enable]`;
+  npx @felixdotgo/aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
+  npx @felixdotgo/aidlc-kit version
+  Global options: --help, --version, -v`;
 
 const interactive = (): boolean => Boolean(stdin.isTTY && stdout.isTTY);
 const prompts = async () => import("@inquirer/prompts");
@@ -29,7 +31,10 @@ const prompts = async () => import("@inquirer/prompts");
 
 const value = (args: string[], name: string): string | undefined => {
   const index = args.indexOf(name);
-  return index < 0 ? undefined : args[index + 1];
+  if (index < 0) return undefined;
+  const next = args[index + 1];
+  if (next === undefined || next.startsWith("--")) throw new Error(`${name} requires a value`);
+  return next;
 };
 
 const flags = (args: string[]): Set<string> => new Set(args.filter((item) => item.startsWith("--")));
@@ -39,13 +44,30 @@ const COMMAND_KEYWORDS = ["init", "upgrade", "uninstall", "status", "doctor", "v
 const positional = (args: string[]): string[] => {
   const result: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
-    if (valueFlags.has(args[index])) { index += 1; continue; }
-    if (!args[index].startsWith("--")) result.push(args[index]);
+    const arg = args[index];
+    if (arg !== undefined && valueFlags.has(arg)) { index += 1; continue; }
+    if (arg !== undefined && !arg.startsWith("--")) result.push(arg);
   }
   return result;
 };
 
 const rootArg = (args: string[], fallback = "."): string => positional(args).find((item) => !COMMAND_KEYWORDS.includes(item as never)) ?? fallback;
+
+const INIT_FLAGS = new Set(["--agent", "--all", "--loop-mode", "--loop-lead", "--loop-workers", "--yes", "--dry-run", "--force"]);
+const UPGRADE_FLAGS = new Set(["--loop-mode", "--loop-lead", "--loop-workers", "--dry-run"]);
+const UNINSTALL_FLAGS = new Set(["--yes", "--dry-run"]);
+const STATUS_FLAGS = new Set(["--json"]);
+const DOCTOR_FLAGS = new Set(["--strict", "--json"]);
+const MCP_FLAGS = new Set(["--dry-run", "--yes", "--storage", "--deployment", "--bind", "--workspace", "--poll-ms", "--token-env", "--providers", "--enable"]);
+
+const assertKnownOptions = (args: string[], allowed: Set<string>): void => {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === undefined || !arg.startsWith("--")) continue;
+    if (!allowed.has(arg)) throw new Error(`Unknown option: ${arg}`);
+    if (valueFlags.has(arg)) index += 1;
+  }
+};
 
 /* --- Loop configuration --------------------------------------------------- */
 
@@ -161,12 +183,13 @@ const mcpSetupOptions = async (args: string[]): Promise<McpSetupOptions> => {
 /* --- Command handlers ------------------------------------------------------ */
 
 const runLoopCommand = (args: string[]): void => {
-  const action = args[0];
+  const action = args[0] ?? "";
   if (!["start", "status", "resume"].includes(action)) throw new Error("Expected loop start, status, or resume");
   const parsed = new Map<string, string>();
   for (let index = 1; index < args.length; index += 2) {
-    const key = args[index], entry = args[index + 1];
-    if (!["--task-id", "--root", "--mode"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
+    const key = args[index];
+    const entry = args[index + 1];
+    if (key === undefined || !["--task-id", "--root", "--mode"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
     parsed.set(key, entry);
   }
   const root = resolve(parsed.get("--root") ?? ".");
@@ -177,6 +200,7 @@ const runLoopCommand = (args: string[]): void => {
 };
 
 const runInit = async (args: string[]): Promise<void> => {
+  assertKnownOptions(args, INIT_FLAGS);
   const options = { ...await chooseAgents(initOptions(args)), loop: await chooseLoop(args, false) };
   const plan = planInit(options);
   preview("INIT", plan);
@@ -192,6 +216,7 @@ const runInit = async (args: string[]): Promise<void> => {
 };
 
 const runUninstall = async (args: string[]): Promise<void> => {
+  assertKnownOptions(args, UNINSTALL_FLAGS);
   const options = initOptions(args);
   const plan = planUninstall(options.root);
   preview("UNINSTALL", plan);
@@ -201,6 +226,7 @@ const runUninstall = async (args: string[]): Promise<void> => {
 };
 
 const runUpgrade = async (args: string[]): Promise<void> => {
+  assertKnownOptions(args, UPGRADE_FLAGS);
   if (flags(args).has("--yes") || flags(args).has("--force")) throw new Error("upgrade does not support --yes or --force; apply requires a human interactive TTY confirmation");
   const root = rootArg(args);
   const plan = planUpgrade(root, await chooseLoop(args, true));
@@ -216,6 +242,7 @@ const runUpgrade = async (args: string[]): Promise<void> => {
 };
 
 const runMcpSetup = async (args: string[]): Promise<void> => {
+  assertKnownOptions(args.slice(1), MCP_FLAGS);
   const options = await mcpSetupOptions(args.slice(1));
   const plan = planMcpSetup(options);
   console.log(`◆ MCP SETUP preview — ${options.dryRun ? "no files will be written" : "review before applying"}`);
@@ -227,14 +254,33 @@ const runMcpSetup = async (args: string[]): Promise<void> => {
 };
 
 const main = async (): Promise<void> => {
-  const [command = "help", ...args] = process.argv.slice(2);
-  if (command === "help" || command === "--help") return void console.log(usage);
+  const argv = process.argv.slice(2);
+  if (argv.includes("--version") || argv.includes("-v")) return void console.log(packageVersion());
+  if (argv.includes("--help")) return void console.log(usage);
+  const [command = "help", ...args] = argv;
+  if (command === "help") return void console.log(usage);
+  if (command === "version") return void console.log(packageVersion());
   if (command === "loop") return void runLoopCommand(args);
-  if (command === "status") return void console.log(status(rootArg(args)));
+  if (command === "status") {
+    assertKnownOptions(args, STATUS_FLAGS);
+    const root = rootArg(args);
+    if (flags(args).has("--json")) console.log(JSON.stringify(statusData(root)));
+    else console.log(status(root));
+    return;
+  }
   if (command === "doctor") {
-    const result = doctor(rootArg(args), flags(args).has("--strict"));
-    console.log(result);
-    if (result.startsWith("ERROR:")) process.exitCode = 1;
+    assertKnownOptions(args, DOCTOR_FLAGS);
+    const root = rootArg(args);
+    const strict = flags(args).has("--strict");
+    if (flags(args).has("--json")) {
+      const data = doctorData(root, strict);
+      console.log(JSON.stringify(data));
+      if (data.level === "error") process.exitCode = 1;
+    } else {
+      const result = doctor(root, strict);
+      console.log(result);
+      if (result.startsWith("ERROR:")) process.exitCode = 1;
+    }
     return;
   }
   if (command === "init") return void await runInit(args);
@@ -242,6 +288,7 @@ const main = async (): Promise<void> => {
   if (command === "upgrade") return void await runUpgrade(args);
   if (command === "mcp" && args[0] === "setup") return void await runMcpSetup(args);
   if (command === "profile" && args[0] === "validate") {
+    assertKnownOptions(args.slice(1), new Set());
     const root = rootArg(args.slice(1));
     const config = loadProjectConfig(root);
     const profiles = resolveProfiles(root, config.extends);

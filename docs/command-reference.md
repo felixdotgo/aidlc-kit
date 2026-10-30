@@ -2,6 +2,8 @@
 
 All package commands operate on local files. The examples run version `0.1.1` through npm; `npx` may ask permission to fetch that package on first use. Replace `.` with the target project path when needed. For a source checkout, see the [development guide](./development.md).
 
+Global flags available on every invocation: `--version` (or `-v`) prints the package version and exits; `--help` prints usage.
+
 ## `init`
 
 ```sh
@@ -17,18 +19,18 @@ In interactive setup, choose a loop mode and, when enabled, the lead and worker 
 ## `status`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit status [path]
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit status [path] [--json]
 ```
 
-Reports the installed version and local installation status. It does not query a registry.
+Reports the installed version and local installation status. It does not query a registry. Pass `--json` to print the same data as a JSON object (`workflow`, `installedVersion`, `schema`, `detectedAgents`).
 
 ## `doctor`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit doctor [path] [--strict]
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit doctor [path] [--strict] [--json]
 ```
 
-Checks the local manifest, configuration, and canonical state. `--strict` turns compatibility warnings such as a legacy manifest into errors. It does not query a registry.
+Checks the local manifest, configuration, and canonical state. `--strict` turns compatibility warnings such as a legacy manifest into errors. It does not query a registry. Pass `--json` to print `{level, message, strict}`; an `error` level sets a non-zero exit code.
 
 ## `profile validate`
 
@@ -49,10 +51,12 @@ Prints the removal plan before applying it. It removes eligible unchanged manage
 ## `mcp setup`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--enable]
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
 ```
 
 Previews the optional AI-DLC Coordination service configuration, then writes only after confirmation. Non-interactive use requires `--deployment`, `--storage`, `--bind`, and `--workspace`. It never starts Docker; `--enable` is explicit and remote mode has no local fallback. See [AI-DLC Coordination service](./coordination-service.md) for deployment and credential requirements.
+
+`--token-env <name>` overrides the default `AIDLC_MCP_TOKEN` environment variable name used in the generated compose file. `--providers <p,...>` selects project-management connectors non-interactively (`jira`, `trello`, `github-issues`).
 
 ## `upgrade`
 
