@@ -71,9 +71,12 @@ Set the default risk level deliberately. Planning, migrations, cross-service con
 
 ## Optional AI-DLC Coordination
 
-`mcp` is absent (or `{ "enabled": false }`) by default. An enabled configuration requires an HTTP(S) `endpoint` and non-empty `workspace`; it may also name a token environment variable, polling interval from 1,000 to 3,600,000 ms, and the enabled Jira/Trello/GitHub Issues preflight providers. See [AI-DLC Coordination service](./coordination-service.md) for the remote-authority and deployment contract.
+`mcp` is absent (or `{ "enabled": false }`) by default. An enabled configuration requires an HTTP(S) `endpoint` and non-empty `workspace`; it may also name a token environment variable, polling interval from 1,000 to 3,600,000 ms, and the enabled Jira/Trello/GitHub Issues preflight providers. See [AI-DLC Coordination service](./coordination-service.md) for the remote-authority and deployment contract. The coordination service is **experimental and unfinished** (known bugs included), and it can change incompatibly in any release before `1.0.0`.
 
 ## Optional loop configuration
+
+> [!WARNING]
+> The loop and the coordination service are **experimental and unfinished**: they contain known bugs and rough edges, and — because the package is still pre-1.0 (`0.x`) — the `loop.*` fields, provider mappings, and environment variables can change incompatibly in any release before `1.0.0`.
 
 `loop.mode` can be `off`, `local`, or `fleet`; an absent `loop` field means `off`. The optional `loop.agents` maps one lead and named workers to `codex`, `claude`, or `opencode`, independently of `mcp.providers`:
 

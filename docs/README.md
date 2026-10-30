@@ -8,7 +8,7 @@ Use this page to choose the guide that matches your role and next task.
 2. Read [Operating the workflow](./operating-workflow.md) before asking an agent to change a project.
 3. Use [Configuration](./configuration.md) to configure project rules, profiles, and Codex, Claude Code, and OpenCode permissions.
 4. Keep [Command reference](./command-reference.md) nearby for safe CLI usage.
-5. Read [AI-DLC Coordination service](./coordination-service.md) before enabling remote canonical state.
+5. Read [AI-DLC Coordination service](./coordination-service.md) before enabling remote canonical state — the service and the loop are **experimental and unfinished**, with known bugs and possible breaking changes in every release before `1.0.0`.
 
 ## For contributors and maintainers
 
@@ -26,6 +26,6 @@ Use this page to choose the guide that matches your role and next task.
 | [Development](./development.md) | Contributors | Dependencies, source layout, local commands, and implementation rules. |
 | [Testing and release](./testing-and-release.md) | Maintainers | Test strategy, evaluator, package smoke test, and release checks. |
 | [Architecture](./architecture.md) | Contributors | Boundaries, dependency direction, and source-to-consumer flow. |
-| [AI-DLC Coordination service](./coordination-service.md) | Operators | Opt-in service deployment, state authority, and credential safety. |
+| [AI-DLC Coordination service](./coordination-service.md) | Operators | Opt-in service deployment, state authority, and credential safety. Experimental and unfinished: known bugs, breaking changes possible before `1.0.0`. |
 
 When a public command, configuration field, or installed layout changes, update the relevant guide and its validation in the same change.

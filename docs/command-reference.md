@@ -10,7 +10,7 @@ npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit init [path] [--agent <name[,
 
 Plans the installation, prints a preview, and then writes the workflow only after confirmation (or `--yes`). `--dry-run` prints the same plan without writing. If exactly one installed agent is detected, it can be selected automatically. In an interactive terminal, choose multiple agents with the checkbox prompt: use arrow keys to move, Space to toggle, A to toggle all, and Enter to confirm. For scripts and non-interactive terminals, use `--agent <name[,name]>` or `--all`.
 
-In interactive setup, choose a loop mode and, when enabled, the lead and worker providers. For non-interactive setup, omit loop options to keep the default off, or specify `--loop-mode local|fleet` together with `--loop-lead` and `--loop-workers` (for example, `--loop-workers a=codex,b=opencode`). The preview includes the project config change. These settings only configure the loop; run `aidlc-kit loop start` to actually start it.
+In interactive setup, choose a loop mode and, when enabled, the lead and worker providers. For non-interactive setup, omit loop options to keep the default off, or specify `--loop-mode local|fleet` together with `--loop-lead` and `--loop-workers` (for example, `--loop-workers a=codex,b=opencode`). The preview includes the project config change. These settings only configure the loop; run `aidlc-kit loop start` to actually start it. The loop and the coordination service are experimental: their flags and defaults may change incompatibly in any release before `1.0.0`.
 
 `--force` is for an intentional initial replacement of an unmanaged conflicting file. It is not an upgrade mechanism. If the project already has another workflow package version, use the human-run upgrade flow instead.
 
@@ -71,6 +71,9 @@ The upgrade plan handles supported legacy `.aidlc/` project data transactionally
 ```sh
 npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start|status|resume [options]
 ```
+
+> [!WARNING]
+> The loop commands and fleet mode are **experimental and unfinished**: they contain known bugs and rough edges, and — because the package is still pre-1.0 (`0.x`) — their options, environment variables, and diagnostics can change incompatibly in any release before `1.0.0`.
 
 Options: `--task-id <id>` (optional for `start`, which derives one; required for `status`/`resume`), `--root <path>`, and `--mode local|fleet` (defaults to the configured `loop.mode`). `start` reads the requirement from an interactive prompt or stdin — the requirement is never passed as an argument. The command fails closed when the requested mode does not match the configured authority, when another task is actionable, or when a resume record is missing.
 

@@ -4,6 +4,9 @@
 
 Workflow assets are bundled with the package, `remoteUpdates` is `false`, and normal status checks never contact a registry. Fleet execution is opt-in and uses a separately deployed service. The optional end-to-end loop is also opt-in: select a mode during `init` or a human-run `upgrade`, then start it explicitly with `aidlc-kit loop start` — selecting a mode never starts or approves anything by itself.
 
+> [!WARNING]
+> The optional end-to-end loop and the AI-DLC Coordination service are **experimental and unfinished**: they contain known bugs and rough edges. The package is pre-1.0 (`0.x`), so their CLI flags, `loop.*`/`mcp.*` configuration fields, environment variables, and installed layouts can change incompatibly in any release before `1.0.0`.
+
 ## Requirements
 
 - Node.js 20.17 or newer.
