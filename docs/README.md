@@ -27,5 +27,7 @@ Use this page to choose the guide that matches your role and next task.
 | [Testing and release](./testing-and-release.md) | Maintainers | Test strategy, evaluator, package smoke test, and release checks. |
 | [Architecture](./architecture.md) | Contributors | Boundaries, dependency direction, and source-to-consumer flow. |
 | [AI-DLC Coordination service](./coordination-service.md) | Operators | Opt-in service deployment, state authority, and credential safety. Experimental and unfinished: known bugs, breaking changes possible before `1.0.0`. |
+| [Troubleshooting](./troubleshooting.md) | Operators and contributors | Symptom/error-code recovery guide for locks, corrupt state, continuation guard, gate-check errors, and fleet authority. |
+| [Design decisions](./design-decisions.md) | Contributors | ADR-lite: dual core, single JSON state, compact style, human-only upgrade, append-only evidence, and how to add a decision. |
 
 When a public command, configuration field, or installed layout changes, update the relevant guide and its validation in the same change.

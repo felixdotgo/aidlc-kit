@@ -12,6 +12,20 @@ npm test
 npm run lint
 ```
 
+## Workflow bootstrap
+
+`.agents/` is gitignored; every contributor installs the repo's own workflow locally.
+
+```sh
+npm install
+npm run build
+node dist/src/cli.js init . --agent <codex|claude|opencode> --yes
+```
+
+Then configure `.agents/config.json`: set `commands` to build/test/lint as executable+args arrays (`build`: `npm`/`["run","build"]`, `test`: `npm`/`["test"]`, `lint`: `npm`/`["run","lint"]`) and `agentState` mapping your adapter id to `"scripted"`. Validate with `node dist/src/cli.js profile validate .`.
+
+See [Configuration reference](./docs/configuration.md) and [Development guide](./docs/development.md).
+
 ## Contributor documentation
 
 - [Development guide](./docs/development.md) — dependencies, repository layout, implementation boundaries, and local commands.

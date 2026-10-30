@@ -12,6 +12,7 @@ Workflow assets are bundled with the package, `remoteUpdates` is `false`, and no
 - Node.js 20.17 or newer.
 - An existing project directory.
 - Codex, Claude Code, or OpenCode.
+- Supported platforms: Linux and macOS are fully supported; Windows is best-effort (see `docs/development.md` Platform support). Loop/fleet features require Docker and a POSIX shell.
 
 ## Quick start
 
