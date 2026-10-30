@@ -2,7 +2,7 @@
 
 `@felixdotgo/aidlc-kit` installs an AI-DLC workflow into an existing project. The workflow gives coding agents a shared task lifecycle, dependency-aware work, explicit human review gates, and project-owned state and rules. The normal lead runs in your Codex, Claude Code, or OpenCode conversation; an optional coordination service supports workers on multiple machines.
 
-Workflow assets are bundled with the package, `remoteUpdates` is `false`, and normal status checks never contact a registry. Fleet execution is opt-in and uses a separately deployed service. The optional end-to-end loop is also opt-in: select a mode during `init` or a human-run `upgrade`, then start it explicitly with `aidlc-workflow loop start` — selecting a mode never starts or approves anything by itself.
+Workflow assets are bundled with the package, `remoteUpdates` is `false`, and normal status checks never contact a registry. Fleet execution is opt-in and uses a separately deployed service. The optional end-to-end loop is also opt-in: select a mode during `init` or a human-run `upgrade`, then start it explicitly with `aidlc-kit loop start` — selecting a mode never starts or approves anything by itself.
 
 ## Requirements
 
@@ -15,8 +15,8 @@ Workflow assets are bundled with the package, `remoteUpdates` is `false`, and no
 Run these commands from your existing project's directory to preview the installation, then apply it:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-workflow init . --agent codex --dry-run
-npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-workflow init . --agent codex --yes
+npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-kit init . --agent codex --dry-run
+npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-kit init . --agent codex --yes
 ```
 
 `npx` may ask permission to download the package on first use. These examples pin version `0.1.0`. After installation, the project's lifecycle scripts run locally without `npx` or a registry connection.
@@ -34,8 +34,8 @@ Use `--all` to install every supported adapter. Codex installs workspace-write s
 Confirm the installed project locally:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-workflow status .
-npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-workflow doctor . --strict
+npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-kit status .
+npx --package @felixdotgo/aidlc-kit@0.1.0 aidlc-kit doctor . --strict
 ```
 
 ## Documentation

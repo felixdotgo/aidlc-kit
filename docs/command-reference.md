@@ -5,19 +5,19 @@ All package commands operate on local files. The examples run version `0.0.1` th
 ## `init`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
 ```
 
 Plans the installation, prints a preview, and then writes the workflow only after confirmation (or `--yes`). `--dry-run` prints the same plan without writing. If exactly one installed agent is detected, it can be selected automatically. In an interactive terminal, choose multiple agents with the checkbox prompt: use arrow keys to move, Space to toggle, A to toggle all, and Enter to confirm. For scripts and non-interactive terminals, use `--agent <name[,name]>` or `--all`.
 
-In interactive setup, choose a loop mode and, when enabled, the lead and worker providers. For non-interactive setup, omit loop options to keep the default off, or specify `--loop-mode local|fleet` together with `--loop-lead` and `--loop-workers` (for example, `--loop-workers a=codex,b=opencode`). The preview includes the project config change. These settings only configure the loop; run `aidlc-workflow loop start` to actually start it.
+In interactive setup, choose a loop mode and, when enabled, the lead and worker providers. For non-interactive setup, omit loop options to keep the default off, or specify `--loop-mode local|fleet` together with `--loop-lead` and `--loop-workers` (for example, `--loop-workers a=codex,b=opencode`). The preview includes the project config change. These settings only configure the loop; run `aidlc-kit loop start` to actually start it.
 
 `--force` is for an intentional initial replacement of an unmanaged conflicting file. It is not an upgrade mechanism. If the project already has another workflow package version, use the human-run upgrade flow instead.
 
 ## `status`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow status [path]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit status [path]
 ```
 
 Reports the installed version and local installation status. It does not query a registry.
@@ -25,7 +25,7 @@ Reports the installed version and local installation status. It does not query a
 ## `doctor`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow doctor [path] [--strict]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit doctor [path] [--strict]
 ```
 
 Checks the local manifest, configuration, and canonical state. `--strict` turns compatibility warnings such as a legacy manifest into errors. It does not query a registry.
@@ -33,7 +33,7 @@ Checks the local manifest, configuration, and canonical state. `--strict` turns 
 ## `profile validate`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow profile validate [path]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit profile validate [path]
 ```
 
 Loads `.agents/config.json`, resolves its profile chain, and prints the effective profile order. Use it after changing `extends` or local profiles.
@@ -41,7 +41,7 @@ Loads `.agents/config.json`, resolves its profile chain, and prints the effectiv
 ## `uninstall`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow uninstall [path] [--yes] [--dry-run]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit uninstall [path] [--yes] [--dry-run]
 ```
 
 Prints the removal plan before applying it. It removes eligible unchanged managed assets but preserves project configuration and state. Prefer `--dry-run` first when working in an existing project.
@@ -49,7 +49,7 @@ Prints the removal plan before applying it. It removes eligible unchanged manage
 ## `mcp setup`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--enable]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--enable]
 ```
 
 Previews the optional AI-DLC Coordination service configuration, then writes only after confirmation. Non-interactive use requires `--deployment`, `--storage`, `--bind`, and `--workspace`. It never starts Docker; `--enable` is explicit and remote mode has no local fallback. See [AI-DLC Coordination service](./coordination-service.md) for deployment and credential requirements.
@@ -57,7 +57,7 @@ Previews the optional AI-DLC Coordination service configuration, then writes onl
 ## `upgrade`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--dry-run]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--dry-run]
 ```
 
 Upgrade is deliberately human-only. The command rejects `--yes` and `--force`; applying it requires an interactive terminal and an exact typed confirmation of the package version. Interactive confirmations use the same styled terminal prompt as `init`. Agents must not run, preview, detect, or suggest package upgrades on their own.
@@ -69,7 +69,7 @@ The upgrade plan handles supported legacy `.aidlc/` project data transactionally
 ## `loop`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow loop start|status|resume [options]
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit loop start|status|resume [options]
 ```
 
 Options: `--task-id <id>` (optional for `start`, which derives one; required for `status`/`resume`), `--root <path>`, and `--mode local|fleet` (defaults to the configured `loop.mode`). `start` reads the requirement from an interactive prompt or stdin — the requirement is never passed as an argument. The command fails closed when the requested mode does not match the configured authority, when another task is actionable, or when a resume record is missing.
@@ -119,7 +119,7 @@ node .agents/aidlc-coordination/src/fleet-run.mjs coordinator <task-id> --once
 node .agents/aidlc-coordination/src/fleet-run.mjs worker --once
 ```
 
-`supervisor` claims the task's supervisor lease, runs fenced lead turns through the coordinator, publishes each gate snapshot with its checkpoint in one service transaction, waits for the reviewer approval, and resumes automatically; it returns at a pause, blocked state, or completion, and never approves a gate. `coordinator --once` runs a single unattended pass without the supervisor lease. `worker --once` claims one ready assignment on a worker machine; it requires `AIDLC_WORKER_DOCKER_IMAGE` and that machine's worker credential and fails closed without them. `aidlc-workflow loop start --mode fleet` wraps the same supervisor with requirement intake and preflight.
+`supervisor` claims the task's supervisor lease, runs fenced lead turns through the coordinator, publishes each gate snapshot with its checkpoint in one service transaction, waits for the reviewer approval, and resumes automatically; it returns at a pause, blocked state, or completion, and never approves a gate. `coordinator --once` runs a single unattended pass without the supervisor lease. `worker --once` claims one ready assignment on a worker machine; it requires `AIDLC_WORKER_DOCKER_IMAGE` and that machine's worker credential and fails closed without them. `aidlc-kit loop start --mode fleet` wraps the same supervisor with requirement intake and preflight.
 
 Fleet mode uses `remote-state.mjs` instead of local `state.mjs`. Set `AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, and `AIDLC_FLEET_PROJECT_ROOT`; lead mutations additionally require `AIDLC_FLEET_TOKEN` and the current `AIDLC_FLEET_LEAD_EPOCH`. Claim an epoch before creating or changing a task:
 

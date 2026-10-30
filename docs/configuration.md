@@ -42,7 +42,7 @@ Built-in topology profiles are:
 Arrays are stable-deduplicated. Command keys are last-wins, so a project can replace a profile command intentionally. Validate the resolved profile chain with:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow profile validate .
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit profile validate .
 ```
 
 This command uses the npm package at version `0.0.1`. To run from a source checkout instead, see the [development guide](./development.md).
@@ -88,4 +88,4 @@ Set the default risk level deliberately. Planning, migrations, cross-service con
 
 When any selected provider is `opencode`, set `AIDLC_OPENCODE_MODEL` to a `provider/model[#variant]` value such as `opencode-go/gpt-6-luna`. The provider turn fails closed without a valid value. Docker-isolated lead turns, local Docker worker batches, and fleet worker containers reject OpenCode with `OpenCode workers require file-based credentials and are not available in isolated containers yet`; they do not fall back to the host.
 
-Configure this field through the init or human-run upgrade preview, or edit the project-owned config deliberately. Provider credentials do not belong in this object. The configuration is an opt-in selection; it does not install or start a service, authorize an upgrade, or grant gate approval. Selecting a mode alone does not start the loop — run `aidlc-workflow loop start` explicitly. Existing fleet operations and storage requirements are documented in [Coordination service](./coordination-service.md).
+Configure this field through the init or human-run upgrade preview, or edit the project-owned config deliberately. Provider credentials do not belong in this object. The configuration is an opt-in selection; it does not install or start a service, authorize an upgrade, or grant gate approval. Selecting a mode alone does not start the loop — run `aidlc-kit loop start` explicitly. Existing fleet operations and storage requirements are documented in [Coordination service](./coordination-service.md).

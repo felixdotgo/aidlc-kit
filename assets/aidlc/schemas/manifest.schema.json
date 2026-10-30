@@ -5,7 +5,7 @@
   "required": ["schemaVersion", "packageVersion", "workflow", "source", "remoteUpdates", "managedBy", "adapters", "files"],
   "properties": {
     "schemaVersion": { "const": 2 }, "packageVersion": { "type": "string" }, "workflow": { "const": "AI-DLC" },
-    "source": { "const": "local-package-assets" }, "remoteUpdates": { "const": false }, "managedBy": { "const": "aidlc-workflow" },
+    "source": { "const": "local-package-assets" }, "remoteUpdates": { "const": false }, "managedBy": { "const": "aidlc-kit" },
     "adapters": { "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" } },
     "files": { "type": "object", "additionalProperties": { "type": "object", "required": ["hash", "owner", "strategy"], "properties": { "hash": { "type": "string" }, "owner": { "type": "string" }, "strategy": { "enum": ["replace", "managed-block"] } } } }
   }

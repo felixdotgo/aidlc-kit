@@ -32,7 +32,7 @@ test("init previews optional loop mode and validates provider assignments", () =
 
 test("package exposes only the npx-oriented workflow binary name", () => {
   const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
-  assert.deepEqual(manifest.bin, { "aidlc-workflow": "dist/src/cli.js" });
+  assert.deepEqual(manifest.bin, { "aidlc-kit": "dist/src/cli.js" });
   assert.ok(manifest.files.includes("README.md"));
   assert.ok(manifest.files.includes("DEVELOPMENT.md"));
 });

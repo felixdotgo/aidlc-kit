@@ -233,7 +233,7 @@ export interface WorkflowManifest {
   workflow: "AI-DLC";
   source: "local-package-assets";
   remoteUpdates: false;
-  managedBy: "aidlc-workflow";
+  managedBy: "aidlc-kit" | "aidlc-workflow";
   adapters: AgentId[];
   files: Record<string, ManifestInventoryItem>;
 }

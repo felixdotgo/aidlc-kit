@@ -251,4 +251,4 @@ const main = async (): Promise<void> => {
   throw new Error(`Unknown command: ${command}`);
 };
 
-main().catch((error: unknown) => { console.error(`aidlc-workflow: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; });
+main().catch((error: unknown) => { console.error(`aidlc-kit: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; });

@@ -38,7 +38,7 @@ export const manifestFor = (files: FileSpec[], adapters: AgentId[]): WorkflowMan
   workflow: "AI-DLC",
   source: "local-package-assets",
   remoteUpdates: false,
-  managedBy: "aidlc-workflow",
+  managedBy: "aidlc-kit",
   adapters,
   files: Object.fromEntries(files.filter((file) => file.ownershipClass === "managed" || !file.ownershipClass).map((file) => [manifestKey(file), {
     hash: contentHash(file.strategy === "managed-block" ? file.content.trimEnd() : file.content),

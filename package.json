@@ -22,7 +22,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "aidlc-workflow": "dist/src/cli.js"
+    "aidlc-kit": "dist/src/cli.js"
   },
   "files": [
     "dist/src",

@@ -32,7 +32,7 @@ export const readManifest = (root: string): WorkflowManifest | undefined => {
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as Partial<WorkflowManifest>;
     const validFiles = value.files && typeof value.files === "object" && !Array.isArray(value.files) && Object.values(value.files).every((item) => item && typeof item.hash === "string" && typeof item.owner === "string" && ["replace", "managed-block"].includes(item.strategy));
-    return value.schemaVersion === 2 && typeof value.packageVersion === "string" && value.workflow === "AI-DLC" && value.source === "local-package-assets" && value.remoteUpdates === false && value.managedBy === "aidlc-workflow" && Array.isArray(value.adapters) && validFiles ? value as WorkflowManifest : undefined;
+    return value.schemaVersion === 2 && typeof value.packageVersion === "string" && value.workflow === "AI-DLC" && value.source === "local-package-assets" && value.remoteUpdates === false && (value.managedBy === "aidlc-kit" || value.managedBy === "aidlc-workflow") && Array.isArray(value.adapters) && validFiles ? value as WorkflowManifest : undefined;
   } catch {
     return undefined;
   } /* intentional: a malformed manifest is treated as "not installed" */
@@ -136,7 +136,7 @@ export const formatPlan = (plan: PlannedWrite[]): string => plan.map((item) => `
 const hasOwnedManifest = (root: string): boolean => {
   const path = join(resolve(root), ".agents/aidlc/manifest.json");
   if (!existsSync(path)) return false;
-  try { return JSON.parse(readFileSync(path, "utf8")).managedBy === "aidlc-workflow"; } catch { return false; } /* intentional: a malformed/missing manifest is not owned */
+  try { const parsed = JSON.parse(readFileSync(path, "utf8")) as { managedBy?: string }; return parsed.managedBy === "aidlc-kit" || parsed.managedBy === "aidlc-workflow"; } catch { return false; } /* intentional: a malformed/missing manifest is not owned */
 };
 
 const removeManagedBlock = (current: string, owner: string): string => {
@@ -206,7 +206,7 @@ const manifestDisposition = (plan: PlannedWrite[]): PlannedWrite => {
 /** Plans an uninstall transaction that removes only unchanged managed assets. */
 export const planUninstall = (root: string): PlannedWrite[] => {
   const project = resolve(root);
-  if (!hasOwnedManifest(project)) throw new Error("No aidlc-workflow ownership manifest found; refusing to remove files.");
+  if (!hasOwnedManifest(project)) throw new Error("No managed ownership manifest (.agents/aidlc/manifest.json) found; refusing to remove files.");
   const installed = readManifest(project);
   const currentSpecs = [...coreWorkflowFiles(), ...resolvedAdapters().flatMap((adapter) => adapter.files()).map((file) => ({ ...file, ownershipClass: "managed" as const }))];
   const plan: PlannedWrite[] = [];
@@ -254,7 +254,7 @@ export const doctor = (root: string, strict = false): string => {
   if (!existsSync(manifestPath)) return "ERROR: .agents/aidlc/manifest.json is missing. Run npx @felixdotgo/aidlc-kit init --yes.";
   let parsed: Record<string, unknown>;
   try { parsed = JSON.parse(readFileSync(manifestPath, "utf8")); } catch { return "ERROR: workflow manifest is invalid JSON."; }
-  if (parsed.remoteUpdates || parsed.source !== "local-package-assets" || parsed.managedBy !== "aidlc-workflow") return "ERROR: workflow manifest violates local-only asset policy.";
+  if (parsed.remoteUpdates || parsed.source !== "local-package-assets" || (parsed.managedBy !== "aidlc-kit" && parsed.managedBy !== "aidlc-workflow")) return "ERROR: workflow manifest violates local-only asset policy.";
   if (typeof parsed.schemaVersion === "number" && parsed.schemaVersion > 2) return `ERROR: installed manifest schema ${parsed.schemaVersion} is newer than this CLI supports.`;
   const manifest = readManifest(root);
   if (!manifest) return strict ? "ERROR: legacy manifest requires an explicit user-run npm/npx upgrade." : "WARN: legacy manifest detected; no registry check was performed.";

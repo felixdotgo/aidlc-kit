@@ -7,7 +7,7 @@ The optional AI-DLC Coordination service is a separate Docker-deployable authori
 Preview a configuration first. Outside an interactive terminal, provide all four selection flags.
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-workflow mcp setup . --dry-run \
+npx --package @felixdotgo/aidlc-kit@0.0.1 aidlc-kit mcp setup . --dry-run \
   --deployment docker --storage sqlite --bind localhost --workspace engineering
 ```
 
