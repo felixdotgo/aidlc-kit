@@ -44,3 +44,35 @@ test("fleet supervisor re-reads instead of blocking when the approval lands betw
   assert.equal(reads, 2);
   assert.ok(events.some((event) => event.type === "resync"));
 });
+
+test("fleet supervisor resumes a rejected checkpoint when the task is active at the same gate", async () => {
+  const { runFleetSupervisor } = await load();
+  const rejectedCheckpoint = { status: "rejected", gate: "G0_confirm", phase: "clarify", snapshotId: "snap-1" };
+  let claimArgs: any = null, coordinated = false;
+  const repository = {
+    claimSupervisor: async () => {}, renewSupervisor: async () => {}, releaseSupervisor: async () => {},
+    readGateCheckpoint: async () => rejectedCheckpoint,
+    readTask: async () => ({ task: { ...task, phase: "clarify", gate: "G0_confirm", status: "active" }, revision: 2, nextAction: { classification: "run_phase" } }),
+    claimLead: async (args: any) => { claimArgs = args; return { epoch: 5 }; }
+  };
+  const result = await runFleetSupervisor({ repository, taskId: "T1", coordinator: async () => { coordinated = true; return { status: "complete", taskId: "T1" }; } });
+  assert.equal(result.status, "complete");
+  assert.ok(claimArgs);
+  assert.equal(claimArgs.expectedStateRevision, 2);
+  assert.equal(coordinated, true);
+});
+
+test("fleet supervisor blocks a rejected checkpoint that does not match an active same-gate task", async () => {
+  const { runFleetSupervisor } = await load();
+  const rejectedCheckpoint = { status: "rejected", gate: "G0_confirm", phase: "clarify", snapshotId: "snap-1" };
+  let claimed = false;
+  const repository = {
+    claimSupervisor: async () => {}, renewSupervisor: async () => {}, releaseSupervisor: async () => {},
+    readGateCheckpoint: async () => rejectedCheckpoint,
+    readTask: async () => ({ task: { ...task, phase: "clarify", gate: "G0_confirm", status: "blocked_on_user" }, revision: 2, nextAction: { classification: "await_user", gate: "G0_confirm" } }),
+    claimLead: async () => { claimed = true; return { epoch: 5 }; }
+  };
+  const result = await runFleetSupervisor({ repository, taskId: "T1" });
+  assert.equal(result.status, "blocked");
+  assert.equal(claimed, false);
+});

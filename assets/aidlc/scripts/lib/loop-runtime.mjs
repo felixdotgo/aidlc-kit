@@ -152,6 +152,19 @@ export const classifyAction = (action) => {
 };
 
 function approvalCount(task) { return task.evidence.filter((item) => item.kind === "approval" && item.result === "pass").length; }
+function pendingFeedback(task) {
+  const evidence = Array.isArray(task?.evidence) ? task.evidence : [];
+  const pending = [];
+  for (let i = 0; i < evidence.length; i++) {
+    const entry = evidence[i];
+    if (entry?.kind !== "diagnostic" || typeof entry.detail !== "string") continue;
+    const match = entry.detail.match(/^Cancelled gate wait at (G0_confirm|G1_review|G2_codereview): /);
+    if (!match) continue;
+    const approvedAfter = evidence.slice(i + 1).some((later) => later?.kind === "approval" && later.result === "pass" && later.gate === match[1]);
+    if (!approvedAfter) pending.push(entry.detail);
+  }
+  return pending;
+}
 function outputStop(record, action, gateView) { return { taskId: record.taskId, runId: record.runId, status: record.status, iteration: record.iteration, sessionId: record.sessionId, stopReason: record.stopReason, nextAction: action, ...(gateView ? { gateView } : {}) }; }
 
 export async function runLoop({ root: rootInput, taskId, agent, mode = "run", limits: limitInput, driver, dispatchBuild, onEvent = () => {}, preflight = false, precondition }) {
@@ -230,7 +243,12 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
         // Do not persist arbitrary subprocess output or malformed context in the stop reason.
         return pause("context packet generation or validation failed; inspect context.mjs and resume after repair");
       }
+      const feedback = pendingFeedback(current.task);
+      if (feedback.length) {
+        prompt = `Human feedback (revise the current review artifact accordingly, then re-present the gate):\n${feedback.map((text) => `- ${text}`).join("\n")}\n\n${prompt}`;
+      }
       const beforeApprovals = approvalCount(current.task);
+      onEvent({ type: "turn_start", taskId, iteration: record.iteration, phase: current.action.phase, agent: record.agent });
       let observedId = record.sessionId;
       try {
         const result = await driver({ agent: record.agent, root, sessionId: record.sessionId ?? undefined, prompt: `${prompt}\n\nLoop supervisor: complete the current authorized phase or item. Use canonical lifecycle commands for evidence and gates. Never approve a human gate. Stop at a gate and report progress.`, timeoutMs: limits.turnTimeoutMs, onSessionId: (id) => { if (typeof id !== "string" || !id) throw new Error("Invalid agent session id"); observedId = id; record.sessionId = id; record.updatedAt = iso(); writeLoopRecord(root, record); }, onEvent: (event) => { onEvent(event); if (event?.type === "lifecycle_command") { const observed = readCanonical(root, taskId); const signal = fingerprint(root, observed.task, observed.action); record.checkpoint = checkpoint(observed.task, observed.action, signal.tree, record.iteration); record.updatedAt = iso(); writeLoopRecord(root, record); } } });
@@ -241,6 +259,7 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
         if (classifyAction(current.action) === "await_user") continue;
         return pause(`agent transport failure: ${error.message}`);
       }
+      onEvent({ type: "turn_end", taskId, iteration: record.iteration });
       const refreshed = readCanonical(root, taskId);
       if (approvalCount(refreshed.task) !== beforeApprovals) return pause("Approval evidence changed during an agent turn");
       const signal = fingerprint(root, refreshed.task, refreshed.action);

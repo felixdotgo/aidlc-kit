@@ -41,18 +41,30 @@ async function main() {
   console.log(review.view.trimEnd());
   console.log(`Review identity: ${JSON.stringify({ taskId, phase: review.phase, gate: review.gate, taskHash: review.taskHash, artifacts: review.artifacts, integrationCommit: review.commit })}`);
   const rl = createInterface({ input: stdin, output: stdout });
-  let answer; try { answer = await rl.question("Type approve to approve this exact review: "); } finally { rl.close(); }
-  if (answer.trim() !== "approve") throw new Error("Review was not approved");
+  let answer; try { answer = await rl.question("Type approve to approve this exact review, or type feedback to send guidance back to the loop: "); } finally { rl.close(); }
+  const trimmed = answer.trim();
+  if (!trimmed) throw new Error("Review was not approved");
   release = acquireStateLock(root);
   try {
     const state = loadState(root), fresh = snapshot(root, taskId, state);
     if (digest({ ...fresh, view: undefined }) !== digest({ ...review, view: undefined })) throw new Error("Review changed while waiting for approval; inspect the new review");
-    const checkpoint = readLocalGateCheckpoint(root, state.tasks[taskId]);
+    const task = state.tasks[taskId];
     const reviewHash = digest({ ...review, view: undefined });
-    const outcome = approveAndAdvance(root, state, taskId, review.gate, `Trusted host terminal: approve (${reviewHash})`);
-    saveState(root, state);
-    writeLocalGateReceipt(root, checkpoint, outcome.task, reviewHash);
-    console.log(`Approved ${review.gate}; next action: ${JSON.stringify(outcome.nextAction)}`);
+    if (trimmed === "approve") {
+      const checkpoint = readLocalGateCheckpoint(root, task);
+      const outcome = approveAndAdvance(root, state, taskId, review.gate, `Trusted host terminal: approve (${reviewHash})`);
+      saveState(root, state);
+      writeLocalGateReceipt(root, checkpoint, outcome.task, reviewHash);
+      console.log(`Approved ${review.gate}; next action: ${JSON.stringify(outcome.nextAction)}`);
+    } else {
+      const recordedAt = new Date().toISOString();
+      task.evidence.push({ kind: "diagnostic", result: "pass", source: `Trusted host terminal: feedback (${reviewHash})`, detail: `Cancelled gate wait at ${task.gate}: ${trimmed}`, recordedAt });
+      delete task.legacyG2Wait;
+      task.status = "active";
+      task.updatedAt = recordedAt;
+      saveState(root, state);
+      console.log(`Feedback recorded at ${review.gate}; the loop will revise the review and re-present the gate`);
+    }
   } finally { release(); }
 }
 main().catch((error) => { console.error(`loop-gate: ${error.message}`); process.exitCode = 1; });

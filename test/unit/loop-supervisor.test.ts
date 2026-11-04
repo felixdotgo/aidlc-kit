@@ -72,3 +72,39 @@ test("restart after approval uses persisted gate; ownership loss prevents a turn
   await assert.rejects(runSupervisor({ ...common, acquireSupervisor: async () => ({ assertOwned: async () => { throw new Error("lost lease"); }, release: async () => {} }) }), /lost lease/);
   assert.equal(calls, 1);
 });
+
+test("gate returns rejected when the task returns to active with cancellation feedback and no approval", async () => {
+  const { makeGateCheckpoint, checkGateCheckpoint } = await load();
+  const checkpoint = makeGateCheckpoint({ taskId: "task-a", authority: "local", snapshot: waiting(), result: { gate: "G0_confirm" } });
+  const rejected = { task: { id: "task-a", phase: "clarify", gate: "G0_confirm", status: "active", evidence: [{ kind: "diagnostic", result: "pass", source: "Trusted host terminal: feedback (hash)", detail: "Cancelled gate wait at G0_confirm: rewrite the problem", recordedAt: "2026-01-01T00:00:00.000Z" }] }, nextAction: { classification: "run_phase" } };
+  const verdict = await checkGateCheckpoint({ checkpoint, snapshot: rejected });
+  assert.equal(verdict.status, "rejected");
+  assert.equal(verdict.precondition.phase, "clarify");
+  assert.equal(verdict.precondition.gate, "G0_confirm");
+  assert.equal(verdict.precondition.evidenceCount, 1);
+});
+
+test("gate stays blocked when the task returns to active without cancellation feedback", async () => {
+  const { makeGateCheckpoint, checkGateCheckpoint } = await load();
+  const checkpoint = makeGateCheckpoint({ taskId: "task-a", authority: "local", snapshot: waiting(), result: { gate: "G0_confirm" } });
+  const noFeedback = { task: { id: "task-a", phase: "clarify", gate: "G0_confirm", status: "active", evidence: [] }, nextAction: { classification: "run_phase" } };
+  assert.equal((await checkGateCheckpoint({ checkpoint, snapshot: noFeedback })).status, "blocked");
+});
+
+test("supervisor clears the checkpoint and resumes when the gate is rejected with feedback", async () => {
+  const { runSupervisor, makeGateCheckpoint } = await load();
+  const checkpoint = makeGateCheckpoint({ taskId: "task-a", authority: "local", snapshot: waiting(), result: { gate: "G0_confirm" } });
+  const rejectedTask = { ...waiting().task, status: "active", evidence: [{ kind: "diagnostic", result: "pass", source: "host", detail: "Cancelled gate wait at G0_confirm: rewrite", recordedAt: "2026-01-01T00:00:00.000Z" }] };
+  let currentCheckpoint: any = checkpoint, cleared = 0, calls = 0;
+  const result = await runSupervisor({ taskId: "task-a", authority: "local", pollMs: 1,
+    acquireSupervisor: async () => ({ assertOwned: async () => {}, release: async () => {} }),
+    readTask: async () => ({ task: rejectedTask, nextAction: { classification: "run_phase" } }),
+    loadCheckpoint: async () => currentCheckpoint,
+    saveCheckpoint: async ({ checkpoint: value }: any) => { currentCheckpoint = value; },
+    clearCheckpoint: async () => { currentCheckpoint = null; cleared++; },
+    runTurn: async ({ precondition }: any) => { calls++; assert.equal(precondition.gate, "G0_confirm"); assert.equal(precondition.phase, "clarify"); return { status: "complete", taskId: "task-a" }; }
+  });
+  assert.equal(result.status, "complete");
+  assert.equal(cleared, 1);
+  assert.equal(calls, 1);
+});

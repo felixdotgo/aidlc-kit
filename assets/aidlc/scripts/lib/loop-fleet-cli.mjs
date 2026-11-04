@@ -13,6 +13,19 @@ import { workerDockerInvocation, OPENCODE_CONTAINER_ERROR } from "./loop-worker-
 const required = (env, name) => { const value = env[name]; if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required`); return value; };
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const provider = (value, name) => { if (!isLoopProvider(value)) throw new Error(`${name} must be ${LOOP_PROVIDER_LIST}`); return value; };
+const pendingFeedback = (task) => {
+  const evidence = Array.isArray(task?.evidence) ? task.evidence : [];
+  const pending = [];
+  for (let i = 0; i < evidence.length; i++) {
+    const entry = evidence[i];
+    if (entry?.kind !== "diagnostic" || typeof entry.detail !== "string") continue;
+    const match = entry.detail.match(/^Cancelled gate wait at (G0_confirm|G1_review|G2_codereview): /);
+    if (!match) continue;
+    const approvedAfter = evidence.slice(i + 1).some((later) => later?.kind === "approval" && later.result === "pass" && later.gate === match[1]);
+    if (!approvedAfter) pending.push(entry.detail);
+  }
+  return pending;
+};
 function workerMapping(env, workerIds, defaultAgent) {
   if (!env.AIDLC_FLEET_WORKER_PROVIDERS) return Object.fromEntries(workerIds.map((id) => [id, defaultAgent]));
   let mapping;
@@ -142,7 +155,9 @@ export async function runFleetCli(argv, { callTool, env = process.env, out = con
         const raw = execFileSync(process.execPath, [remoteState, "phase", "context", taskId], { cwd: root, env: fleetEnv, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024 });
         const packet = JSON.parse(raw);
         if (packet?.ok !== true || typeof packet.result?.content !== "string" || !packet.result.content) throw new Error("Remote phase context is empty or invalid");
-        return `${packet.result.content}\n\nFleet supervisor: canonical nextAction is ${JSON.stringify(snapshot.nextAction)}. Use only remote-state.mjs for lifecycle commands. Never approve a gate.`;
+        const feedback = pendingFeedback(snapshot.task);
+        const feedbackBlock = feedback.length ? `Human feedback (revise the current review artifact accordingly, then re-present the gate):\n${feedback.map((text) => `- ${text}`).join("\n")}\n\n` : "";
+        return `${feedbackBlock}${packet.result.content}\n\nFleet supervisor: canonical nextAction is ${JSON.stringify(snapshot.nextAction)}. Use only remote-state.mjs for lifecycle commands. Never approve a gate.`;
       },
       driver: async ({ leadEpoch, prompt, timeoutMs, signal: turnSignal }) => {
         return runAgentTurn({ agent, root, prompt, timeoutMs, signal: turnSignal, env: { ...env, AIDLC_FLEET_LEAD_EPOCH: String(leadEpoch), AIDLC_FLEET_LEAD_OWNER_TOKEN: repository.leadOwnerToken() }, onEvent: emit });

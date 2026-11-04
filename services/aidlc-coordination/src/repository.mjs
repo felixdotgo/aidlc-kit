@@ -119,6 +119,19 @@ const approveSnapshot = (current, snapshot, taskId, source, integrationCommit) =
   transitionTask(state, taskId, target);
   return mutationResult(current.state, state, current.index, [taskId]);
 };
+const rejectSnapshot = (current, snapshot, taskId, feedback, snapshotId) => {
+  if (typeof feedback !== "string" || !feedback.trim() || feedback.length > 2000) throw new Error("bounded feedback text is required");
+  if (!snapshot || snapshot.task_id !== taskId || !current.state.tasks?.[taskId] || snapshot.task_digest !== taskDigest(current.state.tasks[taskId])) throw new Error("stale gate snapshot");
+  const task = current.state.tasks?.[taskId];
+  if (!task || task.gate !== snapshot.gate || task.status !== "blocked_on_user" || nextAction(task).classification !== "await_user") throw new Error("gate is no longer ready");
+  const state = structuredClone(current.state);
+  const recordedAt = new Date().toISOString();
+  state.tasks[taskId].evidence.push({ kind: "diagnostic", result: "pass", source: `Fleet reviewer: feedback (${snapshotId})`, detail: `Cancelled gate wait at ${snapshot.gate}: ${feedback}`, recordedAt });
+  delete state.tasks[taskId].legacyG2Wait;
+  state.tasks[taskId].status = "active";
+  state.tasks[taskId].updatedAt = recordedAt;
+  return mutationResult(current.state, state, current.index, [taskId]);
+};
 const verifyFence = (fleet, taskId, epoch, ownerToken, time = Date.now()) => {
   const lead = fleet?.leads?.[taskId];
   if (!lead || !Number.isInteger(epoch) || lead.epoch !== epoch || Date.parse(lead.expiresAt) <= time || (lead.ownerTokenHash && (typeof ownerToken !== "string" || createHash("sha256").update(ownerToken).digest("hex") !== lead.ownerTokenHash))) throw new Error("stale or expired lead epoch");
@@ -306,6 +319,32 @@ export class SqliteStateRepository {
     } catch(error){try{this.db.exec("ROLLBACK");}catch{} throw error;}
   }
 
+  async rejectGate(workspace,expectedRevision,idempotencyKey,taskId,gateSnapshotId,feedback,clientProjectRoot,principal) {
+    if(typeof idempotencyKey!=="string"||!idempotencyKey.trim()||typeof clientProjectRoot!=="string"||!isAbsolute(clientProjectRoot)) throw new Error("invalid rejection precondition");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#ensure(workspace);
+      sqliteRequest(this.db,workspace,idempotencyKey,principal,"gate_reject",{expectedRevision,taskId,gateSnapshotId,feedback,clientProjectRoot});
+      const cached=this.db.prepare("SELECT response FROM state_idempotency WHERE workspace=? AND idempotency_key=?").get(workspace,idempotencyKey);
+      if(cached){this.db.exec("COMMIT");return parse(cached.response);}
+      const current=snapshot(this.db.prepare("SELECT * FROM state_workspaces WHERE workspace=?").get(workspace));
+      if(current.revision!==expectedRevision) throw new RevisionConflict(current);
+      const gateSnapshot=this.db.prepare("SELECT * FROM state_gate_snapshots WHERE workspace=? AND id=?").get(workspace,gateSnapshotId);
+      const checkpointRow=this.db.prepare("SELECT * FROM state_gate_checkpoints WHERE workspace=? AND task_id=?").get(workspace,taskId);
+      const fleetRow=this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='fleet_workspaces'").get() ? this.db.prepare("SELECT fleet FROM fleet_workspaces WHERE workspace=?").get(workspace) : null;
+      const managed=fleetRow && parse(fleetRow.fleet)?.supervisors?.[taskId];
+      if (managed && (!checkpointRow || checkpointRow.status !== "pending" || checkpointRow.snapshot_id !== gateSnapshotId)) throw new Error("supervised rejection requires matching pending checkpoint");
+      if (checkpointRow?.status === "pending" && checkpointRow.snapshot_id !== gateSnapshotId) throw new Error("gate checkpoint does not match snapshot");
+      const next=rejectSnapshot(current,gateSnapshot,taskId,feedback,gateSnapshotId); const revision=current.revision+1; const updatedAt=new Date().toISOString(); next.index={...next.index,sourceRevision:revision,updatedAt};
+      const response={workspace,revision,state:next.state,index:next.index,nextActions:{[taskId]:nextAction(next.state.tasks[taskId],resolve(clientProjectRoot))},updatedAt};
+      this.db.prepare("UPDATE state_workspaces SET revision=?,state=?,task_index=?,updated_at=? WHERE workspace=?").run(revision,encode(next.state),encode(next.index),updatedAt,workspace);
+      this.db.prepare("UPDATE state_gate_checkpoints SET status='rejected' WHERE workspace=? AND task_id=? AND snapshot_id=? AND status='pending'").run(workspace,taskId,gateSnapshotId);
+      this.db.prepare("INSERT INTO state_events (workspace,revision,idempotency_key,command,recorded_at) VALUES (?,?,?,?,?)").run(workspace,revision,idempotencyKey,encode({type:"gate_reject",taskId,snapshotId:gateSnapshotId}),updatedAt);
+      this.db.prepare("INSERT INTO state_idempotency VALUES (?,?,?)").run(workspace,idempotencyKey,encode(response));
+      this.db.exec("COMMIT");return response;
+    } catch(error){try{this.db.exec("ROLLBACK");}catch{} throw error;}
+  }
+
   close() { this.db.close(); }
 }
 
@@ -360,6 +399,33 @@ export class PostgresStateRepository {
   async putGateSnapshot(workspace,expectedRevision,idempotencyKey,taskId,gate,reviewText,leadEpoch,integrationCommit,leadOwnerToken,checkpoint=false,principal) { if(typeof idempotencyKey!=="string"||!idempotencyKey.trim()) throw new Error("idempotencyKey is required"); const c=await this.pool.connect(); try { await this.#init(c); await c.query("BEGIN"); if(leadEpoch!==undefined){const fleetRow=(await c.query("SELECT fleet FROM fleet_workspaces WHERE workspace=$1 FOR UPDATE",[workspace])).rows[0];verifyFence(fleetRow?.fleet,taskId,leadEpoch,leadOwnerToken,Number((await c.query("SELECT extract(epoch from clock_timestamp()) * 1000 AS ms")).rows[0].ms));} await c.query("INSERT INTO state_workspaces VALUES ($1,0,$2,$3,$4) ON CONFLICT DO NOTHING",[workspace,emptyState(),emptyIndex(0),new Date().toISOString()]); const row=(await c.query("SELECT * FROM state_workspaces WHERE workspace=$1 FOR UPDATE",[workspace])).rows[0]; await postgresRequest(c,workspace,idempotencyKey,principal,"gate_snapshot_put",{expectedRevision,taskId,gate,reviewText,leadEpoch,integrationCommit,leadOwnerToken,checkpoint}); const cached=(await c.query("SELECT response FROM state_idempotency WHERE workspace=$1 AND idempotency_key=$2",[workspace,idempotencyKey])).rows[0]; if(cached){await c.query("COMMIT");return cached.response;} const current={workspace,revision:Number(row.revision),state:upgradeStoredState(row.state),index:row.task_index,updatedAt:row.updated_at}; if(current.revision!==expectedRevision) throw new RevisionConflict(current); if(checkpoint){const prior=(await c.query("SELECT status FROM state_gate_checkpoints WHERE workspace=$1 AND task_id=$2 FOR UPDATE",[workspace,taskId])).rows[0];if(prior?.status==="approved") throw new Error("approved checkpoint must be reconciled before replacement");} const boundReviewText=reviewWithCommit(gate,reviewText,integrationCommit); validateGateSnapshot(current,taskId,gate,boundReviewText,integrationCommit); const item={id:snapshotId(workspace,taskId,current.revision,gate,boundReviewText,integrationCommit),workspace,taskId,gate,stateRevision:current.revision,taskDigest:taskDigest(current.state.tasks[taskId]),integrationCommit:integrationCommit??null,reviewText:boundReviewText,createdAt:new Date().toISOString()}; await c.query("INSERT INTO state_gate_snapshots VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING",[item.id,workspace,taskId,gate,current.revision,item.taskDigest,item.integrationCommit,boundReviewText,item.createdAt]); item.createdAt=(await c.query("SELECT created_at FROM state_gate_snapshots WHERE id=$1",[item.id])).rows[0].created_at; if(checkpoint) await c.query("INSERT INTO state_gate_checkpoints (workspace,task_id,snapshot_id,gate,task_digest,state_revision,integration_commit,status,approval_revision,phase) VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',NULL,$8) ON CONFLICT(workspace,task_id) DO UPDATE SET snapshot_id=excluded.snapshot_id,gate=excluded.gate,task_digest=excluded.task_digest,state_revision=excluded.state_revision,integration_commit=excluded.integration_commit,status='pending',approval_revision=NULL,phase=excluded.phase",[workspace,taskId,item.id,gate,item.taskDigest,current.revision,item.integrationCommit,current.state.tasks[taskId].phase]); await c.query("INSERT INTO state_idempotency VALUES ($1,$2,$3)",[workspace,idempotencyKey,item]); await c.query("COMMIT");return item; } catch(error){try{await c.query("ROLLBACK");}catch{} throw error;} finally{c.release();} }
   async gateCheckpoint(workspace,taskId) { const c=await this.pool.connect(); try { await this.#init(c); const row=(await c.query("SELECT snapshot_id AS \"snapshotId\",gate,phase,task_digest AS \"taskDigest\",state_revision AS \"stateRevision\",integration_commit AS \"integrationCommit\",status,approval_revision AS \"approvalRevision\" FROM state_gate_checkpoints WHERE workspace=$1 AND task_id=$2",[workspace,taskId])).rows[0]; return row ? {...row,stateRevision:Number(row.stateRevision),approvalRevision:row.approvalRevision===null?null:Number(row.approvalRevision)} : null; } finally { c.release(); } }
   async approveGate(workspace,expectedRevision,idempotencyKey,taskId,gateSnapshotId,source,clientProjectRoot,integrationCommit,principal) { if(typeof idempotencyKey!=="string"||!idempotencyKey.trim()||typeof clientProjectRoot!=="string"||!isAbsolute(clientProjectRoot)) throw new Error("invalid approval precondition"); const c=await this.pool.connect(); try { await this.#init(c); await c.query("BEGIN"); const fleetTable=(await c.query("SELECT to_regclass('fleet_workspaces') AS name")).rows[0].name; const fleetRow=fleetTable ? (await c.query("SELECT fleet FROM fleet_workspaces WHERE workspace=$1 FOR UPDATE",[workspace])).rows[0] : null; await c.query("INSERT INTO state_workspaces VALUES ($1,0,$2,$3,$4) ON CONFLICT DO NOTHING",[workspace,emptyState(),emptyIndex(0),new Date().toISOString()]); const row=(await c.query("SELECT * FROM state_workspaces WHERE workspace=$1 FOR UPDATE",[workspace])).rows[0]; await postgresRequest(c,workspace,idempotencyKey,principal,"gate_approve",{expectedRevision,taskId,gateSnapshotId,source,clientProjectRoot,integrationCommit}); const cached=(await c.query("SELECT response FROM state_idempotency WHERE workspace=$1 AND idempotency_key=$2",[workspace,idempotencyKey])).rows[0]; if(cached){await c.query("COMMIT");return cached.response;} const current={workspace,revision:Number(row.revision),state:upgradeStoredState(row.state),index:row.task_index,updatedAt:row.updated_at}; if(current.revision!==expectedRevision) throw new RevisionConflict(current); const gateSnapshot=(await c.query("SELECT * FROM state_gate_snapshots WHERE workspace=$1 AND id=$2",[workspace,gateSnapshotId])).rows[0]; const checkpointRow=(await c.query("SELECT * FROM state_gate_checkpoints WHERE workspace=$1 AND task_id=$2 FOR UPDATE",[workspace,taskId])).rows[0]; if(fleetRow?.fleet?.supervisors?.[taskId] && (!checkpointRow || checkpointRow.status!=="pending" || checkpointRow.snapshot_id!==gateSnapshotId)) throw new Error("supervised approval requires matching pending checkpoint"); if(checkpointRow?.status==="pending" && checkpointRow.snapshot_id!==gateSnapshotId) throw new Error("gate checkpoint does not match snapshot"); const next=approveSnapshot(current,gateSnapshot,taskId,source,integrationCommit); const revision=current.revision+1; const updatedAt=new Date().toISOString(); next.index={...next.index,sourceRevision:revision,updatedAt}; const response={workspace,revision,state:next.state,index:next.index,nextActions:{[taskId]:nextAction(next.state.tasks[taskId],resolve(clientProjectRoot))},updatedAt}; await c.query("UPDATE state_workspaces SET revision=$1,state=$2,task_index=$3,updated_at=$4 WHERE workspace=$5",[revision,next.state,next.index,updatedAt,workspace]); await c.query("UPDATE state_gate_checkpoints SET status='approved',approval_revision=$1 WHERE workspace=$2 AND task_id=$3 AND snapshot_id=$4 AND status='pending'",[revision,workspace,taskId,gateSnapshotId]); await c.query("INSERT INTO state_events (workspace,revision,idempotency_key,command,recorded_at) VALUES ($1,$2,$3,$4,$5)",[workspace,revision,idempotencyKey,{type:"gate_approve",taskId,snapshotId:gateSnapshotId,integrationCommit:integrationCommit??null},updatedAt]); await c.query("INSERT INTO state_idempotency VALUES ($1,$2,$3)",[workspace,idempotencyKey,response]); await c.query("COMMIT");return response; } catch(error){try{await c.query("ROLLBACK");}catch{} throw error;} finally{c.release();} }
+  async rejectGate(workspace,expectedRevision,idempotencyKey,taskId,gateSnapshotId,feedback,clientProjectRoot,principal) {
+    if(typeof idempotencyKey!=="string"||!idempotencyKey.trim()||typeof clientProjectRoot!=="string"||!isAbsolute(clientProjectRoot)) throw new Error("invalid rejection precondition");
+    const c=await this.pool.connect();
+    try {
+      await this.#init(c); await c.query("BEGIN");
+      const fleetTable=(await c.query("SELECT to_regclass('fleet_workspaces') AS name")).rows[0].name;
+      const fleetRow=fleetTable ? (await c.query("SELECT fleet FROM fleet_workspaces WHERE workspace=$1 FOR UPDATE",[workspace])).rows[0] : null;
+      await c.query("INSERT INTO state_workspaces VALUES ($1,0,$2,$3,$4) ON CONFLICT DO NOTHING",[workspace,emptyState(),emptyIndex(0),new Date().toISOString()]);
+      const row=(await c.query("SELECT * FROM state_workspaces WHERE workspace=$1 FOR UPDATE",[workspace])).rows[0];
+      await postgresRequest(c,workspace,idempotencyKey,principal,"gate_reject",{expectedRevision,taskId,gateSnapshotId,feedback,clientProjectRoot});
+      const cached=(await c.query("SELECT response FROM state_idempotency WHERE workspace=$1 AND idempotency_key=$2",[workspace,idempotencyKey])).rows[0];
+      if(cached){await c.query("COMMIT");return cached.response;}
+      const current={workspace,revision:Number(row.revision),state:upgradeStoredState(row.state),index:row.task_index,updatedAt:row.updated_at};
+      if(current.revision!==expectedRevision) throw new RevisionConflict(current);
+      const gateSnapshot=(await c.query("SELECT * FROM state_gate_snapshots WHERE workspace=$1 AND id=$2",[workspace,gateSnapshotId])).rows[0];
+      const checkpointRow=(await c.query("SELECT * FROM state_gate_checkpoints WHERE workspace=$1 AND task_id=$2 FOR UPDATE",[workspace,taskId])).rows[0];
+      if(fleetRow?.fleet?.supervisors?.[taskId] && (!checkpointRow || checkpointRow.status!=="pending" || checkpointRow.snapshot_id!==gateSnapshotId)) throw new Error("supervised rejection requires matching pending checkpoint");
+      if(checkpointRow?.status==="pending" && checkpointRow.snapshot_id!==gateSnapshotId) throw new Error("gate checkpoint does not match snapshot");
+      const next=rejectSnapshot(current,gateSnapshot,taskId,feedback,gateSnapshotId); const revision=current.revision+1; const updatedAt=new Date().toISOString(); next.index={...next.index,sourceRevision:revision,updatedAt};
+      const response={workspace,revision,state:next.state,index:next.index,nextActions:{[taskId]:nextAction(next.state.tasks[taskId],resolve(clientProjectRoot))},updatedAt};
+      await c.query("UPDATE state_workspaces SET revision=$1,state=$2,task_index=$3,updated_at=$4 WHERE workspace=$5",[revision,next.state,next.index,updatedAt,workspace]);
+      await c.query("UPDATE state_gate_checkpoints SET status='rejected' WHERE workspace=$1 AND task_id=$2 AND snapshot_id=$3 AND status='pending'",[workspace,taskId,gateSnapshotId]);
+      await c.query("INSERT INTO state_events (workspace,revision,idempotency_key,command,recorded_at) VALUES ($1,$2,$3,$4,$5)",[workspace,revision,idempotencyKey,{type:"gate_reject",taskId,snapshotId:gateSnapshotId},updatedAt]);
+      await c.query("INSERT INTO state_idempotency (workspace,idempotency_key,response) VALUES ($1,$2,$3)",[workspace,idempotencyKey,response]);
+      await c.query("COMMIT"); return response;
+    } catch(error) { try { await c.query("ROLLBACK"); } catch {} throw error; } finally { c.release(); }
+  }
   async close() { await this.pool.end(); }
 }
 

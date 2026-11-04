@@ -37,6 +37,8 @@ export async function checkGateCheckpoint({ checkpoint, snapshot, verifyFleetApp
   }
   const appended = task.evidence.slice(checkpoint.evidenceCount);
   const approvals = appended.filter((entry) => entry.kind === "approval" && entry.gate === checkpoint.gate && entry.result === "pass" && typeof entry.source === "string" && entry.source.trim());
+  const cancelled = appended.some((entry) => entry.kind === "diagnostic" && entry.result === "pass" && typeof entry.source === "string" && entry.source.trim() && typeof entry.detail === "string" && entry.detail.startsWith(`Cancelled gate wait at ${checkpoint.gate}: `));
+  if (task.phase === checkpoint.phase && task.gate === checkpoint.gate && task.status === "active" && nextAction.classification === "run_phase" && approvals.length === 0 && cancelled) return { status: "rejected", precondition: { taskId: checkpoint.taskId, gate: checkpoint.gate, phase: task.phase, taskHash: hash(task), evidenceCount: task.evidence.length, evidenceHash: hash(task.evidence) } };
   if (task.phase !== TARGET[checkpoint.gate] || task.status !== "active" || nextAction.classification !== "run_phase" || approvals.length !== 1) return { status: "blocked", reason: "gate changed without its matching approval" };
   if (checkpoint.authority === "local" && verifyLocalApproval && !await verifyLocalApproval({ checkpoint, snapshot })) return { status: "blocked", reason: "local approval lacks the matching host receipt" };
   if (checkpoint.authority === "fleet") {
@@ -76,6 +78,10 @@ export async function runSupervisor({ taskId, authority, acquireSupervisor, read
       if (verdict.status === "wait") {
         try { await sleep(pollMs, undefined, { signal }); } catch (error) { if (error?.name !== "AbortError") throw error; }
         continue;
+      }
+      if (verdict.status === "rejected") {
+        await clearCheckpoint({ taskId, authority, checkpoint });
+        checkpoint = null;
       }
       precondition = verdict.precondition;
     } else if (snapshot.nextAction.classification !== "run_phase") {

@@ -91,6 +91,27 @@ test("review snapshots require a ready wait and approval is atomic against its r
   } finally { repo.close(); }
 });
 
+test("reviewer rejection records feedback, returns the task to active, and marks the checkpoint rejected", async () => {
+  const repo = new SqliteStateRepository(":memory:");
+  try {
+    const first = await repo.apply("w", 0, "create", { type: "upsertTask", taskId: "T1", task }, "/workspace/project");
+    assert.equal(first.nextActions.T1.classification, "await_user");
+    const snapshot = await repo.putGateSnapshot("w", 1, "snapshot", "T1", "G0_confirm", "Review this intent", undefined, undefined, undefined, true);
+    assert.equal((await repo.gateCheckpoint("w", "T1")).status, "pending");
+    await assert.rejects(() => repo.rejectGate("w", 0, "stale", "T1", snapshot.id, "rewrite", "/workspace/project"), /revision conflict/);
+    const rejected = await repo.rejectGate("w", 1, "reject", "T1", snapshot.id, "Please rewrite the problem statement", "/workspace/project");
+    const after = rejected.state.tasks.T1;
+    assert.equal(after.status, "active");
+    assert.equal(after.phase, "clarify");
+    assert.equal(after.gate, "G0_confirm");
+    assert.equal(after.evidence.at(-1).kind, "diagnostic");
+    assert.match(after.evidence.at(-1).detail, /^Cancelled gate wait at G0_confirm: Please rewrite the problem statement$/);
+    assert.equal(rejected.nextActions.T1.classification, "run_phase");
+    assert.equal((await repo.gateCheckpoint("w", "T1")).status, "rejected");
+    await assert.rejects(() => repo.rejectGate("w", 2, "again", "T1", snapshot.id, "more feedback", "/workspace/project"), /stale gate snapshot/);
+  } finally { repo.close(); }
+});
+
 test("G2 snapshot binds the reviewed integration commit through approval", async () => {
   const repo=new SqliteStateRepository(":memory:");
   try {

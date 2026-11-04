@@ -32,8 +32,12 @@ export async function runFleetSupervisor({ repository, taskId, limits: inputLimi
         continue;
       }
       if (checkpoint?.status === "consumed") return { status: "blocked", taskId, reason: "Consumed checkpoint requires reconciliation before restart" };
-      if (checkpoint && checkpoint.status !== "approved") return { status: "blocked", taskId, reason: "Approved checkpoint does not match canonical state" };
-      if (checkpoint) {
+      if (checkpoint?.status === "rejected") {
+        if (task.status !== "active" || task.phase !== checkpoint.phase || task.gate !== checkpoint.gate || snapshot.nextAction?.classification !== "run_phase") return { status: "blocked", taskId, reason: "Rejected checkpoint does not match canonical state" };
+      } else if (checkpoint && checkpoint.status !== "approved") {
+        return { status: "blocked", taskId, reason: "Approved checkpoint does not match canonical state" };
+      }
+      if (checkpoint?.status === "approved") {
         // A task snapshot older than the atomic approval is a read race between
         // the two reads, not a mismatch: re-read the canonical task immediately.
         if (Number.isSafeInteger(checkpoint.approvalRevision) && checkpoint.approvalRevision > snapshot.revision) { await onEvent({ type: "resync", taskId, gate: checkpoint.gate }); continue; }
