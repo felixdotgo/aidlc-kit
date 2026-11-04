@@ -20,6 +20,9 @@ export function streamLog(event) {
     case "gate":
       process.stderr.write(`\n${event.gateView ?? `Gate ${event.gate ?? "?"} reached — approve from the trusted terminal.`}\n`);
       break;
+    case "worker_image_build":
+      process.stderr.write(`\n▶ building worker image ${event.image ?? "?"} (provider ${event.provider ?? "?"})…\n`);
+      break;
     default:
       break;
   }

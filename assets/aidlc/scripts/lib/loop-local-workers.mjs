@@ -43,21 +43,33 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
     ids.add(job.itemId); workers.add(job.workerId);
     for (const path of job.ownedPaths) { if (scopes.some((prior) => overlaps(path, prior))) throw new Error(`Overlapping assignment scope: ${path}`); scopes.push(path); }
   }
-  if (process.platform !== "linux" || !docker || typeof docker.image !== "string" || !docker.credentials || typeof docker.credentials !== "object") throw new Error("Linux Docker worker isolation and explicit image and provider credentials are required");
+  const hasImages = docker && typeof docker.images === "object" && !Array.isArray(docker.images);
+  if (process.platform !== "linux" || !docker || (typeof docker.image !== "string" && !hasImages) || !docker.credentials || typeof docker.credentials !== "object") throw new Error("Linux Docker worker isolation and explicit image and provider credentials are required");
+  const resolveImage = (agent) => {
+    const specific = hasImages && typeof docker.images[agent] === "string" && docker.images[agent] ? docker.images[agent] : undefined;
+    return specific ?? docker.image;
+  };
   const uid = process.getuid?.(), gid = process.getgid?.();
   if (!uid || !gid) throw new Error("Docker workers require a non-root host user");
+  const resolvedImages = {};
+  for (const agent of new Set(jobs.map((job) => job.agent))) {
+    const agentImage = resolveImage(agent);
+    if (typeof agentImage !== "string" || !agentImage) throw new Error(`Worker Docker image is required for provider ${agent}`);
+    resolvedImages[agent] = agentImage;
+  }
   for (const job of jobs) {
     const keys = docker.credentials[job.agent];
-    workerDockerInvocation({ workspace: root, image: docker.image, command: job.agent, args: [], credentialEnv: keys, hostEnv: process.env, uid, gid });
+    workerDockerInvocation({ workspace: root, image: resolvedImages[job.agent], command: job.agent, args: [], credentialEnv: keys, hostEnv: process.env, uid, gid });
   }
   const dockerEnv = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const dockerCheck = (...args) => execFileSync("docker", args, { env: dockerEnv, stdio: "ignore", timeout: 30000 });
-  let image;
   try {
     dockerCheck("info");
-    image=execFileSync("docker",["image","inspect","--format","{{.Id}}",docker.image],{env:dockerEnv,encoding:"utf8",stdio:["ignore","pipe","ignore"],timeout:30000}).trim();
-    if (!/^sha256:[a-f0-9]{64}$/.test(image)) throw new Error("Docker worker image lacks immutable image ID");
-    for (const agent of new Set(jobs.map((job) => job.agent))) dockerCheck("run", "--rm", "--network", "none", "--read-only", "--user", `${uid}:${gid}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--entrypoint", agent, image, "--version");
+    for (const [agent, agentImage] of Object.entries(resolvedImages)) {
+      const id=execFileSync("docker",["image","inspect","--format","{{.Id}}",agentImage],{env:dockerEnv,encoding:"utf8",stdio:["ignore","pipe","ignore"],timeout:30000}).trim();
+      if (!/^sha256:[a-f0-9]{64}$/.test(id)) throw new Error("Docker worker image lacks immutable image ID");
+      dockerCheck("run", "--rm", "--network", "none", "--read-only", "--user", `${uid}:${gid}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--entrypoint", agent, agentImage, "--version");
+    }
   } catch { throw new Error("Docker engine, image, or provider CLI preflight failed"); }
   clean(root);
   const base = git(root, "rev-parse", "HEAD").trim();
@@ -94,7 +106,7 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
           if (renewalError || controller.signal.aborted) throw renewalError ?? new Error("Worker lease lost");
           const containerName = `aidlc-worker-${randomUUID()}`;
           const spawnProcess = (command, args, options) => {
-            const invocation = workerDockerInvocation({ workspace: snapshot, image, command, args, credentialEnv: docker.credentials[job.agent], hostEnv: process.env, uid, gid, containerName, sessionHome:home });
+            const invocation = workerDockerInvocation({ workspace: snapshot, image: resolvedImages[job.agent], command, args, credentialEnv: docker.credentials[job.agent], hostEnv: process.env, uid, gid, containerName, sessionHome:home });
             return spawn(invocation.command, invocation.args, { ...options, cwd: snapshot, env: invocation.env, shell: false });
           };
           try { result = await runAgentTurn({ agent: job.agent, root: "/workspace", sessionId, spawnProcess, prompt: `${job.prompt}\n\nOnly modify assigned paths: ${job.ownedPaths.join(", ")}. Do not modify AI-DLC lifecycle state or approve gates. End with AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs, signal: controller.signal, onSessionId: async (id) => { await heartbeat(root, taskId, assignment.id, leaseMs, id); } }); }

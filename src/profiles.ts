@@ -37,13 +37,23 @@ const object = (value: unknown, label: string): Record<string, unknown> => {
 export const validateLoopConfig = (value: unknown): LoopConfig => {
   if (value === undefined) return { mode: "off" };
   const item = object(value, "config.loop");
-  if (Object.keys(item).some((key) => !["mode", "agents"].includes(key)) || typeof item.mode !== "string" || !["off", "local", "fleet"].includes(item.mode)) throw new Error("config.loop requires a valid mode and only supported fields");
-  if (item.agents === undefined) return { mode: item.mode as LoopConfig["mode"] };
+  if (Object.keys(item).some((key) => !["mode", "agents", "workerImage"].includes(key)) || typeof item.mode !== "string" || !["off", "local", "fleet"].includes(item.mode)) throw new Error("config.loop requires a valid mode and only supported fields");
+  const workerImage = validateWorkerImageMap(item.workerImage);
+  if (item.agents === undefined) return { mode: item.mode as LoopConfig["mode"], ...(workerImage ? { workerImage } : {}) };
   const agents = object(item.agents, "config.loop.agents");
   if (Object.keys(agents).some((key) => !["lead", "workers"].includes(key)) || !isLoopProvider(agents.lead)) throw new Error(`config.loop.agents.lead must be ${loopProviderNames}`);
   const workers = object(agents.workers, "config.loop.agents.workers");
   for (const [id, provider] of Object.entries(workers)) if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || !isLoopProvider(provider)) throw new Error(`config.loop.agents.workers must map worker IDs to ${loopProviderNames}`);
-  return { mode: item.mode as LoopConfig["mode"], agents: { lead: agents.lead as LoopAgent, workers: workers as Record<string, LoopAgent> } };
+  return { mode: item.mode as LoopConfig["mode"], agents: { lead: agents.lead as LoopAgent, workers: workers as Record<string, LoopAgent> }, ...(workerImage ? { workerImage } : {}) };
+};
+
+const validateWorkerImageMap = (value: unknown): Partial<Record<LoopAgent, string>> | undefined => {
+  if (value === undefined) return undefined;
+  const map = object(value, "config.loop.workerImage");
+  for (const [provider, tag] of Object.entries(map)) {
+    if (!isLoopProvider(provider) || typeof tag !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,255}$/.test(tag)) throw new Error(`config.loop.workerImage must map ${loopProviderNames} to image tags`);
+  }
+  return map as Partial<Record<LoopAgent, string>>;
 };
 
 const strings = (value: unknown, label: string): string[] => {

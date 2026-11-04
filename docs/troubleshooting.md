@@ -69,6 +69,12 @@ Symptom- and error-code-oriented recovery guide for the AI-DLC workflow. Read [O
 - `test/unit/loop-fleet-e2e.test.ts` skips cleanly with `Docker worker image unavailable` when the image (default `aidlc-worker-fleet-e2e-test:local`, overridable via `AIDLC_WORKER_DOCKER_IMAGE`) is missing. No failure is recorded.
 - Build the worker image, or set `AIDLC_TEST_WORKER_IMAGE`/`AIDLC_WORKER_DOCKER_IMAGE`, to enable coverage. Postgres coverage additionally needs `TEST_POSTGRES_URL`.
 
+## Worker image missing at build dispatch
+
+- Local build dispatch auto-builds the per-provider image (`aidlc-worker-<provider>:local`) from the packaged Dockerfile when it is missing, so this error usually does not surface.
+- If the build cannot complete (no Docker daemon, no network to fetch the CLI, or a removed Dockerfile), the worker batch fails with `Docker engine, image, or provider CLI preflight failed`. Run `aidlc-kit loop worker-image --provider <provider>` directly to see the build output, or set `AIDLC_WORKER_DOCKER_IMAGE` to an image you built yourself.
+- Fleet workers run on a separate machine and still require `AIDLC_WORKER_DOCKER_IMAGE` (or a pre-built image) there; build it on that machine with `aidlc-kit loop worker-image --provider codex` (or `claude`).
+
 ## Loop / fleet experimental status
 
 - The end-to-end loop and coordination service are experimental and unfinished; pre-1.0 breaking changes are possible.

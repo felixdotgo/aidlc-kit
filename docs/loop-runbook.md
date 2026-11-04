@@ -65,7 +65,7 @@ Local mode is the single-machine journey. The lead runs on the host (Codex, Clau
 | Linux host | Loop/fleet features require Docker and a POSIX shell; `loop-local-workers.mjs` rejects non-Linux hosts. |
 | Docker engine | The worker batch preflights `docker info` and the worker image. |
 | Non-root host user | Docker workers require a non-root uid/gid. |
-| Worker Docker image | Set `AIDLC_WORKER_DOCKER_IMAGE`; the image must contain the provider CLI(s) for your workers. |
+| Worker Docker image | Auto-built from the packaged Dockerfile on first build dispatch (`aidlc-kit loop worker-image`); set `AIDLC_WORKER_DOCKER_IMAGE` only to override the per-provider default. |
 | Provider credentials | Exported in the environment; never written into `.agents/config.json`. |
 
 ### Step 1 — Configure `local`
@@ -85,7 +85,7 @@ Set `loop.mode` to `local` with a lead and workers (see [Enable the loop from `o
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `AIDLC_WORKER_DOCKER_IMAGE` | yes | The Docker image used for isolated workers. |
+| `AIDLC_WORKER_DOCKER_IMAGE` | no | Optional single-image override. The per-provider default `aidlc-worker-<provider>:local` is auto-built and recorded in `loop.workerImage`. |
 | `AIDLC_OPENCODE_MODEL` | if any provider is `opencode` | `provider/model[#variant]` (for example `opencode-go/gpt-6-luna`). The turn fails closed without a valid value. |
 | `OPENAI_API_KEY` | if a provider is `codex` | Codex worker credential. |
 | `ANTHROPIC_API_KEY` | if a provider is `claude` | Claude Code worker credential. |
@@ -94,9 +94,16 @@ Set `loop.mode` to `local` with a lead and workers (see [Enable the loop from `o
 
 Local Docker workers authenticate OpenCode from the environment and redirect OpenCode's XDG data/config roots into the worker's ephemeral HOME. The **isolated lead** container and **fleet worker** containers do not support OpenCode yet (`OpenCode workers require file-based credentials and are not available in isolated containers yet`); use a host-executed OpenCode lead (`loop.mjs run --agent opencode`) or choose Codex/Claude Code where container isolation is required.
 
-### Step 3 — Build the worker image
+### Step 3 — Build the worker image (usually automatic)
 
-`AIDLC_WORKER_DOCKER_IMAGE` must name a real, locally built image containing the provider CLI(s) for your workers. The batch preflight inspects the image and runs each provider CLI with `--version` inside the container, so a missing or mismatched image fails before any worker starts. See [Testing and release](./testing-and-release.md#loop-docker-and-postgresql-verification) for the Docker worker image requirements and the fixture build pattern.
+Build the worker image for each provider you use, or let the supervisor auto-build it on the first build dispatch:
+
+```sh
+npx @felixdotgo/aidlc-kit loop worker-image --provider codex    # → aidlc-worker-codex:local
+npx @felixdotgo/aidlc-kit loop worker-image --provider opencode # → aidlc-worker-opencode:local
+```
+
+The command records the tag into `loop.workerImage`; the local supervisor reuses it and auto-builds any missing per-provider image before dispatch. The batch preflight still inspects the image and runs each provider CLI with `--version` inside the container, so a missing or mismatched image fails before any worker starts. See [Testing and release](./testing-and-release.md#loop-docker-and-postgresql-verification) for the fixture build pattern used by the test suite.
 
 ### Step 4 — Start, watch, and resume
 
@@ -190,7 +197,7 @@ On each worker machine, point at the same `AIDLC_FLEET_URL` and workspace, then 
 | --- | --- | --- |
 | `AIDLC_FLEET_WORKER_ID` | yes | This machine's worker id (must be a configured worker). |
 | `AIDLC_FLEET_WORKTREES_ROOT` | yes | Root for this worker's isolated worktrees. |
-| `AIDLC_WORKER_DOCKER_IMAGE` | yes | The worker Docker image. |
+| `AIDLC_WORKER_DOCKER_IMAGE` | yes | The worker Docker image (build it on this machine with `aidlc-kit loop worker-image --provider <provider>`). |
 | worker credential | yes | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` (or `OPENCODE_API_KEY`) for this worker's provider. |
 
 Run one bounded assignment per invocation:

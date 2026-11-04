@@ -74,6 +74,7 @@ The upgrade plan handles supported legacy `.aidlc/` project data transactionally
 
 ```sh
 npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start|status|resume [options]
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop worker-image [--provider opencode|codex|claude] [--tag TAG] [--root PATH]
 ```
 
 > [!WARNING]
@@ -81,9 +82,11 @@ npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start|status|resume [op
 
 Options: `--task-id <id>` (optional for `start`, which derives one; required for `status`/`resume`), `--root <path>`, and `--mode local|fleet` (defaults to the configured `loop.mode`). `start` reads the requirement from an interactive prompt or stdin — the requirement is never passed as an argument. The command fails closed when the requested mode does not match the configured authority, when another task is actionable, or when a resume record is missing.
 
+`loop worker-image` builds (or rebuilds) the shipped worker image for a provider without requiring loop configuration: `--provider` defaults to `opencode`, `--tag` defaults to `aidlc-worker-<provider>:local`. It runs `docker build` against the packaged `assets/aidlc/docker/Dockerfile.<provider>`, then records the tag into `config.loop.workerImage` so the local supervisor reuses it automatically.
+
 `status` prints the canonical task, its derived next action, and — in fleet mode — the durable gate checkpoint. `start` and `resume` run the supervisor in the foreground until the next gate, a pause, a blocked state, or completion; the emitted events include each gate view and the waiting state.
 
-Local mode requires the Docker worker image configuration described in [Testing and release](./testing-and-release.md) plus the provider credential environment; approval happens through the trusted host terminal command `node .agents/aidlc/scripts/loop-gate.mjs <task-id>`, which refuses piped input.
+Local mode requires Docker plus the provider credential environment; the worker image is auto-built from the packaged Dockerfile on first dispatch (see [`loop worker-image`](#loop-command)) and its tag is recorded automatically, so a manual `AIDLC_WORKER_DOCKER_IMAGE` export is only needed to override the default. Approval happens through the trusted host terminal command `node .agents/aidlc/scripts/loop-gate.mjs <task-id>`, which refuses piped input.
 
 Fleet mode requires the running coordination service (`AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, lead `AIDLC_FLEET_TOKEN`, `AIDLC_FLEET_INTEGRATION_BRANCH`, and optionally `AIDLC_FLEET_GIT_REMOTE`); worker IDs must match the configured `loop.agents.workers`, and `AIDLC_FLEET_WORKER_PROVIDERS` may map each worker to `codex`, `claude`, or `opencode`. The facade preflights the service and the integration branch and fails closed with a diagnosis instead of falling back to local. Fleet worker containers reject `opencode` with the container diagnostic above; assignment validation accepts it so that blocker surfaces when the job executes rather than being reported as an invalid provider. Fleet workers run separately through the fleet runner (`worker --once`) on each worker machine with `AIDLC_WORKER_DOCKER_IMAGE` and their own worker credential; a reviewer approves gates through the reviewer credential as documented in [Coordination service](./coordination-service.md).
 

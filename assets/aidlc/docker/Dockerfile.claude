@@ -1,0 +1,7 @@
+# AI-DLC worker image (Claude Code). Shipped and managed by aidlc-kit — build it
+# with `aidlc-kit loop worker-image --provider claude` instead of by hand.
+#
+# The agent CLI must be on the system PATH: workers run non-root with a read-only
+# root filesystem, so a global npm install lands the binary in /usr/local/bin.
+FROM node:24-bookworm-slim
+RUN npm install -g @anthropic-ai/claude-code

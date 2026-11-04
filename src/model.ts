@@ -46,6 +46,7 @@ export type LoopAgent = (typeof LOOP_PROVIDERS)[number];
 export interface LoopConfig {
   mode: LoopMode;
   agents?: { lead: LoopAgent; workers: Record<string, LoopAgent> };
+  workerImage?: Partial<Record<LoopAgent, string>>;
 }
 
 /* Workflow-configuration contracts: profiles, project config, coordination, and tracker integration. */

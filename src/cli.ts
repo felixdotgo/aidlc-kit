@@ -20,6 +20,7 @@ const usage = `Usage:
   npx @felixdotgo/aidlc-kit doctor [path] [--strict] [--json]
   npx @felixdotgo/aidlc-kit profile validate [path]
   npx @felixdotgo/aidlc-kit loop start|status|resume [--task-id ID] [--root PATH] [--mode local|fleet]
+  npx @felixdotgo/aidlc-kit loop worker-image [--provider ${LOOP_PROVIDERS.join("|")}] [--tag TAG] [--root PATH]
   npx @felixdotgo/aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
   npx @felixdotgo/aidlc-kit version
   Global options: --help, --version, -v`;
@@ -184,17 +185,17 @@ const mcpSetupOptions = async (args: string[]): Promise<McpSetupOptions> => {
 
 const runLoopCommand = (args: string[]): void => {
   const action = args[0] ?? "";
-  if (!["start", "status", "resume"].includes(action)) throw new Error("Expected loop start, status, or resume");
+  if (!["start", "status", "resume", "worker-image"].includes(action)) throw new Error("Expected loop start, status, resume, or worker-image");
   const parsed = new Map<string, string>();
   for (let index = 1; index < args.length; index += 2) {
     const key = args[index];
     const entry = args[index + 1];
-    if (key === undefined || !["--task-id", "--root", "--mode"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
+    if (key === undefined || !["--task-id", "--root", "--mode", "--provider", "--tag"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
     parsed.set(key, entry);
   }
   const root = resolve(parsed.get("--root") ?? ".");
   const script = join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs");
-  const child = spawnSync(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? ""], { stdio: "inherit" });
+  const child = spawnSync(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? "", parsed.get("--provider") ?? "", parsed.get("--tag") ?? ""], { stdio: "inherit" });
   if (child.error) throw child.error;
   if (child.status !== 0) process.exitCode = child.status ?? 1;
 };

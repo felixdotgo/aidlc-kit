@@ -1,0 +1,8 @@
+# AI-DLC worker image (OpenCode 2). Shipped and managed by aidlc-kit — build it
+# with `aidlc-kit loop worker-image --provider opencode` instead of by hand.
+#
+# The agent CLI must be on the system PATH: workers run non-root with a read-only
+# root filesystem, so a global npm install lands the binary in /usr/local/bin.
+# Use `@opencode/cli` (OpenCode 2) — NOT `opencode-ai` (OpenCode 1).
+FROM node:24-bookworm-slim
+RUN npm install -g @opencode/cli

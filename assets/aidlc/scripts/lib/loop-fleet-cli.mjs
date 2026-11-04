@@ -63,7 +63,8 @@ export async function runFleetCli(argv, { callTool, env = process.env, out = con
     const workerAgentSetting = env.AIDLC_FLEET_WORKER_AGENT ?? env.AIDLC_FLEET_AGENT;
     const workerAgent = workerAgentSetting === undefined ? undefined : provider(workerAgentSetting, "AIDLC_FLEET_WORKER_AGENT");
     if (workerAgent === "opencode") throw new Error(OPENCODE_CONTAINER_ERROR);
-    const requestedImage = required(env, "AIDLC_WORKER_DOCKER_IMAGE");
+    const requestedImage = env.AIDLC_WORKER_DOCKER_IMAGE;
+    if (typeof requestedImage !== "string" || !requestedImage.trim()) throw new Error("AIDLC_WORKER_DOCKER_IMAGE is required on the fleet worker machine; build the worker image with `aidlc-kit loop worker-image --provider codex` (or claude), or set the env var directly");
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,255}$/.test(requestedImage)) throw new Error("Invalid Docker worker image");
     const image = execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", requestedImage], {env:{PATH:env.PATH ?? "/usr/bin:/bin"},encoding:"utf8",timeout:30000,stdio:["ignore","pipe","ignore"]}).trim();
     if (!/^sha256:[a-f0-9]{64}$/.test(image)) throw new Error("Docker worker image lacks immutable image ID");
