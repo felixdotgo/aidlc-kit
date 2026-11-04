@@ -2,6 +2,7 @@
 import { resolve } from "node:path";
 import { loopStatus, runLoop } from "./lib/loop-runtime.mjs";
 import { LOOP_PROVIDERS, runAgentTurn } from "./lib/loop-drivers.mjs";
+import { streamLog } from "./lib/loop-stream.mjs";
 import { requireLocalAuthority } from "./lib/authority.mjs";
 
 function parse(argv) {
@@ -27,7 +28,7 @@ function parse(argv) {
 try {
   requireLocalAuthority();
   const options = parse(process.argv.slice(2));
-  const result = options.command === "status" ? loopStatus(options.root, options.taskId) : await runLoop({ root: options.root, taskId: options.taskId, agent: options.agent, mode: options.command, limits: options.limits, driver: runAgentTurn, preflight: true, onEvent: (event) => { if (event?.type === "diagnostic") console.error(event.message); if (event?.type === "resume" || event?.type === "context_changed") console.error(JSON.stringify(event)); } });
+  const result = options.command === "status" ? loopStatus(options.root, options.taskId) : await runLoop({ root: options.root, taskId: options.taskId, agent: options.agent, mode: options.command, limits: options.limits, driver: runAgentTurn, preflight: true, onEvent: (event) => { streamLog(event); if (event?.type === "diagnostic") console.error(event.message); if (event?.type === "resume" || event?.type === "context_changed") console.error(JSON.stringify(event)); } });
   console.log(JSON.stringify({ ok: true, result }, null, 2));
   if (result.status && !["complete", "gate"].includes(result.status)) process.exitCode = 2;
 } catch (error) {

@@ -187,6 +187,23 @@ test("OpenCode requires an explicit model and forwards session, model, and promp
   });
 });
 
+test("OpenCode surfaces provider errors from the error event", { skip: process.platform === "win32" }, async () => {
+  await fixture("opencode", `console.log(JSON.stringify({type:'step_start',sessionID:'session-open'})); console.log(JSON.stringify({type:'error',sessionID:'session-open',error:{type:'provider.no-route',message:'Model unavailable: opencode-go/flint-40b-free'}})); process.exit(1);`, async (root) => {
+    const { runAgentTurn } = await load();
+    await assert.rejects(runAgentTurn({ agent: "opencode", root, prompt: "x", timeoutMs: 2000, env: { ...process.env, AIDLC_OPENCODE_MODEL: "opencode-go/gpt-6-luna" } }), /Model unavailable: opencode-go\/flint-40b-free/);
+  });
+});
+
+test("OpenCode streams text and tool activity to onEvent", { skip: process.platform === "win32" }, async () => {
+  await fixture("opencode", `console.log(JSON.stringify({type:'step_start',sessionID:'session-open'})); console.log(JSON.stringify({type:'tool_use',sessionID:'session-open',part:{type:'tool',tool:'grep'}})); console.log(JSON.stringify({type:'text',sessionID:'session-open',part:{type:'text',text:'found matches'}})); console.log(JSON.stringify({type:'step_finish',sessionID:'session-open',part:{type:'step_finish',reason:'stop'}}));`, async (root) => {
+    const { runAgentTurn } = await load();
+    const events: Array<{ type: string }> = [];
+    await runAgentTurn({ agent: "opencode", root, prompt: "x", timeoutMs: 2000, env: { ...process.env, AIDLC_OPENCODE_MODEL: "opencode-go/gpt-6-luna" }, onEvent: (event: { type: string }) => events.push(event) });
+    assert.ok(events.some((event: any) => event.type === "agent_tool" && event.tool === "grep"));
+    assert.ok(events.some((event: any) => event.type === "agent_text" && event.text === "found matches"));
+  });
+});
+
 test("OpenCode fails closed without a valid AIDLC_OPENCODE_MODEL", { skip: process.platform === "win32" }, async () => {
   await fixture("opencode", `console.log(JSON.stringify({type:'text',sessionID:'session-open',part:{type:'text',text:'should not run'}}));`, async (root) => {
     const { runAgentTurn } = await load();

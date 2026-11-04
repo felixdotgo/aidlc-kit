@@ -8,6 +8,7 @@ import { stdin, stdout } from "node:process";
 import { requireLocalAuthority } from "./lib/authority.mjs";
 import { isLoopProvider } from "./lib/loop-drivers.mjs";
 import { prepareLoopIntake } from "./lib/loop-intake.mjs";
+import { streamLog } from "./lib/loop-stream.mjs";
 import * as localSupervisor from "./lib/loop-supervisor-run-local.mjs";
 import { loadTask } from "./lib/store.mjs";
 
@@ -78,7 +79,7 @@ try {
     // The factory contract guarantees that the dispatcher is actually wired into
     // the supervisor, not merely present in the package. No host fallback.
     if (typeof localSupervisor.createIsolatedLocalSupervisor !== "function") throw new Error("Isolated local worker dispatcher is not integrated; loop execution is unavailable");
-    const supervisor = await localSupervisor.createIsolatedLocalSupervisor({ root, taskId, agent, workers: config.loop.agents.workers });
+    const supervisor = await localSupervisor.createIsolatedLocalSupervisor({ root, taskId, agent, workers: config.loop.agents.workers, onEvent: streamLog });
     if (action === "status") {
       console.log(JSON.stringify(await supervisor.status(), null, 2));
     } else if (action === "start") {

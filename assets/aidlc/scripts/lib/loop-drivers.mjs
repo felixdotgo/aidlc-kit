@@ -9,6 +9,7 @@ import { delimiter, join } from "node:path";
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_STDERR_BYTES = 4096;
 const MAX_RESULT_CHARS = 8192;
+const MAX_STREAM_CHARS = 4096;
 const MAX_DIAGNOSTICS = 16;
 
 /** One runtime enumeration for every loop provider. Host gates import this
@@ -51,7 +52,7 @@ registerAgentAdapter("codex", {
     if (event.type === "turn.completed") context.complete();
     if (event.type === "turn.failed" || event.type === "error") throw new Error(`codex reported ${event.type}: ${diagnostic(JSON.stringify(event.error ?? event.message ?? "unknown"))}`);
     const item = record(event.item);
-    if (event.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") context.result(item.text);
+    if (event.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") { context.result(item.text); await context.stream(item.text); }
     if (event.type === "item.completed" && item?.type === "command_execution") await context.commandEvent(item.exit_code, item.status);
   }
 });
@@ -88,8 +89,13 @@ registerAgentAdapter("opencode", {
   },
   parse: async (event, context) => {
     if (event.sessionID !== undefined) await context.captureId(event.sessionID);
+    if (event.type === "error") {
+      const info = record(event.error);
+      throw new Error(`opencode reported an error: ${diagnostic(info?.message ?? info?.type ?? JSON.stringify(event.error ?? "unknown"))}`);
+    }
     const part = record(event.part);
-    if (event.type === "text" && typeof part?.text === "string") context.result(part.text);
+    if (event.type === "text" && typeof part?.text === "string") { context.result(part.text); await context.stream(part.text); }
+    if (event.type === "tool_use" && typeof part?.tool === "string") await context.tool(part.tool);
     if (event.type === "tool_use" && part?.tool === "shell") {
       const state = record(part.state);
       const metadata = record(record(state?.metadata)?.metadata);
@@ -168,11 +174,17 @@ export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, 
     await emit(onEvent, { type: "lifecycle_command", exitCode: safeExitCode, status: safeStatus });
     if ((safeExitCode !== null && safeExitCode !== 0) || safeStatus === "failed") addDiagnostic(`commandFailed exitCode=${String(safeExitCode ?? "unknown")} status=${safeStatus}`);
   };
+  const stream = async (text) => {
+    if (typeof text === "string" && text.trim()) await emit(onEvent, { type: "agent_text", text: text.slice(0, MAX_STREAM_CHARS) });
+  };
+  const tool = async (name) => {
+    if (typeof name === "string" && name) await emit(onEvent, { type: "agent_tool", tool: name });
+  };
   const parseEvent = async (line) => {
     let event;
     try { event = JSON.parse(line); } catch { throw new Error(`${agent} emitted malformed JSONL`); }
     if (!record(event) || typeof event.type !== "string") throw new Error(`${agent} emitted malformed event`);
-    await adapter.parse(event, { captureId, commandEvent, toolUses, complete: () => { completed = true; resultSeen = true; }, result: (value) => { resultText = value.slice(0, MAX_RESULT_CHARS); } });
+    await adapter.parse(event, { captureId, commandEvent, toolUses, stream, tool, complete: () => { completed = true; resultSeen = true; }, result: (value) => { resultText = value.slice(0, MAX_RESULT_CHARS); } });
     await emit(onEvent, { type: "agent_event", eventType: event.type });
   };
   const queueLine = (line) => {
