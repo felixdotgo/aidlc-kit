@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { createWorkerSnapshot, inspectWorkerSnapshot } from "./loop-worker-snapshot.mjs";
-import { OPENCODE_CONTAINER_ERROR, workerDockerInvocation } from "./loop-worker-docker.mjs";
+import { workerDockerInvocation } from "./loop-worker-docker.mjs";
 import { isLoopProvider, runAgentTurn } from "./loop-drivers.mjs";
 import { claimLocalAssignment, heartbeatLocalAssignment, reportLocalAssignment, releaseLocalAssignment } from "./assignment-store.mjs";
 
@@ -43,7 +43,6 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
     ids.add(job.itemId); workers.add(job.workerId);
     for (const path of job.ownedPaths) { if (scopes.some((prior) => overlaps(path, prior))) throw new Error(`Overlapping assignment scope: ${path}`); scopes.push(path); }
   }
-  if (jobs.some((job) => job.agent === "opencode")) throw new Error(OPENCODE_CONTAINER_ERROR);
   if (process.platform !== "linux" || !docker || typeof docker.image !== "string" || !docker.credentials || typeof docker.credentials !== "object") throw new Error("Linux Docker worker isolation and explicit image and provider credentials are required");
   const uid = process.getuid?.(), gid = process.getgid?.();
   if (!uid || !gid) throw new Error("Docker workers require a non-root host user");

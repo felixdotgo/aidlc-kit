@@ -154,7 +154,7 @@ export const classifyAction = (action) => {
 function approvalCount(task) { return task.evidence.filter((item) => item.kind === "approval" && item.result === "pass").length; }
 function outputStop(record, action, gateView) { return { taskId: record.taskId, runId: record.runId, status: record.status, iteration: record.iteration, sessionId: record.sessionId, stopReason: record.stopReason, nextAction: action, ...(gateView ? { gateView } : {}) }; }
 
-export async function runLoop({ root: rootInput, taskId, agent, mode = "run", limits: limitInput, driver, onEvent = () => {}, preflight = false, precondition }) {
+export async function runLoop({ root: rootInput, taskId, agent, mode = "run", limits: limitInput, driver, dispatchBuild, onEvent = () => {}, preflight = false, precondition }) {
   const root = validateRoot(rootInput);
   // --- Validate mode and load/create the loop record -------------------------
   let record = readLoopRecord(root, taskId);
@@ -203,6 +203,23 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
         return outputStop(record, current.action, gateView);
       }
       if (record.iteration >= limits.maxTurns) return pause("turn limit reached");
+      if (dispatchBuild && current.task.phase === "build" && current.task.tasks.some((item) => item.status === "todo" || item.status === "in_progress")) {
+        try {
+          await dispatchBuild({ root, taskId, task: current.task, action: current.action, record });
+        } catch (error) {
+          return pause(`build dispatch failure: ${error.message}`);
+        }
+        const refreshed = readCanonical(root, taskId);
+        const signal = fingerprint(root, refreshed.task, refreshed.action);
+        record.iteration += 1;
+        record.stallTurns = signal.digest === record.lastFingerprint ? record.stallTurns + 1 : 0;
+        record.lastFingerprint = signal.digest;
+        record.checkpoint = checkpoint(refreshed.task, refreshed.action, signal.tree, record.iteration);
+        record.updatedAt = iso(); writeLoopRecord(root, record);
+        current = refreshed;
+        if (classifyAction(current.action) === "run_phase" && record.stallTurns >= limits.maxStallTurns) return pause(`${record.stallTurns} consecutive turns without observable progress`);
+        continue;
+      }
       let prompt;
       try {
         const packet = JSON.parse(cli(root, "context.mjs", [taskId, "--phase", current.action.phase, ...(current.action.itemId ? ["--item", current.action.itemId] : []), "--format", "json"]));

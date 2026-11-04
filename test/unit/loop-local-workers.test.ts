@@ -30,10 +30,10 @@ test("local workers reject overlapping scopes before Docker dispatch", async (t)
   await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: [...jobs, second], ...hooks }), /Overlapping/);
 });
 
-test("local workers reject OpenCode before Docker dispatch", async (t) => {
+test("local workers accept OpenCode and still require Docker isolation", async (t) => {
   const { root, worktreesRoot } = fixture(t), { runLocalWorkerBatch } = await load();
   const opencodeJobs = [{ ...jobs[0], agent: "opencode" }];
-  await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: opencodeJobs, ...hooks }), (error: unknown) => error instanceof Error && error.message === "OpenCode workers require file-based credentials and are not available in isolated containers yet");
+  await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: opencodeJobs, ...hooks }), /Docker worker isolation/);
   assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "base\n");
 });
 

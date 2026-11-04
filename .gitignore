@@ -7,3 +7,6 @@ npm-debug.log*
 .codegraph
 AGENTS.md
 CLAUDE.md
+
+# Local secrets (never commit API keys)
+APIKey.txt

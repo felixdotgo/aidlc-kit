@@ -112,7 +112,7 @@ node .agents/aidlc/scripts/loop.mjs resume <task-id> [--max-turns N] [--turn-tim
 node .agents/aidlc/scripts/loop.mjs status <task-id> [--root PATH]
 ```
 
-`--agent opencode` requires `AIDLC_OPENCODE_MODEL` in `provider/model[#variant]` form; the turn fails closed without it. Docker-isolated lead turns, local Docker worker batches, and fleet worker containers reject OpenCode with `OpenCode workers require file-based credentials and are not available in isolated containers yet` and do not fall back to the host. Use `loop.mjs run --agent opencode` for host-executed lead turns, or use Codex or Claude Code where container isolation is required.
+`--agent opencode` requires `AIDLC_OPENCODE_MODEL` in `provider/model[#variant]` form; the turn fails closed without it. Container-isolated lead turns and fleet worker containers reject OpenCode with `OpenCode workers require file-based credentials and are not available in isolated containers yet` and do not fall back to the host. Local Docker worker batches accept OpenCode via environment credentials (`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`) with OpenCode's XDG data/config roots redirected into the worker's ephemeral HOME. Use `loop.mjs run --agent opencode` for host-executed lead turns, or use Codex or Claude Code where container isolation is required.
 
 The defaults are 12 turns and 10 minutes per turn; two completed turns without observable progress stop the run. Each run records its provider, and `resume` rejects a different agent. The runner never grants human approval. An interactive client can resume by reading `task next` and reconciling local assignment metadata; fleet execution uses fenced service leases and the remote canonical state.
 

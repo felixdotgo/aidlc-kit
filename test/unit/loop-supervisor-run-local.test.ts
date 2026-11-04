@@ -54,3 +54,18 @@ test("facade rejects remote authority and resume without an existing record", as
     await assert.rejects(instance.resume(), /record missing/);
   } finally { if (prior === undefined) delete process.env.AIDLC_FLEET_URL; else process.env.AIDLC_FLEET_URL = prior; rmSync(root, { recursive: true, force: true }); }
 });
+
+test("isolated local facade requires workers and wires a build dispatcher into the runner", async () => {
+  const { root } = await fixture();
+  try {
+    const { createIsolatedLocalSupervisor } = await load();
+    assert.throws(() => createIsolatedLocalSupervisor({ root, taskId: "task-a", agent: "codex" }), /worker providers/);
+    assert.throws(() => createIsolatedLocalSupervisor({ root, taskId: "task-a", agent: "codex", workers: { "worker-a": "gemini" } }), /invalid local worker/);
+    let sawDispatcher = false;
+    const instance = createIsolatedLocalSupervisor({ root, taskId: "task-a", agent: "codex", workers: { "worker-a": "codex" }, pollMs: 1, preflight: false,
+      runner: async (args: any) => { sawDispatcher = typeof args.dispatchBuild === "function"; return { status: "blocked", taskId: "task-a", reason: "test stop" }; }
+    });
+    const result = await instance.start();
+    assert.equal(result.status, "blocked"); assert.equal(sawDispatcher, true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
