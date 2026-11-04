@@ -9,6 +9,7 @@ Use this page to choose the guide that matches your role and next task.
 3. Use [Configuration](./configuration.md) to configure project rules, profiles, and Codex, Claude Code, and OpenCode permissions.
 4. Keep [Command reference](./command-reference.md) nearby for safe CLI usage.
 5. Read [AI-DLC Coordination service](./coordination-service.md) before enabling remote canonical state — the service and the loop are **experimental and unfinished**, with known bugs and possible breaking changes in every release before `1.0.0`.
+6. Use the [Loop setup runbook](./loop-runbook.md) to run the loop end-to-end — enable from `off`, run in `local` mode, or spread across machines with `fleet`.
 
 ## For contributors and maintainers
 
@@ -27,6 +28,7 @@ Use this page to choose the guide that matches your role and next task.
 | [Testing and release](./testing-and-release.md) | Maintainers | Test strategy, evaluator, package smoke test, and release checks. |
 | [Architecture](./architecture.md) | Contributors | Boundaries, dependency direction, and source-to-consumer flow. |
 | [AI-DLC Coordination service](./coordination-service.md) | Operators | Opt-in service deployment, state authority, and credential safety. Experimental and unfinished: known bugs, breaking changes possible before `1.0.0`. |
+| [Loop setup runbook](./loop-runbook.md) | Operators | Step-by-step loop setup: enable from `off`, run in `local` mode, or spread across machines with `fleet`. Experimental and unfinished: known bugs, breaking changes possible before `1.0.0`. |
 | [Troubleshooting](./troubleshooting.md) | Operators and contributors | Symptom/error-code recovery guide for locks, corrupt state, continuation guard, gate-check errors, and fleet authority. |
 | [Design decisions](./design-decisions.md) | Contributors | ADR-lite: dual core, single JSON state, compact style, human-only upgrade, append-only evidence, and how to add a decision. |
 
