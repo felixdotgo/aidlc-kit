@@ -135,7 +135,7 @@ export async function runFleetCli(argv, { callTool, env = process.env, out = con
         `Task: ${snapshot.task.title} (${job.taskId}). Item: ${job.itemId}.`,
         `Only change these owned paths: ${job.ownedPaths.join(", ")}.`,
         `Base commit: ${job.baseCommit}. Assigned branch: ${job.branch}.`,
-        "Complete the scoped item and report remaining risks. The supervisor handles the Git commit and push.",
+        "Complete the scoped item and report remaining risks. The supervisor handles the Git commit and push. End the final answer with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.",
         ...(env.AIDLC_FLEET_CODE_ONLY_RETRY === "1" ? ["This assignment is declared code-only: perform no external side effects beyond the supervisor's Git handoff."] : [])
       ].join("\n"), onEvent: emit }); }
       finally { for (const [workspace, entry] of sessions) { rmSync(entry.home,{recursive:true,force:true}); sessions.delete(workspace); } }

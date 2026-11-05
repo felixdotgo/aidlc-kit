@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createWorkerSnapshot, inspectWorkerSnapshot } from "./loop-worker-snapshot.mjs";
 import { workerDockerInvocation } from "./loop-worker-docker.mjs";
 import { isLoopProvider, runAgentTurn } from "./loop-drivers.mjs";
+import { extractCommitMessage } from "./loop-commit-message.mjs";
 import { claimLocalAssignment, heartbeatLocalAssignment, reportLocalAssignment, releaseLocalAssignment } from "./assignment-store.mjs";
 
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000 });
@@ -115,7 +116,7 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
             const invocation = workerDockerInvocation({ workspace: snapshot, image: resolvedImages[job.agent], command, args, credentialEnv: docker.credentials[job.agent], hostEnv: process.env, uid, gid, containerName, sessionHome:home });
             return spawn(invocation.command, invocation.args, { ...options, cwd: snapshot, env: invocation.env, shell: false });
           };
-          try { result = await runAgentTurn({ agent: job.agent, root: "/workspace", sessionId, spawnProcess, prompt: `${job.prompt}\n\nOnly modify assigned paths: ${job.ownedPaths.join(", ")}. Do not modify AI-DLC lifecycle state or approve gates. End with AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs, signal: controller.signal, onSessionId: async (id) => { await heartbeat(root, taskId, assignment.id, leaseMs, id); } }); }
+          try { result = await runAgentTurn({ agent: job.agent, root: "/workspace", sessionId, spawnProcess, prompt: `${job.prompt}\n\nOnly modify assigned paths: ${job.ownedPaths.join(", ")}. Do not modify AI-DLC lifecycle state or approve gates. End with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs, signal: controller.signal, onSessionId: async (id) => { await heartbeat(root, taskId, assignment.id, leaseMs, id); } }); }
           finally {
             try { dockerCheck("rm", "-f", containerName); }
             catch {
@@ -153,7 +154,10 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
       // Fold any commits made by the agent into one scoped assignment commit.
       git(workspace, "reset", "--soft", base);
       git(workspace, "add", "-A", "--", ...changed);
-      if (git(workspace, "diff", "--cached", "--name-only").trim()) git(workspace, "-c", "user.name=AI-DLC worker", "-c", "user.email=aidlc-worker@localhost", "commit", "-m", `AI-DLC ${taskId}/${job.itemId}`);
+      if (git(workspace, "diff", "--cached", "--name-only").trim()) {
+        const message = extractCommitMessage(result?.resultText, { itemId: job.itemId, ownedPaths: job.ownedPaths });
+        git(workspace, "-c", "user.name=AI-DLC worker", "-c", "user.email=aidlc-worker@localhost", "commit", "-m", message);
+      }
       const commit = git(workspace, "rev-parse", "HEAD").trim(), committed = commitPaths(workspace, base, commit);
       if (commit === base || !committed.length || !scoped(committed, job.ownedPaths)) throw new Error("Worker commit is outside assignment scope");
       await report(root, taskId, assignment.id, { commit, changedPaths: committed, checkpoint: `provider=${job.agent}` });

@@ -74,7 +74,7 @@ const workerCredentialKeys = (agent, env = process.env) => {
 const itemPrompt = (root, taskId, itemId) => {
   const packet = JSON.parse(execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/context.mjs"), taskId, "--phase", "build", "--item", itemId, "--format", "json", "--root", root], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024 }));
   if (typeof packet?.content !== "string" || !packet.content.trim()) throw new Error(`Context packet for ${itemId} was empty or invalid`);
-  return `${packet.content}\n\nOnly modify the assigned owned paths. Do not modify AI-DLC lifecycle state or approve gates. End with AI-DLC-ITEM-COMPLETE on its own line.`;
+  return `${packet.content}\n\nOnly modify the assigned owned paths. Do not modify AI-DLC lifecycle state or approve gates. End with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.`;
 };
 
 /** Fan dependency-ready build items out to Docker-isolated workers, then record

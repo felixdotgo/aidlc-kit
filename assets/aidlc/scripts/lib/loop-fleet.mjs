@@ -282,7 +282,7 @@ export async function runFleetWorker({ repository, workerId = randomUUID(), work
       }
       const prompt = await packet({ job, snapshot, workspace, turns });
       if (typeof prompt !== "string" || !prompt) throw new Error("Empty worker packet");
-      const result = await driver({ agent: job.agent, root: workspace.root, sessionId: sessionId ?? undefined, prompt: `${prompt}\n\nWorker scope: modify only assigned paths. Do not mutate AI-DLC lifecycle state or approve any gate. When the scoped implementation is ready for commit, end the final answer with AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs: limits.turnTimeoutMs, signal, onSessionId: async (id) => {
+      const result = await driver({ agent: job.agent, root: workspace.root, sessionId: sessionId ?? undefined, prompt: `${prompt}\n\nWorker scope: modify only assigned paths. Do not mutate AI-DLC lifecycle state or approve any gate. When the scoped implementation is ready for commit, end the final answer with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs: limits.turnTimeoutMs, signal, onSessionId: async (id) => {
         if (typeof id !== "string" || !id) throw new Error("Invalid worker session ID");
         if (sessionId && sessionId !== id) throw new Error("Worker session changed during the same assignment");
         sessionId = id;

@@ -54,6 +54,30 @@ test("worker pushes scoped commit, lead verifies and integrates once", async (t)
   assert.equal(git(lead, "rev-parse", "HEAD"), integrated.integrationCommit);
 });
 
+test("worker commit uses the worker's Conventional Commit message", async (t) => {
+  const { parent, lead, worker } = fixture(t);
+  const { createLeadGitHandoff, createWorkerGitHandoff } = await load();
+  const artifact = await createLeadGitHandoff({ root: lead, integrationBranch: "feature" }).prepare({ taskId: "task-a", item: { id: "T1", ownedPaths: ["a.txt"] } });
+  const job = { ...artifact, taskId: "task-a", itemId: "T1", assignmentId: "job-a" };
+  const handoff = createWorkerGitHandoff({ root: worker, worktreesRoot: join(parent, "worktrees") });
+  const workspace = await handoff.prepare(job);
+  writeFileSync(join(workspace.root, "a.txt"), "worker\n");
+  await handoff.finish({ job, workspace, result: { resultText: "Done\nAI-DLC-COMMIT: docs(ui): add proposal\nAI-DLC-ITEM-COMPLETE\n" } });
+  assert.equal(git(workspace.root, "log", "-1", "--format=%s"), "docs(ui): add proposal");
+});
+
+test("worker commit falls back to a conventional subject without a message", async (t) => {
+  const { parent, lead, worker } = fixture(t);
+  const { createLeadGitHandoff, createWorkerGitHandoff } = await load();
+  const artifact = await createLeadGitHandoff({ root: lead, integrationBranch: "feature" }).prepare({ taskId: "task-a", item: { id: "T1", ownedPaths: ["a.txt"] } });
+  const job = { ...artifact, taskId: "task-a", itemId: "T1", assignmentId: "job-a" };
+  const handoff = createWorkerGitHandoff({ root: worker, worktreesRoot: join(parent, "worktrees") });
+  const workspace = await handoff.prepare(job);
+  writeFileSync(join(workspace.root, "a.txt"), "worker\n");
+  await handoff.finish({ job, workspace });
+  assert.equal(git(workspace.root, "log", "-1", "--format=%s"), "chore: T1");
+});
+
 test("missing assigned remote branch is a verified negative recovery signal", async (t) => {
   const { lead } = fixture(t);
   const { createLeadGitHandoff } = await load();

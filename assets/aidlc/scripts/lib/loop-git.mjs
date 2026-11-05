@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { isLoopProvider } from "./loop-drivers.mjs";
+import { extractCommitMessage } from "./loop-commit-message.mjs";
 import { createWorkerSnapshot, inspectWorkerSnapshot } from "./loop-worker-snapshot.mjs";
 
 const SHA = /^[0-9a-f]{40,64}$/;
@@ -214,7 +215,7 @@ export function createWorkerGitHandoff({ root: inputRoot, worktreesRoot: inputWo
       const done = typeof result?.resultText === "string" && result.resultText.split(/\r?\n/).some((line) => line.trim() === "AI-DLC-ITEM-COMPLETE");
       return { done, fingerprint: worktreeFingerprint(workspace.root, changed) };
     },
-    async finish({ job, workspace }) {
+    async finish({ job, workspace, result }) {
       const branch = validBranch(job.branch);
       if (git(workspace.root, "symbolic-ref", "--short", "HEAD") !== branch) throw new Error("Worker switched away from assigned branch");
       const ownedPaths = scopes(job.ownedPaths);
@@ -222,7 +223,8 @@ export function createWorkerGitHandoff({ root: inputRoot, worktreesRoot: inputWo
       checkScope(dirty, ownedPaths);
       if (dirty.length) {
         git(workspace.root, "add", "-A", "--", ...dirty);
-        git(workspace.root, "-c", "user.name=AI-DLC worker", "-c", "user.email=aidlc-worker@localhost", "commit", "-m", `AI-DLC ${validId(job.taskId, "task ID")}/${validId(job.itemId, "item ID")} ${validId(job.assignmentId, "assignment ID")}`);
+        const message = extractCommitMessage(result?.resultText, { itemId: job.itemId, ownedPaths });
+        git(workspace.root, "-c", "user.name=AI-DLC worker", "-c", "user.email=aidlc-worker@localhost", "commit", "-m", message);
       }
       const commitSha = git(workspace.root, "rev-parse", "HEAD");
       const base = validSha(job.baseCommit, "base commit");
@@ -259,7 +261,7 @@ export function createIsolatedWorkerGitHandoff(options) {
       const done = typeof result?.resultText === "string" && result.resultText.split(/\r?\n/).some((line) => line.trim() === "AI-DLC-ITEM-COMPLETE");
       return {done, fingerprint};
     },
-    async finish({job, workspace}) {
+    async finish({job, workspace, result}) {
       const changed=inspectWorkerSnapshot(workspace.root, workspace.baseline, job.ownedPaths);
       if (!changed.length) throw new Error("Worker produced no changes");
       if (worktreePaths(workspace.checkout.root).length || git(workspace.checkout.root,"rev-parse","HEAD") !== job.baseCommit) throw new Error("Host checkout changed during worker run");
@@ -276,8 +278,8 @@ export function createIsolatedWorkerGitHandoff(options) {
         if (!existsSync(source)) { rmSync(target,{force:true}); continue; }
         copyFileSync(source,target); chmodSync(target,lstatSync(source).mode & 0o777);
       }
-      const result=await host.finish({job,workspace:workspace.checkout});
-      rmSync(workspace.root,{recursive:true,force:true}); return result;
+      const report=await host.finish({job,workspace:workspace.checkout,result});
+      rmSync(workspace.root,{recursive:true,force:true}); return report;
     },
     async discard({workspace}) { rmSync(workspace.root,{recursive:true,force:true}); return host.discard({workspace:workspace.checkout}); }
   };
