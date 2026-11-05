@@ -59,7 +59,7 @@ export async function checkGateCheckpoint({ checkpoint, snapshot, verifyFleetApp
  * renewable exclusive supervisor lease that does not block human gate approval.
  * No callback is allowed to approve a human gate.
  */
-export async function runSupervisor({ taskId, authority, acquireSupervisor, readTask, runTurn, loadCheckpoint, saveCheckpoint, clearCheckpoint, verifyFleetApproval, verifyLocalApproval, pollMs = 5000, signal, onEvent = () => {} }) {
+export async function runSupervisor({ taskId, authority, acquireSupervisor, readTask, runTurn, loadCheckpoint, saveCheckpoint, clearCheckpoint, verifyFleetApproval, verifyLocalApproval, pollMs = 5000, signal, untilStop = false, onEvent = () => {} }) {
   validId(taskId, "task ID");
   if (!["local", "fleet"].includes(authority)) throw new Error("invalid authority");
   for (const [name, value] of Object.entries({ acquireSupervisor, readTask, runTurn, loadCheckpoint, saveCheckpoint, clearCheckpoint, onEvent })) required(value, name);
@@ -76,6 +76,7 @@ export async function runSupervisor({ taskId, authority, acquireSupervisor, read
       const verdict = await checkGateCheckpoint({ checkpoint, snapshot, verifyFleetApproval, verifyLocalApproval });
       if (verdict.status === "blocked") return { status: "blocked", taskId, reason: verdict.reason };
       if (verdict.status === "wait") {
+        if (untilStop) return { status: "gate", taskId, gate: checkpoint.gate };
         try { await sleep(pollMs, undefined, { signal }); } catch (error) { if (error?.name !== "AbortError") throw error; }
         continue;
       }
@@ -100,6 +101,7 @@ export async function runSupervisor({ taskId, authority, acquireSupervisor, read
     await ownership.assertOwned();
     await saveCheckpoint({ taskId, authority, checkpoint: next, previous: checkpoint });
     checkpoint = next;
+    if (untilStop) return { status: "gate", taskId, gate: next.gate, ...(next.snapshotId ? { snapshotId: next.snapshotId } : {}), gateView: result.gateView };
     await onEvent({ type: "gate", taskId, gate: next.gate, ...(next.snapshotId ? { snapshotId: next.snapshotId } : {}), gateView: result.gateView });
   }
   return { status: "stopped", taskId };

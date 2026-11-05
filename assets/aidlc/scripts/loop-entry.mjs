@@ -7,9 +7,9 @@ import { stdin, stdout } from "node:process";
 import { requireLocalAuthority } from "./lib/authority.mjs";
 import { isLoopProvider } from "./lib/loop-drivers.mjs";
 import { deriveTaskIdentity, prepareLoopIntake } from "./lib/loop-intake.mjs";
+import { runLocalDaemon } from "./lib/loop-daemon.mjs";
 import { streamLog } from "./lib/loop-stream.mjs";
 import * as localSupervisor from "./lib/loop-supervisor-run-local.mjs";
-import { loadState, loadTask } from "./lib/store.mjs";
 import { buildWorkerImage, defaultWorkerImageTag, recordWorkerImage } from "./lib/loop-worker-image.mjs";
 
 const [action, taskArg, rootArg, modeArg, providerArg, tagArg, titleArg] = process.argv.slice(2);
@@ -37,19 +37,13 @@ try {
     const agent = config.loop?.agents?.lead;
     const workers = config.loop?.agents?.workers ?? {};
     if (!isLoopProvider(agent) || !Object.keys(workers).length || Object.entries(workers).some(([, value]) => !isLoopProvider(value))) throw new Error("Loop requires a configured lead and worker providers");
-    const requirement = action === "start" ? await readRequirement() : "";
-    const identity = deriveTaskIdentity(requirement);
-    let taskId = taskArg || (action === "start" ? identity.slug : "");
-    if (action === "start" && !taskArg && mode === "local") {
-      // Resolve case-insensitive collisions against active + archived ids before
-      // dispatch; the remote task-create guard remains the fleet backstop.
-      const state = loadState(root);
-      const existing = new Set([...Object.keys(state.tasks), ...Object.keys(state.archive ?? {})].map((id) => id.toLowerCase()));
-      for (let suffix = 2; existing.has(taskId.toLowerCase()); suffix += 1) taskId = `${identity.slug}-${suffix}`;
-    }
-    const title = titleArg || identity.title;
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId)) throw new Error("Valid task ID required");
     if (mode === "fleet") {
+      // Fleet one-shot (requirement intake) remains the documented multi-host follow-up.
+      const requirement = action === "start" ? await readRequirement() : "";
+      const identity = deriveTaskIdentity(requirement);
+      const taskId = taskArg || (action === "start" ? identity.slug : "");
+      const title = titleArg || identity.title;
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId)) throw new Error("Valid task ID required");
       const { callRemoteTool } = await import("./lib/remote-state-client.mjs");
       const { createFleetRemoteRepository } = await import("./lib/loop-fleet-remote.mjs");
       const { runFleetCli } = await import("./lib/loop-fleet-cli.mjs");
@@ -94,17 +88,23 @@ try {
         await runFleetCli(["supervisor", taskId], { callTool, env, out: (line) => console.log(line) });
       }
     } else {
+      // Local mode: the daemon is the default (and only) execution. There is no
+      // requirement intake and no one-shot resume — the daemon auto-picks and
+      // auto-resumes actionable tasks from canonical state.
       requireLocalAuthority();
-      // The factory contract guarantees that the dispatcher is actually wired into
-      // the supervisor, not merely present in the package. No host fallback.
       if (typeof localSupervisor.createIsolatedLocalSupervisor !== "function") throw new Error("Isolated local worker dispatcher is not integrated; loop execution is unavailable");
-      const supervisor = await localSupervisor.createIsolatedLocalSupervisor({ root, taskId, agent, workers: config.loop.agents.workers, workerImages: config.loop?.workerImage, onEvent: streamLog });
-      if (action === "status") {
+      if (action === "start") {
+        const controller = new AbortController();
+        for (const name of ["SIGINT", "SIGTERM"]) process.once(name, () => controller.abort());
+        const result = await runLocalDaemon({ root, agent, workers, workerImages: config.loop?.workerImage, pollMs: config.loop?.pollMs, signal: controller.signal, onEvent: streamLog });
+        console.log(JSON.stringify(result, null, 2));
+      } else if (action === "status") {
+        if (!taskArg) throw new Error("loop status requires a task id");
+        const supervisor = await localSupervisor.createIsolatedLocalSupervisor({ root, taskId: taskArg, agent, workers, workerImages: config.loop?.workerImage, onEvent: streamLog });
         console.log(JSON.stringify(await supervisor.status(), null, 2));
-      } else if (action === "start") {
-        await prepareLoopIntake({ root, taskId, requirement, title, authority: "local", readTask: async (id) => loadTask(root, id), createTask: async ({ taskId: id, title }) => { execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), "task", "create", id, "--title", title, "--root", root], { stdio: ["ignore", "pipe", "pipe"] }); } });
-        console.log(JSON.stringify(await supervisor.start(), null, 2));
-      } else console.log(JSON.stringify(await supervisor.resume(), null, 2));
+      } else {
+        throw new Error("Local loop resume is removed; the daemon auto-resumes actionable tasks — run 'loop start'");
+      }
     }
   }
 } catch (error) { console.error(`loop: ${error.message}`); process.exitCode = 1; }

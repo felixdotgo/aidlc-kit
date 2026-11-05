@@ -19,7 +19,7 @@ const digest = (value) => createHash("sha256").update(JSON.stringify(value)).dig
  * Abort stops polling or the next turn; the current runLoop call is bounded by
  * its existing timeouts and is not cancelled by this wrapper.
  */
-export function createLocalLoopSupervisor({ root: rootInput, taskId, agent, limits, driver = runAgentTurn, preflight = true, pollMs, signal, onEvent = () => {}, runner = runLoop } = {}) {
+export function createLocalLoopSupervisor({ root: rootInput, taskId, agent, limits, driver = runAgentTurn, preflight = true, pollMs, signal, untilStop = false, onEvent = () => {}, runner = runLoop } = {}) {
   requireLocalAuthority();
   const root = validateRoot(rootInput);
   if (!isLoopProvider(agent)) throw new Error(`local lead agent must be ${LOOP_PROVIDER_LIST}`);
@@ -33,7 +33,7 @@ export function createLocalLoopSupervisor({ root: rootInput, taskId, agent, limi
     if (mode === "resume" && !record) throw new Error("Local loop record missing; use start");
     if (record && record.agent !== agent) throw new Error("Resume must use the recorded lead agent");
     let nextMode = mode;
-    return runSupervisor({ taskId, authority: "local", ...adapter, pollMs, signal, onEvent,
+    return runSupervisor({ taskId, authority: "local", ...adapter, pollMs, signal, untilStop, onEvent,
       runTurn: async ({ precondition }) => {
         if (signal?.aborted) return { status: "stopped", taskId };
         requireLocalAuthority();
@@ -112,7 +112,7 @@ async function dispatchLocalBuild({ root, taskId, task, workers, images, credent
  * receive environment credentials; the host lead and the trusted terminal own
  * gates and lifecycle state.
  */
-export function createIsolatedLocalSupervisor({ root: rootInput, taskId, agent, workers = {}, limits, docker, worktreesRoot, workerImages = {}, pollMs, signal, onEvent = () => {}, runner = runLoop, driver = runAgentTurn, preflight = true } = {}) {
+export function createIsolatedLocalSupervisor({ root: rootInput, taskId, agent, workers = {}, limits, docker, worktreesRoot, workerImages = {}, pollMs, signal, untilStop = false, onEvent = () => {}, runner = runLoop, driver = runAgentTurn, preflight = true } = {}) {
   requireLocalAuthority();
   const root = validateRoot(rootInput);
   if (!isLoopProvider(agent)) throw new Error(`local lead agent must be ${LOOP_PROVIDER_LIST}`);
@@ -130,7 +130,7 @@ export function createIsolatedLocalSupervisor({ root: rootInput, taskId, agent, 
     if (mode === "resume" && !record) throw new Error("Local loop record missing; use start");
     if (record && record.agent !== agent) throw new Error("Resume must use the recorded lead agent");
     let nextMode = mode;
-    return runSupervisor({ taskId, authority: "local", ...adapter, pollMs, signal, onEvent,
+    return runSupervisor({ taskId, authority: "local", ...adapter, pollMs, signal, untilStop, onEvent,
       runTurn: async ({ precondition }) => {
         if (signal?.aborted) return { status: "stopped", taskId };
         requireLocalAuthority();

@@ -73,18 +73,18 @@ The upgrade plan handles supported legacy `.aidlc/` project data transactionally
 ## `loop`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start|status|resume [options]
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start|status [options]
 npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop worker-image [--provider opencode|codex|claude] [--tag TAG] [--root PATH]
 ```
 
 > [!WARNING]
 > The loop commands and fleet mode are **experimental and unfinished**: they contain known bugs and rough edges, and — because the package is still pre-1.0 (`0.x`) — their options, environment variables, and diagnostics can change incompatibly in any release before `1.0.0`.
 
-Options: `--task-id <id>` (optional for `start`, which derives one; required for `status`/`resume`), `--root <path>`, and `--mode local|fleet` (defaults to the configured `loop.mode`). `start` reads the requirement from an interactive prompt or stdin — the requirement is never passed as an argument. The command fails closed when the requested mode does not match the configured authority, when another task is actionable, or when a resume record is missing.
+Options: `--task-id <id>` (required for `status`), `--root <path>`, and `--mode local|fleet` (defaults to the configured `loop.mode`). In local mode `start` launches the daemon with no requirement input, and there is no one-shot `resume` — the daemon auto-picks and auto-resumes actionable tasks. The command fails closed when the requested mode does not match the configured authority.
 
 `loop worker-image` builds (or rebuilds) the shipped worker image for a provider without requiring loop configuration: `--provider` defaults to `opencode`, `--tag` defaults to `aidlc-worker-<provider>:local`. It runs `docker build` against the packaged `assets/aidlc/docker/Dockerfile.<provider>`, then records the tag into `config.loop.workerImage` so the local supervisor reuses it automatically.
 
-`status` prints the canonical task, its derived next action, and — in fleet mode — the durable gate checkpoint. `start` and `resume` run the supervisor in the foreground until the next gate, a pause, a blocked state, or completion; the emitted events include each gate view and the waiting state.
+`status` prints the canonical task, its derived next action, and — in fleet mode — the durable gate checkpoint. In local mode `start` runs the daemon in the foreground indefinitely: it polls canonical state every `loop.pollMs` (default `5000` ms), runs one bounded lead turn per actionable task, and keeps going when a task waits at a gate or completes. In fleet mode `start`/`resume` keep the existing one-shot supervisor behaviour.
 
 Local mode requires Docker plus the provider credential environment; the worker image is auto-built from the packaged Dockerfile on first dispatch (see [`loop worker-image`](#loop-command)) and its tag is recorded automatically, so a manual `AIDLC_WORKER_DOCKER_IMAGE` export is only needed to override the default. Approval happens through the trusted host terminal command `node .agents/aidlc/scripts/loop-gate.mjs <task-id>`, which refuses piped input.
 
