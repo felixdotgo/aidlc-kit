@@ -63,14 +63,20 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
   }
   const dockerEnv = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const dockerCheck = (...args) => execFileSync("docker", args, { env: dockerEnv, stdio: "ignore", timeout: 30000 });
+  // Run each provider CLI through workerDockerInvocation (not a bare `docker run`)
+  // so OpenCode's HOME/XDG roots are redirected to a writable tmpfs. A raw
+  // invocation fails under `--read-only` with `EROFS: mkdir '/home/node/.local'`.
+  const preflightWorkspace = mkdtempSync(join(tmpdir(), "aidlc-worker-preflight-"));
   try {
     dockerCheck("info");
     for (const [agent, agentImage] of Object.entries(resolvedImages)) {
       const id=execFileSync("docker",["image","inspect","--format","{{.Id}}",agentImage],{env:dockerEnv,encoding:"utf8",stdio:["ignore","pipe","ignore"],timeout:30000}).trim();
       if (!/^sha256:[a-f0-9]{64}$/.test(id)) throw new Error("Docker worker image lacks immutable image ID");
-      dockerCheck("run", "--rm", "--network", "none", "--read-only", "--user", `${uid}:${gid}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--entrypoint", agent, agentImage, "--version");
+      const invocation = workerDockerInvocation({ workspace: preflightWorkspace, image: agentImage, command: agent, args: ["--version"], credentialEnv: docker.credentials[agent], hostEnv: process.env, uid, gid });
+      execFileSync(invocation.command, invocation.args, { env: invocation.env, stdio: "ignore", timeout: 30000 });
     }
   } catch { throw new Error("Docker engine, image, or provider CLI preflight failed"); }
+  finally { rmSync(preflightWorkspace, { recursive: true, force: true }); }
   clean(root);
   const base = git(root, "rev-parse", "HEAD").trim();
   const initialBranch = git(root, "symbolic-ref", "--short", "HEAD").trim();
