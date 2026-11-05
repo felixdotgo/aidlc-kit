@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 import { doctor, doctorData, status, statusData } from "../installer.js";
 import { applyMcpSetup, planMcpSetup, type McpSetupOptions } from "../mcp-setup.js";
 import { loadProjectConfig, resolveProfiles } from "../profiles.js";
-import { assertKnownOptions, DOCTOR_FLAGS, flags, MCP_FLAGS, rootArg, STATUS_FLAGS } from "./argv.js";
+import { startUiServer } from "../task-ui.js";
+import { assertKnownOptions, DOCTOR_FLAGS, flags, MCP_FLAGS, rootArg, STATUS_FLAGS, UI_FLAGS, value } from "./argv.js";
 import { confirmGeneral, mcpSetupSelections } from "./prompt.js";
 
 export const runLoopCommand = (args: string[]): void => {
@@ -27,6 +28,21 @@ export const runLoopCommand = (args: string[]): void => {
   const child = spawnSync(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? "", parsed.get("--provider") ?? "", parsed.get("--tag") ?? ""], { stdio: "inherit" });
   if (child.error) throw child.error;
   if (child.status !== 0) process.exitCode = child.status ?? 1;
+};
+
+export const runUi = async (args: string[]): Promise<void> => {
+  assertKnownOptions(args, UI_FLAGS);
+  const root = resolve(rootArg(args));
+  const port = Number(value(args, "--port") ?? 4173);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be an integer between 1 and 65535");
+  const host = value(args, "--host") ?? "127.0.0.1";
+  const { server, port: boundPort } = await startUiServer({ root, host, port });
+  console.log(`AI-DLC UI listening on http://${host}:${boundPort} (Ctrl-C to stop)`);
+  await new Promise<void>((resolve) => {
+    const close = (): void => { server.close(() => resolve()); };
+    process.once("SIGINT", close);
+    process.once("SIGTERM", close);
+  });
 };
 
 const mcpSetupOptions = async (args: string[]): Promise<McpSetupOptions> => {

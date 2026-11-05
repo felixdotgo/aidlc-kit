@@ -90,6 +90,20 @@ Local mode requires Docker plus the provider credential environment; the worker 
 
 Fleet mode requires the running coordination service (`AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, lead `AIDLC_FLEET_TOKEN`, `AIDLC_FLEET_INTEGRATION_BRANCH`, and optionally `AIDLC_FLEET_GIT_REMOTE`); worker IDs must match the configured `loop.agents.workers`, and `AIDLC_FLEET_WORKER_PROVIDERS` may map each worker to `codex`, `claude`, or `opencode`. The facade preflights the service and the integration branch and fails closed with a diagnosis instead of falling back to local. Fleet worker containers reject `opencode` with the container diagnostic above; assignment validation accepts it so that blocker surfaces when the job executes rather than being reported as an invalid provider. Fleet workers run separately through the fleet runner (`worker --once`) on each worker machine with `AIDLC_WORKER_DOCKER_IMAGE` and their own worker credential; a reviewer approves gates through the reviewer credential as documented in [Coordination service](./coordination-service.md).
 
+## `ui`
+
+```sh
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1]
+```
+
+Starts a minimal local web dashboard (built on `node:http`, no extra dependencies) for viewing task status and operating the loop without typing CLI commands repeatedly:
+
+- `GET /` renders a task table (id, title, phase, gate, status, risk, areas) plus a start form and per-task resume buttons.
+- `GET /api/tasks` returns the task summaries as JSON (`?archive=1`, `?statuses=`, `?query=`, `?limit=`, `?cursor=`); `GET /api/tasks/:id` returns one task.
+- `GET /api/loop/status?task-id=` returns the loop run record and derived next action; `POST /api/loop/start` (form/JSON field `requirement`) and `POST /api/loop/resume` (field `taskId`) spawn the installed `loop-entry.mjs` as background processes.
+
+The dashboard is **read-only over canonical local state** and the loop actions are thin facades over `loop-entry.mjs` — it never mutates lifecycle state or approves a gate itself. Gate approval stays on the trusted terminal (`node .agents/aidlc/scripts/loop-gate.mjs <task-id>`); v1 only displays the gate view. The server binds `127.0.0.1` by default so canonical state is not exposed to the network; pass `--host 0.0.0.0` only as an explicit opt-in.
+
 ## Installed lifecycle scripts
 
 After `init`, task lifecycle commands live in the target project, not in the package CLI:

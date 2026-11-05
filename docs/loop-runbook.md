@@ -127,6 +127,8 @@ npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop resume --task-id <task-
 
 The supervisor runs in the foreground until the next gate, a pause, a blocked state, or completion, emitting each gate view and the waiting state. A run records its lead provider; `resume` rejects a different lead agent.
 
+As an alternative to typing these commands repeatedly, `aidlc-kit ui` starts a minimal local web dashboard to view task status and start/resume the loop; gate approval stays on the trusted terminal. See [Command reference](./command-reference.md#ui).
+
 ### Step 5 — Approve gates from the trusted host terminal
 
 Gate approval happens only through the trusted host terminal — never from a lead or worker container, and never via piped input:

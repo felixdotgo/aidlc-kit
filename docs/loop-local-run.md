@@ -6,6 +6,8 @@ single machine (`local` mode). All lead/workers use **OpenCode**.
 > The loop and coordination service are **experimental** (pre-1.0). Flags, `loop.*`
 > fields, environment variables, and diagnostics can change incompatibly before `1.0.0`.
 
+> **npx vs. source.** The run commands below show **both** forms: `npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit …` (the published package — primary for end users) and `node dist/src/cli.js …` (dogfooding the `aidlc-kit` repo from a source checkout, after `npm run build`). Both drive the same installed `loop-entry.mjs`. Gate approval (§5.4) always stays on the trusted terminal via the installed `loop-gate.mjs` script and is never an `npx` command.
+
 ---
 
 ## 1. What the loop is (summary)
@@ -118,18 +120,30 @@ opencode models
 The requirement is read from stdin (never passed as an argument), max 8192 bytes:
 
 ```sh
+# via npx (published package):
+echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start --root .
+
+# or from a source checkout (after `npm run build`):
 echo "Add PDF report export" | node dist/src/cli.js loop start --root .
 ```
 
 Or run interactively (it will prompt for the requirement):
 
 ```sh
+# via npx:
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start --root .
+
+# or from source:
 node dist/src/cli.js loop start --root .
 ```
 
 ### 5.3 Watch status
 
 ```sh
+# via npx:
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop status --task-id <task-id> --root .
+
+# or from source:
 node dist/src/cli.js loop status --task-id <task-id> --root .
 ```
 
@@ -148,6 +162,10 @@ Never approve from the lead/worker, and never pipe input.
 ### 5.5 Resume after stopping at a gate / pause
 
 ```sh
+# via npx:
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop resume --task-id <task-id> --root .
+
+# or from source:
 node dist/src/cli.js loop resume --task-id <task-id> --root .
 ```
 

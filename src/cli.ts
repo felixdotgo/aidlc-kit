@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { resolvedAdapters } from "./adapters.js";
 import { assertKnownOptions, flags, INIT_FLAGS, rootArg, UNINSTALL_FLAGS, UPGRADE_FLAGS, usage } from "./cli/argv.js";
-import { runDoctor, runLoopCommand, runMcp, runProfile, runStatus } from "./cli/commands.js";
+import { runDoctor, runLoopCommand, runMcp, runProfile, runStatus, runUi } from "./cli/commands.js";
 import { initOptions } from "./cli/options.js";
 import { chooseLoop, confirmGeneral, interactive } from "./cli/prompt.js";
 import { applyPlan, detectedAgents, formatPlan, planInit, planUninstall, selectAgents } from "./installer.js";
@@ -87,7 +87,7 @@ const runUpgrade = async (args: string[]): Promise<void> => {
 type CommandHandler = (args: string[]) => void | Promise<void>;
 const runHelp = (): void => console.log(usage);
 const runVersion = (): void => console.log(packageVersion());
-const REGISTRY: Record<string, CommandHandler> = { init: runInit, upgrade: runUpgrade, uninstall: runUninstall, status: runStatus, doctor: runDoctor, loop: runLoopCommand, mcp: runMcp, profile: runProfile, version: runVersion, help: runHelp };
+const REGISTRY: Record<string, CommandHandler> = { init: runInit, upgrade: runUpgrade, uninstall: runUninstall, status: runStatus, doctor: runDoctor, loop: runLoopCommand, ui: runUi, mcp: runMcp, profile: runProfile, version: runVersion, help: runHelp };
 
 const main = async (): Promise<void> => {
   const argv = process.argv.slice(2);
