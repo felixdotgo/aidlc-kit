@@ -96,13 +96,14 @@ Fleet mode requires the running coordination service (`AIDLC_FLEET_URL`, `AIDLC_
 npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1]
 ```
 
-Starts a minimal local web dashboard (built on `node:http`, no extra dependencies) for viewing task status and operating the loop without typing CLI commands repeatedly:
+Starts a local web dashboard (built on `node:http`, no extra dependencies) for viewing task status and operating the loop without typing CLI commands repeatedly:
 
-- `GET /` renders a task table (id, title, phase, gate, status, risk, areas) plus a start form and per-task resume buttons.
-- `GET /api/tasks` returns the task summaries as JSON (`?archive=1`, `?statuses=`, `?query=`, `?limit=`, `?cursor=`); `GET /api/tasks/:id` returns one task.
-- `GET /api/loop/status?task-id=` returns the loop run record and derived next action; `POST /api/loop/start` (form/JSON field `requirement`) and `POST /api/loop/resume` (field `taskId`) spawn the installed `loop-entry.mjs` as background processes.
+- `GET /` renders a **kanban board by default** (columns grouped by `phase`: clarify / plan / build / wrap / done) with a list/table toggle, plus **New task** and **Settings** modals. Clicking a task opens a quick detail modal; ctrl/cmd-click or middle-click opens the full detail page.
+- `GET /tasks/:id` renders the full task detail page: a structured gate view, rendered `intent`/`design`/`workplan` artifacts (Markdown), loop status, decisions, work items, evidence, and a live log stream. `GET /partial/tasks/:id` returns the same detail body as an HTML fragment for the modal.
+- `GET /api/tasks` returns task summaries as JSON (`?archive=1`, `?statuses=`, `?query=`, `?limit=`, `?cursor=`); `GET /api/tasks/:id` returns one task; `GET /api/tasks/:id/artifact/:name` returns raw artifact content for programmatic clients.
+- `GET /api/loop/status?task-id=` returns the loop run record; `POST /api/loop/start` (field `requirement`), `POST /api/loop/resume` (field `taskId`), and `POST /api/gate/approve` (fields `taskId`, `source`) spawn the installed scripts as thin facades.
 
-The dashboard is **read-only over canonical local state** and the loop actions are thin facades over `loop-entry.mjs` — it never mutates lifecycle state or approves a gate itself. Gate approval stays on the trusted terminal (`node .agents/aidlc/scripts/loop-gate.mjs <task-id>`); v1 only displays the gate view. The server binds `127.0.0.1` by default so canonical state is not exposed to the network; pass `--host 0.0.0.0` only as an explicit opt-in.
+The dashboard is **read-only over canonical local state**; the mutating actions (loop start/resume, gate approve) are thin facades that require a per-session token (generated at server start and printed to the terminal, entered via the Settings modal and stored in `localStorage`). Gate approval remains available on the trusted terminal (`node .agents/aidlc/scripts/loop-gate.mjs <task-id>`). The server binds `127.0.0.1` by default so canonical state is not exposed to the network; pass `--host 0.0.0.0` only as an explicit opt-in.
 
 ## Installed lifecycle scripts
 

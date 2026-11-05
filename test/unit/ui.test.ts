@@ -212,3 +212,55 @@ test("loop-stream sidecar appends JSONL when AIDLC_LOOP_EVENT_LOG is set", async
     rmSync(logPath, { force: true });
   }
 });
+
+test("markdownToHtml renders a minimal subset and escapes HTML", async () => {
+  const { markdownToHtml } = await import("../../src/task-ui.js");
+  assert.match(markdownToHtml("## Heading\n\n- a\n- b"), /<h2>Heading<\/h2>/);
+  assert.match(markdownToHtml("## Heading\n\n- a\n- b"), /<ul>/);
+  assert.match(markdownToHtml("**bold** and `code`"), /<strong>bold<\/strong>/);
+  assert.match(markdownToHtml("**bold** and `code`"), /<code>code<\/code>/);
+  assert.match(markdownToHtml("| a | b |\n| - | - |\n| 1 | 2 |"), /<table/);
+  assert.match(markdownToHtml("```\ncode\n```"), /<pre><code>/);
+  assert.equal(markdownToHtml("<script>alert(1)</script>").includes("<script>"), false);
+  assert.match(markdownToHtml("<script>alert(1)</script>"), /&lt;script&gt;/);
+  assert.equal(markdownToHtml("[x](javascript:alert(1))").includes("javascript:"), false);
+});
+
+test("dashboard renders kanban as the default view with phase columns and modals", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const html = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(html, /id="kanban-view"/);
+    assert.match(html, /id="list-view" style="display:none"/);
+    assert.match(html, /New task/);
+    assert.match(html, /Settings/);
+    assert.match(html, />clarify</);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("task detail renders artifacts and gate view as structured HTML, not raw JSON", async () => {
+  const fixture = await startFixture(makeTask({ status: "blocked_on_user" }), true);
+  try {
+    const page = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    assert.match(page, /Review step · Confirm requirements/);
+    assert.doesNotMatch(page, /schemaVersion/);
+    assert.match(page, /<h2>📋 Problem<\/h2>/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("partial task detail fragment serves modal content without a full page", async () => {
+  const fixture = await startFixture(makeTask(), true);
+  try {
+    const res = await fetch(`${fixture.base}/partial/tasks/task-a`);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /Task A/);
+    assert.doesNotMatch(html, /<html/);
+  } finally {
+    await fixture.close();
+  }
+});
