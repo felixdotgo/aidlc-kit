@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { assertNoSymlinkPath } from "./shared.js";
+import { dirname } from "node:path";
+import { assertNoSymlinkPath } from "./io.js";
+import { stateLockGuardPath, stateLockGuardPathRelative, stateLockPath, stateLockPathRelative } from "./paths.js";
 
 interface LockRecord { token: string; pid: number; createdAt: number; }
 
@@ -60,10 +61,10 @@ export const acquireStateLock = (root: string, options: StateLockOptions = {}): 
   const timeoutMs = options.timeoutMs ?? 5_000;
   const retryMs = options.retryMs ?? 25;
   const staleMs = options.staleMs ?? 30_000;
-  const lockPath = join(resolve(root), ".agents/data/state/.aidlc-state.lock");
-  const guardPath = join(resolve(root), ".agents/data/state/.aidlc-state.lock.guard");
-  assertNoSymlinkPath(root, ".agents/data/state/.aidlc-state.lock");
-  assertNoSymlinkPath(root, ".agents/data/state/.aidlc-state.lock.guard");
+  const lockPath = stateLockPath(root);
+  const guardPath = stateLockGuardPath(root);
+  assertNoSymlinkPath(root, stateLockPathRelative);
+  assertNoSymlinkPath(root, stateLockGuardPathRelative);
   const token = randomUUID();
   const deadline = Date.now() + timeoutMs;
   const acquireGuard = (): string | undefined => {

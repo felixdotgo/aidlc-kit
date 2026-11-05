@@ -17,7 +17,7 @@ Codex, Claude Code, or OpenCode are optional for manually exercising real evalua
 
 ## Platform support
 
-Node.js 20.17 or newer is required on every platform. Linux and macOS are fully supported and tested. Windows is best-effort: win32 path separators are handled in `src/state/shared.ts`, `src/profiles.ts`, and the installed `assets/aidlc/scripts/lib/store.mjs`/`context-runtime.mjs`, and the state lock uses `process.kill(pid, 0)` for liveness; the lock and path handling are not exercised on Windows in CI. Loop and fleet features require Docker and a POSIX shell (`loop-local-workers.mjs` rejects non-Linux hosts).
+Node.js 20.17 or newer is required on every platform. Linux and macOS are fully supported and tested. Windows is best-effort: win32 path separators are handled in `src/state/guards.ts`, `src/profiles.ts`, and the installed `assets/aidlc/scripts/lib/store.mjs`/`context-runtime.mjs`, and the state lock uses `process.kill(pid, 0)` for liveness; the lock and path handling are not exercised on Windows in CI. Loop and fleet features require Docker and a POSIX shell (`loop-local-workers.mjs` rejects non-Linux hosts).
 
 | Platform | Status | Notes |
 | --- | --- | --- |
@@ -31,7 +31,7 @@ Node.js 20.17 or newer is required on every platform. Linux and macOS are fully 
 ```text
 assets/aidlc/                Source workflow contracts, schemas, and installed scripts
 skills/                      Source thin phase adapters
-src/                         TypeScript package CLI, installer, lifecycle, profiles, and migrations
+src/                         TypeScript package CLI (src/cli/), installer + shared planning core, lifecycle domain (src/model/, src/state/), profiles, and migrations
 dev/evaluator/               Development-only evaluator harness and runners
 scripts/build-assets.mjs     Bundles workflow assets for package distribution
 test/unit/                   Unit and installed-runtime parity tests

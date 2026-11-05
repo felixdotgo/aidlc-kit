@@ -1,123 +1,18 @@
 #!/usr/bin/env node
-import { stdin, stdout } from "node:process";
-import { spawnSync } from "node:child_process";
-import { resolve, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { installableAdapters } from "./adapters.js";
-import { applyPlan, detectedAgents, doctor, doctorData, formatPlan, planInit, planUninstall, selectAgents, status, statusData } from "./installer.js";
-import type { AgentId, InitOptions, LoopConfig } from "./model.js";
-import { LOOP_PROVIDERS } from "./model.js";
-import { loadProjectConfig, resolveProfiles, validateLoopConfig } from "./profiles.js";
+import { resolvedAdapters } from "./adapters.js";
+import { assertKnownOptions, flags, INIT_FLAGS, rootArg, UNINSTALL_FLAGS, UPGRADE_FLAGS, usage } from "./cli/argv.js";
+import { runDoctor, runLoopCommand, runMcp, runProfile, runStatus } from "./cli/commands.js";
+import { initOptions } from "./cli/options.js";
+import { chooseLoop, confirmGeneral, interactive } from "./cli/prompt.js";
+import { applyPlan, detectedAgents, formatPlan, planInit, planUninstall, selectAgents } from "./installer.js";
+import type { InitOptions } from "./model.js";
 import { applyUpgrade, planUpgrade } from "./upgrade.js";
 import { packageVersion } from "./workflow.js";
-import { applyMcpSetup, planMcpSetup, type McpSetupOptions } from "./mcp-setup.js";
 
-const usage = `Usage:
-  npx @felixdotgo/aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead ${LOOP_PROVIDERS.join("|")}] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
-  npx @felixdotgo/aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead ${LOOP_PROVIDERS.join("|")}] [--loop-workers <id=provider,...>] [--dry-run]
-  npx @felixdotgo/aidlc-kit uninstall [path] [--yes] [--dry-run]
-  npx @felixdotgo/aidlc-kit status [path] [--json]
-  npx @felixdotgo/aidlc-kit doctor [path] [--strict] [--json]
-  npx @felixdotgo/aidlc-kit profile validate [path]
-  npx @felixdotgo/aidlc-kit loop start|status|resume [--task-id ID] [--root PATH] [--mode local|fleet]
-  npx @felixdotgo/aidlc-kit loop worker-image [--provider ${LOOP_PROVIDERS.join("|")}] [--tag TAG] [--root PATH]
-  npx @felixdotgo/aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
-  npx @felixdotgo/aidlc-kit version
-  Global options: --help, --version, -v`;
-
-const interactive = (): boolean => Boolean(stdin.isTTY && stdout.isTTY);
+/* Kept in this file: test/unit/cli.test.ts pins these prompt sources (and the upgrade boundary strings below) to src/cli.ts; the shared interactive flows live in ./cli/prompt.ts. */
 const prompts = async () => import("@inquirer/prompts");
 
-/* --- Argv helpers --------------------------------------------------------- */
-
-const value = (args: string[], name: string): string | undefined => {
-  const index = args.indexOf(name);
-  if (index < 0) return undefined;
-  const next = args[index + 1];
-  if (next === undefined || next.startsWith("--")) throw new Error(`${name} requires a value`);
-  return next;
-};
-
-const flags = (args: string[]): Set<string> => new Set(args.filter((item) => item.startsWith("--")));
-const valueFlags = new Set(["--agent", "--storage", "--deployment", "--bind", "--workspace", "--poll-ms", "--token-env", "--providers", "--loop-mode", "--loop-lead", "--loop-workers"]);
-const COMMAND_KEYWORDS = ["init", "upgrade", "uninstall", "status", "doctor", "validate", "run", "list"] as const;
-
-const positional = (args: string[]): string[] => {
-  const result: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg !== undefined && valueFlags.has(arg)) { index += 1; continue; }
-    if (arg !== undefined && !arg.startsWith("--")) result.push(arg);
-  }
-  return result;
-};
-
-const rootArg = (args: string[], fallback = "."): string => positional(args).find((item) => !COMMAND_KEYWORDS.includes(item as never)) ?? fallback;
-
-const INIT_FLAGS = new Set(["--agent", "--all", "--loop-mode", "--loop-lead", "--loop-workers", "--yes", "--dry-run", "--force"]);
-const UPGRADE_FLAGS = new Set(["--loop-mode", "--loop-lead", "--loop-workers", "--dry-run"]);
-const UNINSTALL_FLAGS = new Set(["--yes", "--dry-run"]);
-const STATUS_FLAGS = new Set(["--json"]);
-const DOCTOR_FLAGS = new Set(["--strict", "--json"]);
-const MCP_FLAGS = new Set(["--dry-run", "--yes", "--storage", "--deployment", "--bind", "--workspace", "--poll-ms", "--token-env", "--providers", "--enable"]);
-
-const assertKnownOptions = (args: string[], allowed: Set<string>): void => {
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === undefined || !arg.startsWith("--")) continue;
-    if (!allowed.has(arg)) throw new Error(`Unknown option: ${arg}`);
-    if (valueFlags.has(arg)) index += 1;
-  }
-};
-
-/* --- Loop configuration --------------------------------------------------- */
-
-const parseWorkerMapping = (rawWorkers: string): Record<string, string> => {
-  const workers: Record<string, string> = Object.create(null) as Record<string, string>;
-  for (const entry of rawWorkers.split(",")) {
-    const parts = entry.split("=");
-    if (parts.length !== 2 || !parts[0] || !parts[1] || Object.hasOwn(workers, parts[0])) throw new Error("Invalid or duplicate loop worker mapping");
-    workers[parts[0]] = parts[1];
-  }
-  return workers;
-};
-
-const chooseLoop = async (args: string[], upgrade: boolean): Promise<LoopConfig | undefined> => {
-  let mode = value(args, "--loop-mode");
-  const leadArg = value(args, "--loop-lead"), workersArg = value(args, "--loop-workers");
-  if (!mode && (leadArg || workersArg)) throw new Error("--loop-lead and --loop-workers require --loop-mode");
-  if (!mode && interactive()) {
-    const { select } = await prompts();
-    mode = await select({ message: "Loop execution mode", choices: [
-      ...(upgrade ? [{ name: "Keep existing loop configuration", value: "keep" }] : []),
-      { name: "Off", value: "off" }, { name: "Local", value: "local" }, { name: "Fleet", value: "fleet" }
-    ] });
-  }
-  if (!mode || mode === "keep") return undefined;
-  if (mode === "off") {
-    if (leadArg || workersArg) throw new Error("Disabled loop cannot specify agents");
-    return validateLoopConfig({ mode });
-  }
-  let lead = leadArg, rawWorkers = workersArg;
-  if (interactive() && (!lead || !rawWorkers)) {
-    const { select, input } = await prompts();
-    lead ??= await select({ message: "Lead agent", choices: LOOP_PROVIDERS.map((name) => ({ name, value: name })) });
-    rawWorkers ??= await input({ message: "Workers (id=provider, comma separated)", default: "codex-worker=codex,claude-worker=claude" });
-  }
-  if (!lead || !rawWorkers) throw new Error("An enabled loop requires --loop-lead and --loop-workers");
-  return validateLoopConfig({ mode, agents: { lead, workers: parseWorkerMapping(rawWorkers) } });
-};
-
-/* --- Option builders and shared flows -------------------------------------- */
-
-const initOptions = (args: string[]): InitOptions => ({
-  root: rootArg(args),
-  agents: (value(args, "--agent") ?? "").split(",").filter(Boolean) as AgentId[],
-  all: flags(args).has("--all"),
-  dryRun: flags(args).has("--dry-run"),
-  yes: flags(args).has("--yes"),
-  force: flags(args).has("--force")
-});
+/* --- Agent selection and plan preview -------------------------------------- */
 
 const chooseAgents = async (options: InitOptions): Promise<InitOptions> => {
   const selected = selectAgents(options);
@@ -126,7 +21,7 @@ const chooseAgents = async (options: InitOptions): Promise<InitOptions> => {
   if (detected.length === 1) return { ...options, agents: detected };
   if (!interactive()) throw new Error(`Unable to select an agent automatically. Use --agent <name> or --all. Detected: ${detected.join(", ") || "none"}`);
   const { checkbox } = await prompts();
-  const choices = installableAdapters();
+  const choices = resolvedAdapters();
   const agents = await checkbox({
     message: "Select one or more agents",
     choices: choices.map((adapter) => ({
@@ -143,62 +38,7 @@ const preview = (operation: string, plan: ReturnType<typeof planInit>): void => 
   console.log(formatPlan(plan));
 };
 
-const confirmGeneral = async (options: InitOptions, operation: string): Promise<boolean> => {
-  if (options.dryRun) return false;
-  if (options.yes) return true;
-  if (!interactive()) return false;
-  const { confirm } = await prompts();
-  return confirm({ message: `${operation} this plan?`, default: false });
-};
-
-/* --- MCP setup options ----------------------------------------------------- */
-
-const mcpSetupSelections = async (args: string[]): Promise<Partial<Omit<McpSetupOptions, "root" | "template" | "dryRun" | "enable">>> => {
-  const selected = {
-    deployment: value(args, "--deployment") as McpSetupOptions["deployment"] | undefined,
-    storage: value(args, "--storage") as McpSetupOptions["storage"] | undefined,
-    bind: value(args, "--bind") as McpSetupOptions["bind"] | undefined,
-    workspace: value(args, "--workspace"),
-    pollMs: Number(value(args, "--poll-ms") ?? 30_000),
-    tokenEnv: value(args, "--token-env") ?? "AIDLC_MCP_TOKEN",
-    providers: (value(args, "--providers") ?? "").split(",").filter(Boolean)
-  };
-  if ((!selected.deployment || !selected.storage || !selected.bind || !selected.workspace) && !interactive()) throw new Error("mcp setup outside a TTY requires --deployment, --storage, --bind and --workspace");
-  if (interactive()) {
-    const { input, select, checkbox } = await prompts();
-    selected.deployment ??= await select({ message: "State service deployment", choices: [{ name: "Docker on this machine", value: "docker" }, { name: "Remote service (configure endpoint later)", value: "remote" }] }) as McpSetupOptions["deployment"];
-    selected.storage ??= await select({ message: "Database", choices: [{ name: "SQLite (local Docker volume)", value: "sqlite" }, { name: "PostgreSQL (multi-host production)", value: "postgres" }] }) as McpSetupOptions["storage"];
-    selected.bind ??= await select({ message: "Network binding", choices: [{ name: "localhost only", value: "localhost" }, { name: "network (requires token/TLS)", value: "network" }] }) as McpSetupOptions["bind"];
-    selected.workspace ??= await input({ message: "Workspace ID", default: "default", required: true });
-    if (!selected.providers.length) selected.providers = await checkbox({ message: "Project-management connectors to configure", choices: ["jira", "trello", "github-issues"].map((value) => ({ name: value, value })) });
-  }
-  if (!Number.isInteger(selected.pollMs) || selected.pollMs < 1_000 || selected.pollMs > 3_600_000) throw new Error("--poll-ms must be an integer from 1000 to 3600000");
-  return selected;
-};
-
-const mcpSetupOptions = async (args: string[]): Promise<McpSetupOptions> => {
-  const selected = await mcpSetupSelections(args);
-  return { root: rootArg(args), template: join(fileURLToPath(new URL("../services/aidlc-coordination", import.meta.url))), dryRun: flags(args).has("--dry-run"), deployment: selected.deployment!, storage: selected.storage!, bind: selected.bind!, workspace: selected.workspace!, pollMs: selected.pollMs!, tokenEnv: selected.tokenEnv!, providers: selected.providers!, enable: flags(args).has("--enable") };
-};
-
-/* --- Command handlers ------------------------------------------------------ */
-
-const runLoopCommand = (args: string[]): void => {
-  const action = args[0] ?? "";
-  if (!["start", "status", "resume", "worker-image"].includes(action)) throw new Error("Expected loop start, status, resume, or worker-image");
-  const parsed = new Map<string, string>();
-  for (let index = 1; index < args.length; index += 2) {
-    const key = args[index];
-    const entry = args[index + 1];
-    if (key === undefined || !["--task-id", "--root", "--mode", "--provider", "--tag"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
-    parsed.set(key, entry);
-  }
-  const root = resolve(parsed.get("--root") ?? ".");
-  const script = join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs");
-  const child = spawnSync(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? "", parsed.get("--provider") ?? "", parsed.get("--tag") ?? ""], { stdio: "inherit" });
-  if (child.error) throw child.error;
-  if (child.status !== 0) process.exitCode = child.status ?? 1;
-};
+/* --- Command handlers that consume the pinned prompts above ----------------- */
 
 const runInit = async (args: string[]): Promise<void> => {
   assertKnownOptions(args, INIT_FLAGS);
@@ -242,61 +82,21 @@ const runUpgrade = async (args: string[]): Promise<void> => {
   console.log(`Upgrade complete. Backup: ${result.backup}; changed: ${result.changed}`);
 };
 
-const runMcpSetup = async (args: string[]): Promise<void> => {
-  assertKnownOptions(args.slice(1), MCP_FLAGS);
-  const options = await mcpSetupOptions(args.slice(1));
-  const plan = planMcpSetup(options);
-  console.log(`◆ MCP SETUP preview — ${options.dryRun ? "no files will be written" : "review before applying"}`);
-  console.log(JSON.stringify(plan, null, 2));
-  if (options.dryRun) return;
-  if (!await confirmGeneral({ ...initOptions(args), root: options.root }, "Apply MCP setup")) return;
-  applyMcpSetup(options);
-  console.log(`MCP setup written to ${plan.target}. MCP remains ${options.enable ? "enabled" : "disabled"}; start Docker explicitly with docker compose --env-file .env -f ${join(plan.target, "compose.yaml")} up -d.`);
-};
+/* --- Command registry and entry --------------------------------------------- */
+
+type CommandHandler = (args: string[]) => void | Promise<void>;
+const runHelp = (): void => console.log(usage);
+const runVersion = (): void => console.log(packageVersion());
+const REGISTRY: Record<string, CommandHandler> = { init: runInit, upgrade: runUpgrade, uninstall: runUninstall, status: runStatus, doctor: runDoctor, loop: runLoopCommand, mcp: runMcp, profile: runProfile, version: runVersion, help: runHelp };
 
 const main = async (): Promise<void> => {
   const argv = process.argv.slice(2);
   if (argv.includes("--version") || argv.includes("-v")) return void console.log(packageVersion());
   if (argv.includes("--help")) return void console.log(usage);
   const [command = "help", ...args] = argv;
-  if (command === "help") return void console.log(usage);
-  if (command === "version") return void console.log(packageVersion());
-  if (command === "loop") return void runLoopCommand(args);
-  if (command === "status") {
-    assertKnownOptions(args, STATUS_FLAGS);
-    const root = rootArg(args);
-    if (flags(args).has("--json")) console.log(JSON.stringify(statusData(root)));
-    else console.log(status(root));
-    return;
-  }
-  if (command === "doctor") {
-    assertKnownOptions(args, DOCTOR_FLAGS);
-    const root = rootArg(args);
-    const strict = flags(args).has("--strict");
-    if (flags(args).has("--json")) {
-      const data = doctorData(root, strict);
-      console.log(JSON.stringify(data));
-      if (data.level === "error") process.exitCode = 1;
-    } else {
-      const result = doctor(root, strict);
-      console.log(result);
-      if (result.startsWith("ERROR:")) process.exitCode = 1;
-    }
-    return;
-  }
-  if (command === "init") return void await runInit(args);
-  if (command === "uninstall") return void await runUninstall(args);
-  if (command === "upgrade") return void await runUpgrade(args);
-  if (command === "mcp" && args[0] === "setup") return void await runMcpSetup(args);
-  if (command === "profile" && args[0] === "validate") {
-    assertKnownOptions(args.slice(1), new Set());
-    const root = rootArg(args.slice(1));
-    const config = loadProjectConfig(root);
-    const profiles = resolveProfiles(root, config.extends);
-    console.log(`OK: ${profiles.map((item) => item.id).join(" → ")}`);
-    return;
-  }
-  throw new Error(`Unknown command: ${command}`);
+  const handler = Object.hasOwn(REGISTRY, command) ? REGISTRY[command] : undefined;
+  if (!handler) throw new Error(`Unknown command: ${command}`);
+  return void await handler(args);
 };
 
 main().catch((error: unknown) => { console.error(`aidlc-kit: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; });

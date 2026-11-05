@@ -1,92 +1,38 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { findAdapterForUpgrade, resolvedAdaptersForUpgrade } from "./adapters.js";
-import { installedHashFor, managedContentHash, planLoopSelection, readManifest } from "./installer.js";
+import { findAdapter, resolvedAdapters } from "./adapters.js";
 import { legacyV021AdapterContents, legacyV021Hashes } from "./legacy.js";
 import type { AgentId, FileSpec, LoopConfig, PlannedWrite, WorkflowManifest, WorkflowState } from "./model.js";
 import { planProjectLayoutMigration } from "./project-migration.js";
-import { mergeManagedBlock } from "./managed-content.js";
+import { legacyManifest, managedContentHash, planLoopSelection, planManagedWrites, preserveOwnedFile, readManifest, splitInventoryKey } from "./managed-planning.js";
+import type { UpgradePlanPolicy } from "./managed-planning.js";
 import { resolveProjectPath, resolveProjectPathWithoutSymlinks } from "./project-path.js";
 import { prepareV4Migration, validateState } from "./state.js";
 import { contentHash, coreWorkflowFiles, initialProjectFiles, manifestSpec } from "./workflow.js";
 import { migrateLegacyBoard } from "./upgrade-board.js";
 
-export { migrateLegacyBoard } from "./upgrade-board.js";
-
 const safePath = (root: string, relative: string): string => resolveProjectPath(root, relative, "Unsafe upgrade path");
 const assertNoSymlinkPath = (root: string, relative: string): void => { resolveProjectPathWithoutSymlinks(root, relative, "Unsafe upgrade path", "Refusing to upgrade symlink path"); };
 
-const legacyManifest = (root: string): boolean => {
-  const path = join(resolve(root), ".agents/aidlc/manifest.json");
-  if (!existsSync(path)) return false;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { managedBy?: string; schemaVersion?: number };
-    return parsed.managedBy === "aidlc-workflow" && (parsed.schemaVersion === 0 || parsed.schemaVersion === 1);
-  } catch { return false; } /* intentional: a malformed/missing manifest is not a legacy v0.x install */
-};
-
 /* --- Managed file planning -------------------------------------------------- */
 
-const planManaged = (root: string, spec: FileSpec, installedHash: string | undefined, legacy: boolean): PlannedWrite => {
-  const target = safePath(root, spec.path);
-  if (!existsSync(target)) return { ...spec, action: "create", reason: "new managed file" };
-  const current = readFileSync(target, "utf8");
-  const next = spec.strategy === "managed-block" ? mergeManagedBlock(spec, current) : spec.content;
-  const currentHash = managedContentHash(spec, current);
-  const nextHash = contentHash(spec.strategy === "managed-block" ? spec.content.trimEnd() : spec.content);
-  if (currentHash === nextHash) return { ...spec, content: next, action: next === current ? "skip" : "update", reason: "managed content already current" };
-  if (installedHash && currentHash === installedHash) return { ...spec, content: next, action: "update", reason: "unchanged managed file" };
-  const legacyAdapter = legacyV021AdapterContents[spec.path];
-  const legacyAdapterHash = legacyAdapter ? contentHash(spec.strategy === "managed-block" ? legacyAdapter.trimEnd() : legacyAdapter) : undefined;
-  if (legacy && (legacyV021Hashes[spec.path] === currentHash || legacyAdapterHash === currentHash)) return { ...spec, content: next, action: "update", reason: "recognized v0.2.1 baseline" };
-  if (spec.strategy === "managed-block" && current.includes(`<!-- aidlc-installer:${spec.owner} -->`)) return { ...spec, content: next, action: "conflict", reason: "managed prompt block was modified" };
-  return { ...spec, content: next, action: "conflict", reason: legacy ? "legacy core differs from known baseline" : "managed file differs from installed hash" };
-};
-
-/** Merges a later owner of a shared managed-block path into the already-emitted plan entry. */
-const mergeSharedBlockOwner = (project: string, previous: PlannedWrite, spec: FileSpec, installed: WorkflowManifest | undefined): void => {
-  if (!["create", "update", "skip"].includes(previous.action)) return;
-  const target = safePath(project, spec.path);
-  const current = existsSync(target) ? readFileSync(target, "utf8") : "";
-  // Every owner block is checked before merging so a user edit to a later
-  // adapter's block is reported instead of being silently overwritten.
-  const installedBlockHash = installedHashFor(installed?.files, spec);
-  const currentBlockHash = managedContentHash(spec, current);
-  if (installedBlockHash !== undefined && currentBlockHash !== undefined && installedBlockHash !== currentBlockHash) {
-    previous.action = "conflict";
-    previous.reason = "managed prompt block was modified";
-    return;
+/** Upgrade's planning policy: ownership is proven against installed hashes and the frozen v0.2.1 baselines. */
+const upgradePlanPolicy = (installed: WorkflowManifest | undefined, legacy: boolean): UpgradePlanPolicy => ({
+  flow: "upgrade",
+  installed,
+  legacy,
+  resolvePath: safePath,
+  legacyBaseline: (spec, currentHash) => {
+    const legacyAdapter = legacyV021AdapterContents[spec.path];
+    const legacyAdapterHash = legacyAdapter ? contentHash(spec.strategy === "managed-block" ? legacyAdapter.trimEnd() : legacyAdapter) : undefined;
+    return legacyV021Hashes[spec.path] === currentHash || legacyAdapterHash === currentHash;
   }
-  previous.content = mergeManagedBlock(spec, previous.content);
-  previous.action = existsSync(target) ? (previous.content === current ? "skip" : "update") : "create";
-  previous.reason = "managed prompt block";
-};
-
-/** Plans managed replacements and shared managed-block writes across every owner. */
-const planManagedFiles = (project: string, managed: FileSpec[], installed: WorkflowManifest | undefined, legacy: boolean): PlannedWrite[] => {
-  const plan: PlannedWrite[] = [];
-  const mergedBlocks = new Map<string, PlannedWrite>();
-  for (const spec of managed) {
-    const installedHash = installedHashFor(installed?.files, spec);
-    if (spec.strategy !== "managed-block") { plan.push(planManaged(project, spec, installedHash, legacy)); continue; }
-    const previous = mergedBlocks.get(spec.path);
-    if (!previous) {
-      const write = planManaged(project, spec, installedHash, legacy);
-      plan.push(write);
-      mergedBlocks.set(spec.path, write);
-      continue;
-    }
-    mergeSharedBlockOwner(project, previous, spec, installed);
-  }
-  return plan;
-};
-
-/* --- Obsolete files and project-owned files ---------------------------------- */
+});
 
 /** Deletes obsolete managed files tracked by the installed manifest that no longer ship in this release. */
 const planObsoleteRemovals = (project: string, plan: PlannedWrite[], installed: WorkflowManifest, managed: FileSpec[]): void => {
   for (const [key, item] of Object.entries(installed.files)) {
-    const path = key.includes("#") ? key.slice(0, key.lastIndexOf("#")) : key;
+    const path = splitInventoryKey(key).path;
     // Shared prompt blocks are upgraded through the merged plan above; never delete their whole path here.
     if (item.strategy === "managed-block") continue;
     if (managed.some((spec) => spec.path === path)) continue;
@@ -101,8 +47,7 @@ const planObsoleteRemovals = (project: string, plan: PlannedWrite[], installed: 
 const preserveProjectFiles = (project: string, plan: PlannedWrite[], legacy: boolean): void => {
   for (const spec of initialProjectFiles()) {
     if (legacy && spec.path === ".agents/data/state/aidlc-state.json" && !existsSync(safePath(project, spec.path))) continue;
-    const target = safePath(project, spec.path);
-    plan.push(existsSync(target) ? { ...spec, content: readFileSync(target, "utf8"), action: "preserve", reason: `${spec.ownershipClass}-owned file` } : { ...spec, action: "create", reason: `new ${spec.ownershipClass}-owned file` });
+    plan.push(preserveOwnedFile(safePath(project, spec.path), spec));
   }
 };
 
@@ -157,12 +102,12 @@ const removeLegacyBoard = (project: string, plan: PlannedWrite[]): void => {
 
 /** Selects which adapters to upgrade: manifest-registered ones, else auto-detected installable ones. */
 const selectedUpgradeAgents = (project: string, installed: WorkflowManifest | undefined): AgentId[] => {
-  const upgradeAdapters = resolvedAdaptersForUpgrade();
+  const upgradeAdapters = resolvedAdapters();
   const requested: AgentId[] = installed?.adapters?.length ? installed.adapters : upgradeAdapters.filter((adapter) => adapter.detect(project)).map((adapter) => adapter.id);
-  return requested.filter((id) => findAdapterForUpgrade(id));
+  return requested.filter((id) => findAdapter(id));
 };
 
-const agentUpgradeFiles = (selected: AgentId[]): FileSpec[] => selected.flatMap((id) => findAdapterForUpgrade(id)?.files() ?? []).map((file) => ({ ...file, ownershipClass: "managed" as const }));
+const agentUpgradeFiles = (selected: AgentId[]): FileSpec[] => selected.flatMap((id) => findAdapter(id)?.files() ?? []).map((file) => ({ ...file, ownershipClass: "managed" as const }));
 
 /** Plans an upgrade transaction from the installed manifest to the current package. */
 export const planUpgrade = (root: string, loop?: LoopConfig): PlannedWrite[] => {
@@ -172,7 +117,7 @@ export const planUpgrade = (root: string, loop?: LoopConfig): PlannedWrite[] => 
   if (!installed && !legacy) throw new Error("No owned AI-DLC installation found. Use init instead of upgrade.");
   const selected = selectedUpgradeAgents(project, installed);
   const managed = [...coreWorkflowFiles(), ...agentUpgradeFiles(selected)];
-  const plan = planManagedFiles(project, managed, installed, legacy);
+  const plan = planManagedWrites(project, managed, upgradePlanPolicy(installed, legacy));
   if (installed) planObsoleteRemovals(project, plan, installed, managed);
   preserveProjectFiles(project, plan, legacy);
   const canonicalState = plan.find((item) => item.path === ".agents/data/state/aidlc-state.json");

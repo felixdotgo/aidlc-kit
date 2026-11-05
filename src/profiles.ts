@@ -141,11 +141,9 @@ export const defaultConfig = (): ProjectConfig => ({
   loop: { mode: "off" }
 });
 
-/** Loads and validates `.agents/config.json`, falling back to the default config when absent. */
-export const loadProjectConfig = (root: string): ProjectConfig => {
-  const path = join(resolve(root), ".agents/config.json");
-  if (!existsSync(path)) return defaultConfig();
-  const item = object(JSON.parse(readFileSync(path, "utf8")), ".agents/config.json");
+/** Validates and normalizes a parsed `.agents/config.json` value. */
+export const validateProjectConfig = (value: unknown): ProjectConfig => {
+  const item = object(value, ".agents/config.json");
   const risk = object(item.risk ?? {}, "config.risk");
   const context = object(item.context ?? {}, "config.context");
   const levels: RiskLevel[] = ["low", "normal", "high", "regulated"];
@@ -177,6 +175,13 @@ export const loadProjectConfig = (root: string): ProjectConfig => {
     mcp: mcp(item.mcp),
     loop: validateLoopConfig(item.loop)
   };
+};
+
+/** Loads and validates `.agents/config.json`, falling back to the default config when absent. */
+export const loadProjectConfig = (root: string): ProjectConfig => {
+  const path = join(resolve(root), ".agents/config.json");
+  if (!existsSync(path)) return defaultConfig();
+  return validateProjectConfig(JSON.parse(readFileSync(path, "utf8")));
 };
 
 const readLocalProfile = (root: string, id: string): Profile | undefined => {

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { findAdapter, installableAdapters } from "../../src/adapters.js";
+import { findAdapter, resolvedAdapters } from "../../src/adapters.js";
 import { evalSuiteDigest, evaluationPassed, loadEvalSuite, recomputeReportGate, releaseReady, reportIntegrityErrors, resolveRunnerArguments, runEvaluation, scenarioTimeoutMs, type EvalReport, type EvalScenarioResult } from "../../dev/evaluator/eval.js";
 import { verifyReleaseEvidence } from "../../dev/evaluator/release.js";
 import { validateState } from "../../src/state.js";
@@ -103,7 +103,7 @@ test("runner script paths resolve from the project root without escaping it", ()
 });
 
 test("evaluation workspace installs every adapter registered by the installer", () => {
-  for (const adapter of installableAdapters()) {
+  for (const adapter of resolvedAdapters()) {
     const root = mkdtempSync(join(tmpdir(), `aidlc-${adapter.id}-native-eval-`));
     try {
       const marker = adapter.files().find((file) => file.path.endsWith(".md"))?.path;

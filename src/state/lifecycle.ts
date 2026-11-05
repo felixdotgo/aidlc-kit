@@ -1,8 +1,8 @@
 import type { HandoffKind, TaskState, WorkflowState } from "../model.js";
-import { handoffKinds } from "./shared.js";
+import { handoffKinds, terminal } from "./domain.js";
+import { audited } from "./guards.js";
 import { hasApproval } from "./transitions.js";
 import { validateState } from "./validate.js";
-import { audited, terminal } from "./shared.js";
 
 export const handoffTask = (state: WorkflowState, id: string, kind: HandoffKind, reason: string, source: string, recordedAt = new Date().toISOString()): TaskState => {
   const task = state.tasks[id];

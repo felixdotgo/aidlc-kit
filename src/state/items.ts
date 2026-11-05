@@ -1,5 +1,6 @@
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute } from "node:path";
 import type { Gate, Phase, TaskState } from "../model.js";
+import { commandKit, type CommandKit, type NextActionActions } from "./commands.js";
 import { hasReview, hasVerification, isLegacyG2Wait, repairBounds } from "./transitions.js";
 
 export interface NextAction {
@@ -11,12 +12,24 @@ export interface NextAction {
   successorTaskId?: string;
   itemId?: string;
   remainingItems?: number;
-  actions?: Array<{ id: "reopen_g1" | "create_successor" | "supersede" | "close" | "record_handoff" | "resume"; command: string }>;
+  actions?: NextActionActions;
   reason: string;
 }
 
-const rootSuffix = (root: string | undefined): string => root === undefined ? "" : ` --root ${JSON.stringify(resolve(root))}`;
-const script = (root: string | undefined, name: string): string => root === undefined ? `node .agents/aidlc/scripts/${name}` : `node ${JSON.stringify(join(resolve(root), ".agents/aidlc/scripts", name))}`;
+/** Pure state-machine decision for a task; every field of `NextAction` except the synthesized command strings. */
+type Decision =
+  | { kind: "complete"; reason: string }
+  | { kind: "terminal"; outcome: "closed" | "superseded"; successorTaskId: string | undefined; reason: string }
+  | { kind: "handoff"; reason: string }
+  | { kind: "paused"; reason: string }
+  | { kind: "repair_exhausted"; handoffKind: "review_exhausted" | "repair_exhausted"; reason: string }
+  | { kind: "continue_item"; itemId: string; remainingItems: number; reason: string }
+  | { kind: "continue_verification"; reason: string }
+  | { kind: "no_ready_item"; reason: string }
+  | { kind: "recover_g1_wait"; reason: string }
+  | { kind: "recover_gateless_wrap"; reason: string }
+  | { kind: "await_user"; reason: string }
+  | { kind: "continue_phase"; reason: string };
 
 const isPending = (item: TaskState["tasks"][number]): boolean => item.status === "in_progress" || item.status === "todo";
 const pendingItems = (task: TaskState): TaskState["tasks"] => task.tasks.filter(isPending);
@@ -40,7 +53,19 @@ export const readyTaskItems = (task: TaskState): { ready: string[]; blocked: Arr
   };
   for (const item of task.tasks) {
     if (item.dependsOn !== undefined && (!Array.isArray(item.dependsOn) || new Set(item.dependsOn).size !== item.dependsOn.length || item.dependsOn.some((dep) => typeof dep !== "string" || !dep))) throw new Error(`Invalid execution dependencies: ${task.id}/${item.id}`);
-    if (item.ownedPaths !== undefined && (!Array.isArray(item.ownedPaths) || new Set(item.ownedPaths).size !== item.ownedPaths.length || item.ownedPaths.some((path) => typeof path !== "string" || !path || isAbsolute(path) || path === ".." || path.startsWith("../") || path.includes("\\") || path.split("/").includes("..")))) throw new Error(`Invalid owned paths: ${task.id}/${item.id}`);
+    if (item.ownedPaths !== undefined && (
+      !Array.isArray(item.ownedPaths) ||
+      new Set(item.ownedPaths).size !== item.ownedPaths.length ||
+      item.ownedPaths.some((path) =>
+        typeof path !== "string" ||
+        !path ||
+        isAbsolute(path) ||
+        path === ".." ||
+        path.startsWith("../") ||
+        path.includes("\\") ||
+        path.split("/").includes("..")
+      )
+    )) throw new Error(`Invalid owned paths: ${task.id}/${item.id}`);
     visit(item.id);
   }
   const ready: string[] = [];
@@ -62,85 +87,78 @@ const dispatchableItem = (open: TaskState["tasks"], task: TaskState): TaskState[
 
 const noReadyItemReason = (task: TaskState): string => `No dependency-ready build item: ${readyTaskItems(task).blocked.map((entry) => `${entry.id} waits for ${entry.waitingOn.join(",")}`).join("; ")}`;
 
-const handoffActions = (task: TaskState, suffix: string, stateCommand: string): NextAction["actions"] => [
-  ...(task.phase === "build" ? [{ id: "reopen_g1" as const, command: `${stateCommand} task reopen ${task.id} --to plan --reason <reason> --source <explicit-user-request>${suffix}` }] : []),
-  { id: "create_successor", command: `${stateCommand} task create <new-task-id> --title <title>${suffix}` },
-  { id: "supersede", command: `${stateCommand} task supersede ${task.id} --successor <new-task-id> --reason <reason> --source <explicit-user-request>${suffix}` },
-  { id: "close", command: `${stateCommand} task close ${task.id} --reason <reason> --source <explicit-user-request>${suffix}` }
-];
-
-const pausedActions = (task: TaskState, suffix: string, stateCommand: string): NextAction["actions"] => [
-  { id: "resume", command: `${stateCommand} task status ${task.id} --status active${suffix}` },
-  { id: "record_handoff", command: `${stateCommand} task handoff ${task.id} --kind <kind> --reason <reason> --source <source>${suffix}` }
-];
-
-const repairExhausted = (task: TaskState, suffix: string, stateCommand: string): NextAction | undefined => {
+const repairExhausted = (task: TaskState): Decision | undefined => {
   if (task.phase !== "build" || isLegacyG2Wait(task)) return undefined;
   const bounds = repairBounds(task);
   if (!bounds.verifyExhausted && !bounds.reviewExhausted) return undefined;
-  const kind = bounds.reviewExhausted ? "review_exhausted" : "repair_exhausted";
+  const handoffKind = bounds.reviewExhausted ? "review_exhausted" : "repair_exhausted";
   const detail = bounds.verifyExhausted ? `3+ failed verify cycles in: ${bounds.exhaustedAreas.join(", ")}` : `${bounds.reviewFailures} failed review passes`;
-  return {
-    classification: "blocked",
-    phase: task.phase,
-    gate: task.gate,
-    reason: `Repair bound exhausted (${detail}); record a durable handoff`,
-    actions: [{ id: "record_handoff", command: `${stateCommand} task handoff ${task.id} --kind ${kind} --reason <summary-of-exhausted-repairs> --source <agent>${suffix}` }]
-  };
+  return { kind: "repair_exhausted", handoffKind, reason: `Repair bound exhausted (${detail}); record a durable handoff` };
 };
 
-const continueItem = (item: TaskState["tasks"][number], openCount: number, task: TaskState, suffix: string, contextCommand: string, premature: boolean): NextAction => ({
-  classification: "run_phase",
-  phase: task.phase,
-  gate: task.gate,
+const continueItem = (item: TaskState["tasks"][number], openCount: number, premature: boolean): Decision => ({
+  kind: "continue_item",
   itemId: item.id,
   remainingItems: openCount,
-  command: `${contextCommand} ${task.id} --phase build --item ${item.id}${suffix}`,
   reason: premature ? `Invalid premature G2 wait; continue build item ${item.id}` : `Continue build item ${item.id}; ${openCount} actionable item(s) remain before verification, review, and G2`
 });
 
-const continueVerification = (task: TaskState, suffix: string, contextCommand: string, premature: boolean): NextAction => ({
-  classification: "run_phase",
-  phase: task.phase,
-  gate: task.gate,
-  remainingItems: 0,
-  command: `${contextCommand} ${task.id} --phase build${suffix}`,
+const continueVerification = (premature: boolean): Decision => ({
+  kind: "continue_verification",
   reason: premature ? "Invalid premature G2 wait; continue verification and adversarial review before presenting G2" : "All build items are terminal; continue verification, adversarial review, and G2 preparation"
 });
 
-const prematureG2Wait = (task: TaskState, suffix: string, contextCommand: string): NextAction | undefined => {
+const prematureG2Wait = (task: TaskState): Decision | undefined => {
   if (task.status !== "blocked_on_user" || task.gate !== "G2_codereview") return undefined;
   if (!(task.tasks.some((item) => !["done", "deferred"].includes(item.status)) || !hasVerification(task) || !hasReview(task))) return undefined;
   const open = pendingItems(task);
   const item = dispatchableItem(open, task);
-  if (item) return continueItem(item, open.length, task, suffix, contextCommand, true);
-  if (open.length) return { classification: "blocked", phase: task.phase, gate: task.gate, reason: noReadyItemReason(task) };
-  return continueVerification(task, suffix, contextCommand, true);
+  if (item) return continueItem(item, open.length, true);
+  if (open.length) return { kind: "no_ready_item", reason: noReadyItemReason(task) };
+  return continueVerification(true);
 };
 
-export const nextAction = (task: TaskState, root?: string): NextAction => {
-  const suffix = rootSuffix(root);
-  const stateCommand = script(root, "state.mjs");
-  const contextCommand = script(root, "context.mjs");
-  if (task.phase === "done") return { classification: "complete", phase: task.phase, gate: task.gate, reason: "Task is complete" };
-  if (task.status === "closed" || task.status === "superseded") return { classification: "terminal", phase: task.phase, gate: task.gate, outcome: task.status, successorTaskId: task.successorTaskId, reason: task.closure?.reason ?? "Task ended without successful completion" };
-  if (task.handoff) return { classification: "blocked", phase: task.phase, gate: task.gate, reason: task.handoff.reason, actions: handoffActions(task, suffix, stateCommand) };
-  if (task.status === "paused") return { classification: "blocked", phase: task.phase, gate: task.gate, reason: "Task is paused", actions: pausedActions(task, suffix, stateCommand) };
-  const repair = repairExhausted(task, suffix, stateCommand);
+/** Pure classification: maps a task onto its next-action decision without touching any command string. */
+const classify = (task: TaskState): Decision => {
+  if (task.phase === "done") return { kind: "complete", reason: "Task is complete" };
+  if (task.status === "closed" || task.status === "superseded") return { kind: "terminal", outcome: task.status, successorTaskId: task.successorTaskId, reason: task.closure?.reason ?? "Task ended without successful completion" };
+  if (task.handoff) return { kind: "handoff", reason: task.handoff.reason };
+  if (task.status === "paused") return { kind: "paused", reason: "Task is paused" };
+  const repair = repairExhausted(task);
   if (repair) return repair;
-  const prematureG2 = prematureG2Wait(task, suffix, contextCommand);
+  const prematureG2 = prematureG2Wait(task);
   if (prematureG2) return prematureG2;
-  if (task.status === "blocked_on_user" && task.gate === "G1_review" && task.decisions.some((decision) => decision.status === "unresolved")) {
-    return { classification: "run_phase", phase: task.phase, gate: task.gate, command: `${contextCommand} ${task.id} --phase plan${suffix}`, reason: "Invalid premature G1 wait; resolve every decision before presenting G1" };
-  }
-  if (task.status === "blocked_on_user" && task.gate === "none") return { classification: "run_phase", phase: task.phase, gate: task.gate, command: `${stateCommand} task status ${task.id} --status active${suffix}`, reason: "Recover invalid wait at a gateless wrap phase before continuing wrap" };
-  if (task.status === "blocked_on_user") return { classification: "await_user", phase: task.phase, gate: task.gate, command: `${stateCommand} gate approve ${task.id} --gate ${task.gate} --source <explicit-user-approval>${suffix}`, reason: `Explicit human approval is required at ${task.gate}` };
+  if (task.status === "blocked_on_user" && task.gate === "G1_review" && task.decisions.some((decision) => decision.status === "unresolved")) return { kind: "recover_g1_wait", reason: "Invalid premature G1 wait; resolve every decision before presenting G1" };
+  if (task.status === "blocked_on_user" && task.gate === "none") return { kind: "recover_gateless_wrap", reason: "Recover invalid wait at a gateless wrap phase before continuing wrap" };
+  if (task.status === "blocked_on_user") return { kind: "await_user", reason: `Explicit human approval is required at ${task.gate}` };
   if (task.phase === "build") {
     const open = pendingItems(task);
     const item = dispatchableItem(open, task);
-    if (item) return continueItem(item, open.length, task, suffix, contextCommand, false);
-    if (open.length) return { classification: "blocked", phase: task.phase, gate: task.gate, reason: noReadyItemReason(task) };
-    return continueVerification(task, suffix, contextCommand, false);
+    if (item) return continueItem(item, open.length, false);
+    if (open.length) return { kind: "no_ready_item", reason: noReadyItemReason(task) };
+    return continueVerification(false);
   }
-  return { classification: "run_phase", phase: task.phase, gate: task.gate, command: `${contextCommand} ${task.id} --phase ${task.phase}${suffix}`, reason: `Continue ${task.phase} until the next human gate, real blocker, or completion` };
+  return { kind: "continue_phase", reason: `Continue ${task.phase} until the next human gate, real blocker, or completion` };
 };
+
+/** Attaches the command strings a decision implies; the single call site of the command kit. */
+const realize = (task: TaskState, decision: Decision, commands: CommandKit): NextAction => {
+  const base = { phase: task.phase, gate: task.gate };
+  switch (decision.kind) {
+    case "complete": return { classification: "complete", ...base, reason: decision.reason };
+    case "terminal": return { classification: "terminal", ...base, outcome: decision.outcome, successorTaskId: decision.successorTaskId, reason: decision.reason };
+    case "handoff": return { classification: "blocked", ...base, reason: decision.reason, actions: commands.handoffActions(task) };
+    case "paused": return { classification: "blocked", ...base, reason: decision.reason, actions: commands.pausedActions(task.id) };
+    case "repair_exhausted": return { classification: "blocked", ...base, reason: decision.reason, actions: commands.repairHandoffAction(task.id, decision.handoffKind) };
+    case "continue_item": return { classification: "run_phase", ...base, itemId: decision.itemId, remainingItems: decision.remainingItems, command: commands.continueItem(task.id, decision.itemId), reason: decision.reason };
+    case "continue_verification": return { classification: "run_phase", ...base, remainingItems: 0, command: commands.continueVerification(task.id), reason: decision.reason };
+    case "no_ready_item": return { classification: "blocked", ...base, reason: decision.reason };
+    case "recover_g1_wait": return { classification: "run_phase", ...base, command: commands.recoverG1Wait(task.id), reason: decision.reason };
+    case "recover_gateless_wrap": return { classification: "run_phase", ...base, command: commands.recoverGatelessWrap(task.id), reason: decision.reason };
+    case "await_user": return { classification: "await_user", ...base, command: commands.approveGate(task.id, task.gate), reason: decision.reason };
+    case "continue_phase": return { classification: "run_phase", ...base, command: commands.continuePhase(task.id, task.phase), reason: decision.reason };
+  }
+};
+
+/** Classifies the next lifecycle action for a task and attaches root-qualified command strings. */
+export const nextAction = (task: TaskState, root?: string): NextAction => realize(task, classify(task), commandKit(root));

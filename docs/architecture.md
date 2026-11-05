@@ -26,14 +26,15 @@ The distinction matters:
 
 | Boundary | Modules | Responsibility |
 | --- | --- | --- |
-| CLI and installation | `src/cli.ts`, `src/installer.ts`, `src/workflow.ts`, `src/adapters.ts` | Parse commands, select adapters, plan deterministic writes, install managed assets, and expose local status/doctor checks. |
-| Lifecycle domain | `src/model.ts`, `src/state.ts`, `src/gate.ts`, `src/context.ts` | Validate canonical state, calculate transitions and gate readiness, and build bounded phase packets. |
-| Profiles and project integration | `src/profiles.ts`, `src/tracker.ts` | Resolve project configuration/profiles and optional tracker integration. |
-| Migration | `src/upgrade.ts`, `src/project-migration.ts`, `src/legacy.ts` | Plan and apply safe legacy-data and version-layout migration with audit backups. |
-| Shared file semantics | `src/project-path.ts`, `src/managed-content.ts` | Keep all paths inside the project, reject unsafe symlinks, and preserve managed-content ownership. |
+| CLI and installation | `src/cli.ts` + `src/cli/` (`argv`, `options`, `prompt`, `commands` registry), `src/installer.ts`, `src/workflow.ts`, `src/adapters.ts`, `src/mcp-setup.ts` | Parse commands, select adapters, plan deterministic writes, install managed assets (including the coordination-service template), and expose local status/doctor checks. |
+| Shared planning core | `src/managed-planning.ts` | Single manifest reading, inventory-key handling, and the managed-file planning ladder (create/skip/update/conflict) with explicit init vs upgrade policies; consumed by installation and migration. |
+| Lifecycle domain | `src/model/` (barrel `src/model.ts`), `src/state/` (barrel `src/state.ts`: `io`, `paths`, `domain`, `guards`, `archive-record`, `items`, `commands`, `transitions`, `validate`, `store`, `memory`, `lessons`, `lifecycle`, `render`, `migrate`, `lock`), `src/gate.ts`, `src/context.ts` | Validate canonical state, calculate transitions and gate readiness, classify next actions, and build bounded phase packets. |
+| Profiles and project integration | `src/profiles.ts` | Resolve project configuration/profiles, validate config (incl. the config-only `tracker` section — no runtime tracker consumer ships today), and expand effective rules. |
+| Migration | `src/upgrade.ts`, `src/project-migration.ts`, `src/legacy.ts`, `src/upgrade-board.ts` | Plan and apply safe legacy-data and version-layout migration (incl. legacy `BOARD.md` parsing) with audit backups. |
+| Shared file semantics | `src/project-path.ts`, `src/managed-content.ts` | Keep all paths inside the project, reject unsafe symlinks, and own the managed-block marker format as its single definition. |
 | Development evaluator | `dev/evaluator/` | Run repository-only evaluation; never expose evaluator assets through the published package CLI. |
 
-Dependencies flow inward: CLI, installation, and migration depend on lifecycle and shared helpers; lifecycle does not depend on installation; evaluator may provision an installation but is not part of published runtime behaviour.
+Dependencies flow inward: CLI, installation, and migration depend on the shared planning core, lifecycle, and shared helpers; the planning core depends only on lifecycle/config/shared modules (`model`, `workflow`, `managed-content`, `profiles`) — never on the CLI, installer, or upgrade. Migration does not import installation (`upgrade.ts` consumes `managed-planning.ts` directly); the remaining one-directional `installer.ts` → `project-migration.ts` edge supports init-time legacy-layout planning. Lifecycle does not depend on installation; evaluator may provision an installation but is not part of published runtime behaviour. `src/ledger.ts` and `src/tracker.ts` were removed as runtime-dead code; the `tracker` config section remains schema-only (`TrackerConfig`).
 
 ## Installed workflow runtime
 

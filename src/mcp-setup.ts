@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { defaultConfig, validateProjectConfig } from "./profiles.js";
 
 export interface McpSetupOptions {
   root: string;
@@ -40,8 +41,9 @@ export const applyMcpSetup = (options: McpSetupOptions): McpSetupPlan => {
   ].join("\n");
   writeFileSync(join(plan.target, ".env.example"), `${env}\n`, "utf8");
   const configPath = join(resolve(options.root), ".agents/config.json");
-  const current = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown> : { schemaVersion: 3, extends: ["topology/single"], specs: { roots: [] }, commands: {}, rules: { include: [] }, risk: { default: "normal" }, context: { maxChars: 16000 }, agentState: {} };
+  const current: Record<string, unknown> = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown> : { ...defaultConfig() };
   current.mcp = plan.config;
+  validateProjectConfig(current);
   writeFileSync(configPath, `${JSON.stringify(current, null, 2)}\n`, "utf8");
   return plan;
 };

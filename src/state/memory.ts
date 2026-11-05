@@ -1,12 +1,19 @@
-import { existsSync } from "node:fs";
 import type { AgenticMemoryEntry, AgenticMemoryRegistry, Phase } from "../model.js";
+import { idPattern, iso, text } from "./guards.js";
+import { loadJsonOr, saveJson } from "./io.js";
+import { memoryRegistryPathRelative } from "./paths.js";
 import { loadState, loadTask } from "./store.js";
-import { assertNoSymlinkPath, idPattern, iso, memoryRegistryPath, parseJsonFile, text, writeAtomic } from "./shared.js";
 
 const memoryPhases = ["clarify", "plan", "build", "wrap", "*"] as const;
 
 const validateMemoryEntry = (entry: AgenticMemoryEntry): void => {
-  if (!entry || !idPattern.test(entry.id) || !text(entry.summary) || !text(entry.guidance) || !Array.isArray(entry.areas) || !entry.areas.length || entry.areas.some((area) => !text(area)) || !Array.isArray(entry.phases) || !entry.phases.length || entry.phases.some((phase) => !memoryPhases.includes(phase)) || !Number.isInteger(entry.priority) || entry.priority < 0 || entry.priority > 100 || !idPattern.test(entry.sourceTaskId) || !idPattern.test(entry.sourceLessonId) || !text(entry.approvedBy) || !iso(entry.approvedAt)) throw new Error(`Invalid agentic memory entry: ${entry?.id ?? "unknown"}`);
+  const id = entry?.id ?? "unknown";
+  if (!entry) throw new Error(`Invalid agentic memory entry: ${id}`);
+  if (!idPattern.test(entry.id) || !text(entry.summary) || !text(entry.guidance)) throw new Error(`Invalid agentic memory entry: ${id}`);
+  if (!Array.isArray(entry.areas) || !entry.areas.length || entry.areas.some((area) => !text(area))) throw new Error(`Invalid agentic memory entry: ${id}`);
+  if (!Array.isArray(entry.phases) || !entry.phases.length || entry.phases.some((phase) => !memoryPhases.includes(phase))) throw new Error(`Invalid agentic memory entry: ${id}`);
+  if (!Number.isInteger(entry.priority) || entry.priority < 0 || entry.priority > 100) throw new Error(`Invalid agentic memory entry: ${id}`);
+  if (!idPattern.test(entry.sourceTaskId) || !idPattern.test(entry.sourceLessonId) || !text(entry.approvedBy) || !iso(entry.approvedAt)) throw new Error(`Invalid agentic memory entry: ${id}`);
 };
 
 export const emptyMemoryRegistry = (): AgenticMemoryRegistry => ({ schemaVersion: 1, entries: [], retired: [] });
@@ -30,22 +37,20 @@ export const validateMemoryRegistry = (value: unknown): AgenticMemoryRegistry =>
   return registry as AgenticMemoryRegistry;
 };
 
-const registryPathRelative = ".agents/data/memory/agentic-memory.json";
-
-export const loadMemoryRegistry = (root: string): AgenticMemoryRegistry => {
-  assertNoSymlinkPath(root, registryPathRelative);
-  return existsSync(memoryRegistryPath(root)) ? validateMemoryRegistry(parseJsonFile(memoryRegistryPath(root), "Agentic memory registry")) : emptyMemoryRegistry();
-};
+export const loadMemoryRegistry = (root: string): AgenticMemoryRegistry =>
+  loadJsonOr(root, memoryRegistryPathRelative, validateMemoryRegistry, emptyMemoryRegistry, "Agentic memory registry");
 
 export const saveMemoryRegistry = (root: string, registry: AgenticMemoryRegistry): void => {
   const normalized = validateMemoryRegistry(registry);
-  assertNoSymlinkPath(root, registryPathRelative);
-  writeAtomic(memoryRegistryPath(root), `${JSON.stringify(normalized, null, 2)}\n`);
+  saveJson(root, memoryRegistryPathRelative, normalized);
 };
 
 export const selectAgenticMemory = (registry: AgenticMemoryRegistry, areas: string[], phase: Exclude<Phase, "done">, maxChars: number): AgenticMemoryEntry[] => {
   const areaSet = new Set(areas.map((area) => area.toLocaleLowerCase()));
-  const matches = registry.entries.filter((entry) => entry.phases.includes("*") || entry.phases.includes(phase)).filter((entry) => entry.areas.includes("*") || entry.areas.some((area) => areaSet.has(area.toLocaleLowerCase()))).sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id));
+  const matches = registry.entries
+    .filter((entry) => entry.phases.includes("*") || entry.phases.includes(phase))
+    .filter((entry) => entry.areas.includes("*") || entry.areas.some((area) => areaSet.has(area.toLocaleLowerCase())))
+    .sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id));
   const selected: AgenticMemoryEntry[] = [];
   let used = 0;
   for (const entry of matches) {

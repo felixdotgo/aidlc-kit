@@ -1,11 +1,17 @@
 import type { ArchivedTaskSummary, LessonRecord, TaskState, WorkflowState } from "../model.js";
+import { gates, handoffKinds, phaseGate, phases } from "./domain.js";
+import { assertTaskArtifactPath, idPattern, iso, text } from "./guards.js";
 import { readyTaskItems } from "./items.js";
-import { assertTaskArtifactPath, gates, handoffKinds, idPattern, iso, phases, phaseGate, text } from "./shared.js";
+import { archiveRecordPath } from "./paths.js";
 
 const taskStatuses = ["active", "blocked_on_user", "paused", "done", "closed", "superseded"] as const;
 
 export const validateLesson = (taskId: string, lesson: LessonRecord): void => {
-  if (!lesson || !idPattern.test(lesson.id) || lesson.taskId !== taskId || !Array.isArray(lesson.areas) || !lesson.areas.length || lesson.areas.some((area) => !text(area)) || !text(lesson.summary) || !text(lesson.prevention) || !text(lesson.example) || !text(lesson.promotion) || !text(lesson.source) || !iso(lesson.recordedAt)) throw new Error(`Invalid lesson: ${taskId}`);
+  if (!lesson) throw new Error(`Invalid lesson: ${taskId}`);
+  if (!idPattern.test(lesson.id) || lesson.taskId !== taskId) throw new Error(`Invalid lesson: ${taskId}`);
+  if (!Array.isArray(lesson.areas) || !lesson.areas.length || lesson.areas.some((area) => !text(area))) throw new Error(`Invalid lesson: ${taskId}`);
+  if (!text(lesson.summary) || !text(lesson.prevention) || !text(lesson.example)) throw new Error(`Invalid lesson: ${taskId}`);
+  if (!text(lesson.promotion) || !text(lesson.source) || !iso(lesson.recordedAt)) throw new Error(`Invalid lesson: ${taskId}`);
 };
 
 export const validateTask = (id: string, task: TaskState): void => {
@@ -18,16 +24,38 @@ export const validateTask = (id: string, task: TaskState): void => {
   if (task.featureId !== undefined && !idPattern.test(task.featureId)) throw new Error(`Invalid feature id: ${id}`);
   if (task.tasks.some((item) => !item.id || !item.label || !["todo", "in_progress", "done", "deferred"].includes(item.status))) throw new Error(`Invalid execution tasks: ${id}`);
   readyTaskItems(task);
-  if (task.evidence.some((item) => !["approval", "spec", "test", "lint", "review", "diagnostic"].includes(item.kind) || !["pass", "fail", "skip"].includes(item.result) || !item.source || !iso(item.recordedAt) || (item.area !== undefined && !text(item.area)) || (item.gate !== undefined && !gates.includes(item.gate)) || (item.kind === "approval" && (!item.gate || item.gate === "none")))) throw new Error(`Invalid evidence: ${id}`);
+  if (task.evidence.some((item) =>
+    !["approval", "spec", "test", "lint", "review", "diagnostic"].includes(item.kind) ||
+    !["pass", "fail", "skip"].includes(item.result) ||
+    !item.source ||
+    !iso(item.recordedAt) ||
+    (item.area !== undefined && !text(item.area)) ||
+    (item.gate !== undefined && !gates.includes(item.gate)) ||
+    (item.kind === "approval" && (!item.gate || item.gate === "none"))
+  )) throw new Error(`Invalid evidence: ${id}`);
   const lessonIds = new Set<string>();
   for (const lesson of task.lessons ?? []) {
     validateLesson(id, lesson);
     if (lessonIds.has(lesson.id)) throw new Error(`Duplicate lesson id: ${id}/${lesson.id}`);
     lessonIds.add(lesson.id);
   }
-  if (task.lessonDisposition && (!["captured", "none"].includes(task.lessonDisposition.status) || !text(task.lessonDisposition.source) || !iso(task.lessonDisposition.recordedAt) || (task.lessonDisposition.status === "captured" && !(task.lessons?.length)) || (task.lessonDisposition.status === "none" && (Boolean(task.lessons?.length) || !text(task.lessonDisposition.reason))))) throw new Error(`Invalid lesson disposition: ${id}`);
+  if (task.lessonDisposition && (
+    !["captured", "none"].includes(task.lessonDisposition.status) ||
+    !text(task.lessonDisposition.source) ||
+    !iso(task.lessonDisposition.recordedAt) ||
+    (task.lessonDisposition.status === "captured" && !(task.lessons?.length)) ||
+    (task.lessonDisposition.status === "none" && (Boolean(task.lessons?.length) || !text(task.lessonDisposition.reason)))
+  )) throw new Error(`Invalid lesson disposition: ${id}`);
   if (task.handoff && (!handoffKinds.includes(task.handoff.kind) || !text(task.handoff.reason) || !text(task.handoff.source) || !iso(task.handoff.recordedAt) || task.status !== "paused")) throw new Error(`Invalid task handoff: ${id}`);
-  if (task.legacyG2Wait !== undefined && (typeof task.legacyG2Wait !== "object" || Array.isArray(task.legacyG2Wait) || !iso(task.legacyG2Wait.migratedAt) || !text(task.legacyG2Wait.source) || task.phase !== "build" || task.gate !== "G2_codereview" || task.status !== "blocked_on_user")) throw new Error(`Invalid legacy G2 wait marker: ${id}`);
+  if (task.legacyG2Wait !== undefined && (
+    typeof task.legacyG2Wait !== "object" ||
+    Array.isArray(task.legacyG2Wait) ||
+    !iso(task.legacyG2Wait.migratedAt) ||
+    !text(task.legacyG2Wait.source) ||
+    task.phase !== "build" ||
+    task.gate !== "G2_codereview" ||
+    task.status !== "blocked_on_user"
+  )) throw new Error(`Invalid legacy G2 wait marker: ${id}`);
   if ((task.status === "closed" || task.status === "superseded") !== Boolean(task.closure)) throw new Error(`Invalid task closure: ${id}`);
   if (task.closure && (!text(task.closure.reason) || !text(task.closure.source) || !iso(task.closure.recordedAt))) throw new Error(`Invalid task closure: ${id}`);
   if ((task.status === "superseded") !== Boolean(task.successorTaskId) || (task.status === "closed" && task.successorTaskId)) throw new Error(`Invalid task successor: ${id}`);
@@ -36,7 +64,14 @@ export const validateTask = (id: string, task: TaskState): void => {
 };
 
 const validateArchiveSummary = (id: string, item: ArchivedTaskSummary): void => {
-  if (!idPattern.test(id) || !item || item.id !== id || !text(item.title) || !["feature", "bug", "refactor", "infra"].includes(item.type) || !phases.includes(item.phase) || !gates.includes(item.gate) || item.gate !== phaseGate(item.phase) || !["done", "closed", "superseded"].includes(item.status) || !["low", "normal", "high", "regulated"].includes(item.risk) || !Array.isArray(item.areas) || !item.areas.length || item.areas.some((area) => !text(area)) || item.record !== `.agents/data/state/archive/${id}.json` || !/^[a-f0-9]{64}$/.test(item.digest) || !Number.isInteger(item.lessonCount) || item.lessonCount < 0 || !iso(item.createdAt) || !iso(item.updatedAt)) throw new Error(`Invalid archived task summary: ${id}`);
+  if (!idPattern.test(id)) throw new Error(`Invalid archived task summary: ${id}`);
+  if (!item || item.id !== id || !text(item.title)) throw new Error(`Invalid archived task summary: ${id}`);
+  if (!["feature", "bug", "refactor", "infra"].includes(item.type)) throw new Error(`Invalid archived task summary: ${id}`);
+  if (!phases.includes(item.phase) || !gates.includes(item.gate) || item.gate !== phaseGate(item.phase)) throw new Error(`Invalid archived task summary: ${id}`);
+  if (!["done", "closed", "superseded"].includes(item.status) || !["low", "normal", "high", "regulated"].includes(item.risk)) throw new Error(`Invalid archived task summary: ${id}`);
+  if (!Array.isArray(item.areas) || !item.areas.length || item.areas.some((area) => !text(area))) throw new Error(`Invalid archived task summary: ${id}`);
+  if (item.record !== archiveRecordPath(id) || !/^[a-f0-9]{64}$/.test(item.digest)) throw new Error(`Invalid archived task summary: ${id}`);
+  if (!Number.isInteger(item.lessonCount) || item.lessonCount < 0 || !iso(item.createdAt) || !iso(item.updatedAt)) throw new Error(`Invalid archived task summary: ${id}`);
   if ((item.status === "superseded") !== Boolean(item.successorTaskId) || (item.status === "closed" && item.successorTaskId) || (item.predecessorTaskId !== undefined && !text(item.predecessorTaskId))) throw new Error(`Invalid archived task links: ${id}`);
 };
 

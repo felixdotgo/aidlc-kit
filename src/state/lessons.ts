@@ -1,8 +1,11 @@
 import { existsSync } from "node:fs";
 import type { LessonIndex, LessonIndexEntry, LessonRecord, TaskState, WorkflowState } from "../model.js";
-import { validateLesson } from "./validate.js";
+import { digest } from "./domain.js";
+import { audited, tokens } from "./guards.js";
+import { assertNoSymlinkPath, parseJsonFile, saveJson } from "./io.js";
+import { lessonIndexPath, lessonIndexPathRelative } from "./paths.js";
 import { loadState, loadTask } from "./store.js";
-import { assertNoSymlinkPath, audited, digest, lessonIndexPath, parseJsonFile, text, tokens, writeAtomic } from "./shared.js";
+import { validateLesson } from "./validate.js";
 
 const lessonEntry = (lesson: LessonRecord): LessonIndexEntry => ({ id: lesson.id, taskId: lesson.taskId, areas: lesson.areas, summary: lesson.summary, prevention: lesson.prevention, source: lesson.source, recordedAt: lesson.recordedAt });
 
@@ -44,14 +47,13 @@ const allLessons = (root: string, state: WorkflowState): LessonRecord[] => [
 
 export const rebuildLessonIndex = (root: string, state = loadState(root)): LessonIndex => {
   const index = createLessonIndex(allLessons(root, state), lessonStateDigest(state));
-  assertNoSymlinkPath(root, ".agents/data/lessons/index.json");
-  writeAtomic(lessonIndexPath(root), `${JSON.stringify(index, null, 2)}\n`);
+  saveJson(root, lessonIndexPathRelative, index);
   return index;
 };
 
 export const searchLessons = (root: string, state: WorkflowState, query: string, areas: string[] = [], limit = 5): LessonIndexEntry[] => {
   const path = lessonIndexPath(root);
-  assertNoSymlinkPath(root, ".agents/data/lessons/index.json");
+  assertNoSymlinkPath(root, lessonIndexPathRelative);
   if (!existsSync(path)) {
     const hasLessons = Object.values(state.tasks).some((task) => Boolean(task.lessons?.length)) || Object.values(state.archive ?? {}).some((task) => task.lessonCount > 0);
     if (!hasLessons) return [];
@@ -61,10 +63,15 @@ export const searchLessons = (root: string, state: WorkflowState, query: string,
   if (index.schemaVersion !== 1 || !Array.isArray(index.lessons) || index.sourceDigest !== lessonStateDigest(state)) throw new Error("Lesson index is stale; run state.mjs lesson rebuild");
   const queryTokens = tokens(query);
   const areaSet = new Set(areas.map((area) => area.toLocaleLowerCase()));
-  return index.lessons.map((item) => {
-    const haystack = new Set(tokens(`${item.summary} ${item.prevention} ${item.taskId} ${item.areas.join(" ")}`));
-    const areaScore = item.areas.some((area) => areaSet.has(area.toLocaleLowerCase())) ? 100 : 0;
-    const tokenScore = queryTokens.filter((token) => haystack.has(token)).length;
-    return { item, score: areaScore + tokenScore };
-  }).filter(({ score }) => score > 0 || (!queryTokens.length && !areaSet.size)).sort((a, b) => b.score - a.score || b.item.recordedAt.localeCompare(a.item.recordedAt)).slice(0, Math.max(1, Math.min(limit, 20))).map(({ item }) => item);
+  return index.lessons
+    .map((item) => {
+      const haystack = new Set(tokens(`${item.summary} ${item.prevention} ${item.taskId} ${item.areas.join(" ")}`));
+      const areaScore = item.areas.some((area) => areaSet.has(area.toLocaleLowerCase())) ? 100 : 0;
+      const tokenScore = queryTokens.filter((token) => haystack.has(token)).length;
+      return { item, score: areaScore + tokenScore };
+    })
+    .filter(({ score }) => score > 0 || (!queryTokens.length && !areaSet.size))
+    .sort((a, b) => b.score - a.score || b.item.recordedAt.localeCompare(a.item.recordedAt))
+    .slice(0, Math.max(1, Math.min(limit, 20)))
+    .map(({ item }) => item);
 };

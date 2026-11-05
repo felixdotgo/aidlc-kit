@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { applyMcpSetup, planMcpSetup } from "../../src/mcp-setup.js";
+import { defaultConfig } from "../../src/profiles.js";
 
 const options = (root: string, dryRun: boolean) => ({ root, template: join(process.cwd(), "services/aidlc-coordination"), dryRun, deployment: "docker" as const, storage: "sqlite" as const, bind: "localhost" as const, workspace: "demo", pollMs: 30_000, tokenEnv: "AIDLC_MCP_TOKEN", providers: ["jira"], enable: false });
 
@@ -15,7 +16,7 @@ test("MCP setup previews safely and scaffolds Docker while keeping MCP disabled"
     const applied = applyMcpSetup(options(root, false));
     assert.equal(applied.target, join(root, ".agents/aidlc-coordination"));
     assert.equal(existsSync(join(applied.target, "compose.yaml")), true);
-    assert.match(readFileSync(join(root, ".agents/config.json"), "utf8"), /"enabled": false/);
+    assert.deepEqual(JSON.parse(readFileSync(join(root, ".agents/config.json"), "utf8")), { ...defaultConfig(), mcp: { enabled: false } });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -27,6 +28,18 @@ test("MCP setup preserves $schema and toggles mcp.enabled", () => {
     const applied = applyMcpSetup({ ...options(root, false), enable: true });
     const config = JSON.parse(readFileSync(join(root, ".agents/config.json"), "utf8")) as Record<string, unknown>;
     assert.equal(config.$schema, "./aidlc/schemas/config.schema.json");
-    assert.equal((config.mcp as { enabled: boolean }).enabled, true);
+    assert.equal(config.schemaVersion, 2);
+    assert.deepEqual(config.mcp, { enabled: true, endpoint: "http://127.0.0.1:8787/mcp", workspace: "demo", tokenEnv: "AIDLC_MCP_TOKEN", pollMs: 30_000, providers: ["jira"] });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("MCP setup fails fast on an invalid existing config and leaves it unchanged", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-mcp-invalid-"));
+  try {
+    mkdirSync(join(root, ".agents"), { recursive: true });
+    const invalid = JSON.stringify({ schemaVersion: 2, extends: ["topology/single"], specs: { roots: [] }, commands: {}, rules: { include: [] }, risk: { default: "normal" }, context: { maxChars: 1000 }, agentState: {} });
+    writeFileSync(join(root, ".agents/config.json"), invalid);
+    assert.throws(() => applyMcpSetup({ ...options(root, false), enable: true }), (error: unknown) => error instanceof Error && error.message === "context.maxChars must be an integer from 4000 to 128000");
+    assert.equal(readFileSync(join(root, ".agents/config.json"), "utf8"), invalid);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

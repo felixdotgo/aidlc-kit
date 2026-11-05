@@ -1,5 +1,5 @@
 import type { Diagnostic, Gate, Phase, TaskState, WorkflowState } from "../model.js";
-import { phases, phaseGate, terminal } from "./shared.js";
+import { phaseGate, phases, terminal } from "./domain.js";
 
 export const latestApproval = (task: TaskState, gate: Gate) => {
   for (let index = task.evidence.length - 1; index >= 0; index -= 1) {

@@ -1,16 +1,16 @@
-import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentId, FileSpec, WorkflowManifest } from "./model.js";
 import { defaultConfig } from "./profiles.js";
-import { createLessonIndex, emptyMemoryRegistry, emptyState, lessonStateDigest } from "./state.js";
+import { createLessonIndex, digest, emptyMemoryRegistry, emptyState, lessonStateDigest } from "./state.js";
 
 const owner = "aidlc-core";
 const assetRoot = fileURLToPath(new URL("../assets/.agents", import.meta.url));
 const packageJson = JSON.parse(readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")) as { version: string };
 
-export const contentHash = (content: string | Uint8Array): string => createHash("sha256").update(content).digest("hex");
+// node:crypto update() hashes Uint8Array bytes unchanged; the cast only satisfies digest's narrower parameter type.
+export const contentHash = (content: string | Uint8Array): string => digest(content as string);
 
 const collect = (directory: string, target: string): FileSpec[] => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
   const source = join(directory, entry.name);

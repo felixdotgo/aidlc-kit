@@ -9,7 +9,8 @@ import { managedBlock } from "../../src/managed-content.js";
 import { legacyV021AdapterContents } from "../../src/legacy.js";
 import type { InitOptions, PlannedWrite } from "../../src/model.js";
 import { defaultConfig, loadProjectConfig } from "../../src/profiles.js";
-import { applyUpgrade, migrateLegacyBoard, planUpgrade } from "../../src/upgrade.js";
+import { applyUpgrade, planUpgrade } from "../../src/upgrade.js";
+import { migrateLegacyBoard } from "../../src/upgrade-board.js";
 
 const makeRoot = () => mkdtempSync(join(tmpdir(), "aidlc-upgrade-"));
 const options = (root: string): InitOptions => ({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false });

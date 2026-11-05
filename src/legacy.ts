@@ -27,6 +27,7 @@ const instruction = (agent: string): string => [
   ""
 ].join("\n");
 
+/** Frozen v0.2.1 baseline payload — intentionally does NOT reuse managed-content markers: this string is a historical fact that must not track future marker-format changes. */
 const block = (owner: string, body: string): string => `<!-- aidlc-installer:${owner} -->\n${body}`;
 
 export const legacyV021AdapterContents: Readonly<Record<string, string>> = Object.freeze({

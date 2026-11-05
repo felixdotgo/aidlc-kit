@@ -5,6 +5,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { legacyManagedMarker, managedEndMarker, managedStartMarker } from "./managed-content.js";
 import type { Adapter, AgentId, FileSpec } from "./model.js";
 
 const hasManagedBlock = (root: string, path: string, owner: string): boolean => {
@@ -12,7 +13,7 @@ const hasManagedBlock = (root: string, path: string, owner: string): boolean => 
   if (!existsSync(target)) return false;
   try {
     const content = readFileSync(target, "utf8");
-    return content.includes(`<!-- aidlc-installer:${owner}:start -->`) || content.includes(`<!-- aidlc-installer:${owner} -->`);
+    return content.includes(managedStartMarker(owner)) || content.includes(legacyManagedMarker(owner));
   } catch { return false; } /* intentional: an unreadable prompt file is treated as not containing the block */
 };
 
@@ -20,7 +21,7 @@ const hasManagedBlock = (root: string, path: string, owner: string): boolean => 
 const adapterFile = (owner: string, path: string, body: string): FileSpec => ({
   path,
   owner,
-  content: `<!-- aidlc-installer:${owner}:start -->\n${body}<!-- aidlc-installer:${owner}:end -->\n`
+  content: `${managedStartMarker(owner)}\n${body}${managedEndMarker(owner)}\n`
 });
 
 /** Shared AI-DLC instruction text installed into each tool's primary prompt file. */
@@ -112,7 +113,4 @@ export const adapters: readonly Adapter[] = [
 ];
 
 export const resolvedAdapters = (): readonly Adapter[] => adapters;
-export const resolvedAdaptersForUpgrade = (): readonly Adapter[] => adapters;
-export const installableAdapters = (): readonly Adapter[] => adapters;
 export const findAdapter = (id: AgentId): Adapter | undefined => adapters.find((adapter) => adapter.id === id);
-export const findAdapterForUpgrade = (id: AgentId): Adapter | undefined => adapters.find((adapter) => adapter.id === id);

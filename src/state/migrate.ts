@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import type { LessonIndex, WorkflowState } from "../model.js";
+import { buildArchiveRecord } from "./archive-record.js";
+import { legacyG2WaitSource, terminal } from "./domain.js";
+import { safeResolvedPath, writeAtomic } from "./io.js";
 import { createLessonIndex, lessonStateDigest, rebuildLessonIndex } from "./lessons.js";
 import { hasReview, hasVerification } from "./transitions.js";
 import { loadState, saveState } from "./store.js";
 import { validateState } from "./validate.js";
-import { archiveRecordPath, assertNoSymlinkPath, legacyG2WaitSource, taskRecordContent, terminal, writeAtomic, archivedSummary } from "./shared.js";
 
 /** Marks pre-existing ready G2 waits during migration; the marker is the only exemption from repair-bound enforcement. */
 export const stampLegacyG2Waits = (state: WorkflowState): string[] => {
@@ -27,9 +28,9 @@ export const prepareV4Migration = (value: WorkflowState): { state: WorkflowState
   for (const task of Object.values(source.tasks)) {
     if (!terminal(task)) next.tasks[task.id] = task;
     else {
-      const content = taskRecordContent(task);
-      next.archive![task.id] = archivedSummary(task, content);
-      records.push({ path: archiveRecordPath(task.id), content });
+      const { content, summary } = buildArchiveRecord(task);
+      next.archive![task.id] = summary;
+      records.push({ path: summary.record, content });
     }
   }
   for (const item of Object.values(source.archive ?? {})) next.archive![item.id] = item;
@@ -43,8 +44,7 @@ export const migrateState = (root: string, state = loadState(root)): { migrated:
   if (state.schemaVersion === 4) return { migrated: false, archived: [], stamped: [] };
   const migration = prepareV4Migration(state);
   for (const record of migration.records) {
-    assertNoSymlinkPath(root, record.path);
-    const path = join(resolve(root), record.path);
+    const path = safeResolvedPath(root, record.path);
     if (existsSync(path)) {
       if (readFileSync(path, "utf8") !== record.content) throw new Error(`Archived task record conflicts: ${record.path}`);
     } else writeAtomic(path, record.content);

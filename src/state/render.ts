@@ -1,7 +1,7 @@
-import { join, resolve } from "node:path";
 import type { Phase, Gate, TaskState, WorkflowState } from "../model.js";
+import { tokens } from "./guards.js";
+import { safeResolvedPath, writeAtomic } from "./io.js";
 import { loadState } from "./store.js";
-import { assertNoSymlinkPath, tokens, writeAtomic } from "./shared.js";
 
 export interface TaskSummary { id: string; title: string; phase: Phase; gate: Gate; status: TaskState["status"]; risk: TaskState["risk"]; areas: string[]; updatedAt: string; source: "active" | "archive" }
 
@@ -10,7 +10,12 @@ export const listTaskSummaries = (state: WorkflowState, options: { includeArchiv
   const archived: TaskSummary[] = options.includeArchive ? Object.values(state.archive ?? {}).map((task) => ({ id: task.id, title: task.title, phase: task.phase, gate: task.gate, status: task.status, risk: task.risk, areas: task.areas, updatedAt: task.updatedAt, source: "archive" })) : [];
   const queryTokens = tokens(options.query ?? "");
   const statuses = new Set(options.statuses ?? []);
-  const filtered = [...active, ...archived].filter((item) => (!statuses.size || statuses.has(item.status)) && (!queryTokens.length || queryTokens.every((token) => tokens(`${item.id} ${item.title} ${item.areas.join(" ")}`).includes(token)))).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+  const filtered = [...active, ...archived]
+    .filter((item) =>
+      (!statuses.size || statuses.has(item.status)) &&
+      (!queryTokens.length || queryTokens.every((token) => tokens(`${item.id} ${item.title} ${item.areas.join(" ")}`).includes(token)))
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
   const cursor = Math.max(0, options.cursor ?? 0);
   const limit = Math.max(1, Math.min(options.limit ?? 20, 100));
   const items = filtered.slice(cursor, cursor + limit);
@@ -28,7 +33,6 @@ export const renderWorkplan = (task: TaskState): string => {
 export const renderViews = (root: string, state = loadState(root), selected: TaskState[] = Object.values(state.tasks)): void => {
   for (const task of selected) {
     if (!task.artifacts.workplan) continue;
-    assertNoSymlinkPath(root, task.artifacts.workplan);
-    writeAtomic(join(resolve(root), task.artifacts.workplan), renderWorkplan(task));
+    writeAtomic(safeResolvedPath(root, task.artifacts.workplan), renderWorkplan(task));
   }
 };
