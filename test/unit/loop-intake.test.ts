@@ -30,3 +30,16 @@ test("intake refuses to take over an unrelated task", async () => {
     await assert.rejects(() => prepareLoopIntake({ root, taskId: "login", requirement: "Add login", authority: "local", readTask: async () => ({ id: "login", title: "Add login" }), createTask: async () => {} }), /no matching loop intake/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("intake derives a descriptive title and honors an explicit override", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-intake-"));
+  const { prepareLoopIntake } = await load();
+  const tasks = new Map<string, { id: string; title: string }>();
+  const base = { root, requirement: "Add login\nUsing email", authority: "local", readTask: async (id: string) => tasks.get(id), createTask: async ({ taskId, title }: { taskId: string; title: string }) => { tasks.set(taskId, { id: taskId, title }); } };
+  try {
+    await prepareLoopIntake({ ...base, taskId: "add-login" });
+    assert.deepEqual([...tasks.values()], [{ id: "add-login", title: "Add login" }]);
+    await prepareLoopIntake({ ...base, taskId: "add-login-2", title: "Custom title" });
+    assert.deepEqual([...tasks.values()], [{ id: "add-login", title: "Add login" }, { id: "add-login-2", title: "Custom title" }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -20,12 +20,12 @@ export const runLoopCommand = (args: string[]): void => {
   for (let index = 1; index < args.length; index += 2) {
     const key = args[index];
     const entry = args[index + 1];
-    if (key === undefined || !["--task-id", "--root", "--mode", "--provider", "--tag"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
+    if (key === undefined || !["--task-id", "--title", "--root", "--mode", "--provider", "--tag"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
     parsed.set(key, entry);
   }
   const root = resolve(parsed.get("--root") ?? ".");
   const script = join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs");
-  const child = spawnSync(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? "", parsed.get("--provider") ?? "", parsed.get("--tag") ?? ""], { stdio: "inherit" });
+  const child = spawnSync(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? "", parsed.get("--provider") ?? "", parsed.get("--tag") ?? "", parsed.get("--title") ?? ""], { stdio: "inherit" });
   if (child.error) throw child.error;
   if (child.status !== 0) process.exitCode = child.status ?? 1;
 };

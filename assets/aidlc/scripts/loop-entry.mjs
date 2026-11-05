@@ -1,19 +1,18 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { requireLocalAuthority } from "./lib/authority.mjs";
 import { isLoopProvider } from "./lib/loop-drivers.mjs";
-import { prepareLoopIntake } from "./lib/loop-intake.mjs";
+import { deriveTaskIdentity, prepareLoopIntake } from "./lib/loop-intake.mjs";
 import { streamLog } from "./lib/loop-stream.mjs";
 import * as localSupervisor from "./lib/loop-supervisor-run-local.mjs";
-import { loadTask } from "./lib/store.mjs";
+import { loadState, loadTask } from "./lib/store.mjs";
 import { buildWorkerImage, defaultWorkerImageTag, recordWorkerImage } from "./lib/loop-worker-image.mjs";
 
-const [action, taskArg, rootArg, modeArg, providerArg, tagArg] = process.argv.slice(2);
+const [action, taskArg, rootArg, modeArg, providerArg, tagArg, titleArg] = process.argv.slice(2);
 const root = resolve(rootArg || ".");
 const readRequirement = async () => {
   if (stdin.isTTY) { const rl = createInterface({ input: stdin, output: stdout }); try { return await rl.question("Requirement: "); } finally { rl.close(); } }
@@ -38,7 +37,17 @@ try {
     const agent = config.loop?.agents?.lead;
     const workers = config.loop?.agents?.workers ?? {};
     if (!isLoopProvider(agent) || !Object.keys(workers).length || Object.entries(workers).some(([, value]) => !isLoopProvider(value))) throw new Error("Loop requires a configured lead and worker providers");
-    const taskId = taskArg || (action === "start" ? `loop-${randomUUID()}` : "");
+    const requirement = action === "start" ? await readRequirement() : "";
+    const identity = deriveTaskIdentity(requirement);
+    let taskId = taskArg || (action === "start" ? identity.slug : "");
+    if (action === "start" && !taskArg && mode === "local") {
+      // Resolve case-insensitive collisions against active + archived ids before
+      // dispatch; the remote task-create guard remains the fleet backstop.
+      const state = loadState(root);
+      const existing = new Set([...Object.keys(state.tasks), ...Object.keys(state.archive ?? {})].map((id) => id.toLowerCase()));
+      for (let suffix = 2; existing.has(taskId.toLowerCase()); suffix += 1) taskId = `${identity.slug}-${suffix}`;
+    }
+    const title = titleArg || identity.title;
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId)) throw new Error("Valid task ID required");
     if (mode === "fleet") {
       const { callRemoteTool } = await import("./lib/remote-state-client.mjs");
@@ -71,12 +80,11 @@ try {
         await callRemoteTool({ url, token }, "fleet_get", { workspace });
         await readIntegrationCommit({ projectRoot: root, integrationBranch, gitRemote: env.AIDLC_FLEET_GIT_REMOTE ?? "origin" });
         if (action === "start") {
-          const requirement = await readRequirement();
           const readTask = async (id) => { try { return (await callRemoteTool({ url, token }, "task_get", { workspace, taskId: id, clientProjectRoot: root })).task; } catch { return null; } };
           const current = await callRemoteTool({ url, token }, "state_get", { workspace });
           const actionable = Object.values(current?.state?.tasks ?? {}).filter((task) => task.id !== taskId && task.status === "active" && !task.handoff);
           if (actionable.length) throw new Error(`Task create is blocked while other work is actionable: ${actionable.map((task) => task.id).join(", ")}`);
-          await prepareLoopIntake({ root, taskId, requirement, authority: "fleet", readTask, createTask: async ({ taskId: id, title }) => {
+          await prepareLoopIntake({ root, taskId, requirement, title, authority: "fleet", readTask, createTask: async ({ taskId: id, title }) => {
             const claim = await repository.claimLead({ taskId: id, leaseMs: 60000 });
             try {
               execFileSync(process.execPath, [remoteState, "task", "create", id, "--title", title], { cwd: root, encoding: "utf8", env: { ...env, AIDLC_FLEET_LEAD_EPOCH: String(claim.epoch), AIDLC_FLEET_LEAD_OWNER_TOKEN: repository.leadOwnerToken() } });
@@ -94,8 +102,7 @@ try {
       if (action === "status") {
         console.log(JSON.stringify(await supervisor.status(), null, 2));
       } else if (action === "start") {
-        const requirement = await readRequirement();
-        await prepareLoopIntake({ root, taskId, requirement, authority: "local", readTask: async (id) => loadTask(root, id), createTask: async ({ taskId: id, title }) => { execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), "task", "create", id, "--title", title, "--root", root], { stdio: ["ignore", "pipe", "pipe"] }); } });
+        await prepareLoopIntake({ root, taskId, requirement, title, authority: "local", readTask: async (id) => loadTask(root, id), createTask: async ({ taskId: id, title }) => { execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), "task", "create", id, "--title", title, "--root", root], { stdio: ["ignore", "pipe", "pipe"] }); } });
         console.log(JSON.stringify(await supervisor.start(), null, 2));
       } else console.log(JSON.stringify(await supervisor.resume(), null, 2));
     }

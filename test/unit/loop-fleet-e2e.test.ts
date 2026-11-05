@@ -143,7 +143,7 @@ test("loop start drives the supervised fleet loop from a requirement through all
     assert.equal(approved.size, 3);
     const canonical = await callTool({ url, token: leadToken, name: "task_get", args: { workspace, taskId, clientProjectRoot: leadRoot } });
     assert.equal(canonical.task.status, "done");
-    assert.equal(canonical.task.title, `Loop task ${taskId}`);
+    assert.equal(canonical.task.title, "Change src/a.txt to done through the supervised fleet loop.");
     assert.equal(canonical.task.tasks[0].status, "done");
     assert.equal(canonical.nextAction.classification, "complete");
     const intake = JSON.parse(readFileSync(join(leadRoot, ".agents/data/tasks", taskId, "loop-intake.json"), "utf8"));

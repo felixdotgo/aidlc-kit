@@ -11,7 +11,7 @@ export const usage = `Usage:
   npx @felixdotgo/aidlc-kit status [path] [--json]
   npx @felixdotgo/aidlc-kit doctor [path] [--strict] [--json]
   npx @felixdotgo/aidlc-kit profile validate [path]
-  npx @felixdotgo/aidlc-kit loop start|status|resume [--task-id ID] [--root PATH] [--mode local|fleet]
+  npx @felixdotgo/aidlc-kit loop start|status|resume [--task-id ID] [--title TITLE] [--root PATH] [--mode local|fleet]
   npx @felixdotgo/aidlc-kit loop worker-image [--provider ${LOOP_PROVIDERS.join("|")}] [--tag TAG] [--root PATH]
   npx @felixdotgo/aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1]
   npx @felixdotgo/aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
