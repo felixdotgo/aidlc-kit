@@ -5,6 +5,7 @@ rmSync("dist", { recursive: true, force: true });
 const output = "dist/assets/.agents";
 mkdirSync(output, { recursive: true });
 cpSync("assets/aidlc", join(output, "aidlc"), { recursive: true });
+cpSync("assets/ui", "dist/assets/ui", { recursive: true });
 cpSync("skills", join(output, "skills"), { recursive: true });
 cpSync("services/aidlc-coordination", "dist/services/aidlc-coordination", { recursive: true, filter: (path) => !path.includes("node_modules") });
 const rootVersion = JSON.parse(readFileSync("package.json", "utf8")).version;

@@ -1,5 +1,15 @@
+import { appendFileSync } from "node:fs";
+
+/** Append one structured event to the optional UI event-log sidecar (JSONL). */
+function appendEventLog(event) {
+  const path = process.env.AIDLC_LOOP_EVENT_LOG;
+  if (!path) return;
+  try { appendFileSync(path, `${JSON.stringify(event)}\n`); } catch { /* best-effort: never break the loop on a log write failure */ }
+}
+
 /** Render foreground loop progress to stderr without polluting stdout JSON. */
 export function streamLog(event) {
+  appendEventLog(event);
   if (!event || typeof event.type !== "string") return;
   switch (event.type) {
     case "turn_start":
