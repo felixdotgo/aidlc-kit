@@ -264,3 +264,19 @@ test("partial task detail fragment serves modal content without a full page", as
     await fixture.close();
   }
 });
+
+test("task detail page declares `post` exactly once so the approve handler is not shadowed by a redeclaration", async () => {
+  const fixture = await startFixture(makeTask({ status: "blocked_on_user" }), true);
+  try {
+    const html = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    // The shared script and the detail script are both inlined on the detail
+    // page. A second top-level `const post` in the detail script would throw
+    // "Identifier 'post' has already been declared" at parse time, silently
+    // disabling the approve-button handler (regression guard for the UI bug).
+    assert.equal((html.match(/const post\s*=/g) ?? []).length, 1);
+    assert.match(html, /approve-button/);
+    assert.match(html, /\/api\/gate\/approve/);
+  } finally {
+    await fixture.close();
+  }
+});

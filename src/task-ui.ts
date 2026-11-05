@@ -657,11 +657,6 @@ ${loopStatus}
 
   const liveLog = `<h2 class="subtitle">Live log</h2><div id="log" class="log-panel">connecting…</div>`;
   const detailScript = `<script>
-const post = async (url, body) => {
-  const token = localStorage.getItem("aidlc-token") || "";
-  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": token }, body: JSON.stringify(body) });
-  return { status: response.status, body: await response.json() };
-};
 document.getElementById("approve-button")?.addEventListener("click", async () => {
   const result = document.getElementById("approve-result");
   result.textContent = "";
