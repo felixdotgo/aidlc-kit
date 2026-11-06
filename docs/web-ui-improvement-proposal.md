@@ -2,48 +2,104 @@
 
 ## 1. Purpose and scope
 
-This document proposes improvements to the minimal local web dashboard exposed by
-`aidlc-kit ui`. The deliverable for this task is **documentation only**; no
-source code, tests, or lifecycle state are changed by this proposal.
+This document describes the local web dashboard exposed by `aidlc-kit ui` and
+scopes the remaining improvements. The dashboard has grown well beyond the
+minimal task table of the original design: it now provides a server-rendered
+kanban board and list view, a per-task detail page with rendered artifacts and a
+live event log, a read-only JSON API, and token-gated loop actions and gate
+approval. This proposal records that implemented state as the baseline and then
+maps the approved UI decisions to concrete constraints and follow-up work. The
+deliverable for this task remains **documentation only**; no source code, tests,
+or lifecycle state are changed by this proposal.
 
-The current dashboard is defined by `src/task-ui.ts` and documented in
-`docs/command-reference.md` under the `ui` command. It is intentionally small:
-it renders a task table, exposes read-only JSON endpoints, and can start or
-resume the loop as a thin facade over `loop-entry.mjs`. This proposal keeps those
-boundaries and improves usability, operability, and safety without turning the UI
-into a second lifecycle authority.
+The implementation lives in `src/task-ui.ts`, with vendored styles in
+`assets/ui/` (Bulma plus a dashboard theme layer), and is documented in
+`docs/command-reference.md` under the `ui` command. It is built on `node:http`
+only — no CDN and no runtime npm dependency — and it remains a facade over the
+same installed lifecycle scripts the terminal uses, not a second lifecycle
+authority.
 
 In scope:
 
-- Dashboard information architecture and task navigation.
-- Read-only API ergonomics for polling clients.
-- Visibility-aware status refresh.
-- Accessibility, responsive layout, and error/empty states.
-- Preservation of the existing trust and safety boundaries.
+- Dashboard information architecture: kanban/list views, filtering, and a review
+  queue for tasks waiting at a human gate.
+- A per-task detail page with rendered artifacts, decisions, work items,
+  evidence, and a live event log.
+- A read-only JSON API for polling and programmatic clients.
+- Token-gated loop actions (start/resume) and gate approval as thin facades.
+- Realtime event streaming over Server-Sent Events.
+- Vendored styling (Bulma plus a dashboard theme), accessibility, responsive
+  layout, and error/empty states.
 
 Out of scope:
 
-- Approving any gate from the browser.
-- Mutating canonical lifecycle state through the UI.
-- Fleet/remote control actions in v1.
+- Mutating canonical lifecycle state directly: every mutating action is a thin
+  facade over the installed `loop-entry.mjs` or `state.mjs` scripts.
+- Replacing or bypassing the terminal gate channel: browser approval runs the
+  same atomic `state.mjs gate approve` command and stays fail-closed.
+- Fleet/remote control actions; remote task status, when shown, is read-only.
 - A UI localization framework or new runtime dependencies.
 
 ## 2. Current state
 
-The implementation in `src/task-ui.ts` currently provides:
+The implementation in `src/task-ui.ts` provides a server-rendered dashboard and a
+read-only JSON API, styled by vendored Bulma and a dashboard theme layer in
+`assets/ui/` (no CDN, no runtime npm dependency).
 
-- `GET /` — an HTML task table with id, title, phase, gate, status, risk, areas,
-  and per-task resume controls.
-- `GET /api/tasks` — paginated/filtered task summaries.
+The dashboard (`GET /`) renders a kanban board by default, with one column per
+phase (clarify → plan → build → wrap → done) and a list/table toggle. The header
+shows whether the loop daemon is running and hosts the Settings and New task
+modals; summary stats and a review queue surface tasks that are `blocked_on_user`.
+Free-text search and status/risk filters run client-side over the rendered cards,
+and keyboard shortcuts are available (`N` new task, `/` search, `Esc` close).
+Clicking a task opens a quick-view modal; ctrl/cmd-click or middle-click opens the
+full detail page.
+
+The task detail page (`GET /tasks/:id`, with `GET /partial/tasks/:id` returning
+the same body as an HTML fragment for the modal) renders:
+
+- The recorded `intent`/`design`/`workplan` artifacts as HTML through an
+  escaping-first Markdown renderer.
+- Decisions, work items (with progress), and verification evidence as tables.
+- A structured gate view while the task is `blocked_on_user`, including
+  diagnostics when the gate check no longer passes.
+- An approve form (full page only) that submits to the token-gated approve
+  proxy.
+- A live log that streams that task's events over Server-Sent Events.
+- A phase timeline, detail metadata, and the derived loop status.
+
+The JSON API exposes:
+
+- `GET /api/tasks` — paginated/filtered task summaries (`?archive=1`,
+  `?statuses=`, `?query=`, `?limit=`, `?cursor=`).
 - `GET /api/tasks/:id` — one task object.
-- `GET /api/loop/status?task-id=` — loop run record and derived next action.
-- `POST /api/loop/start` — starts a loop from a requirement.
-- `POST /api/loop/resume` — resumes a paused/blocked task.
-- HTML escaping, request-body size limiting, and `127.0.0.1` binding by
-  default.
+- `GET /api/tasks/:id/gate` — the gate payload for a task waiting at a gate.
+- `GET /api/tasks/:id/artifact/:name` — raw `intent`/`design`/`workplan`
+  content for programmatic clients.
+- `GET /api/loop/status?task-id=` — the loop run record and derived next action.
+- `GET /api/events?task-id=` — a Server-Sent Events stream of the JSONL
+  event-log sidecar; it replays the last 200 matching lines on connect, follows
+  rotation and truncation, and resumes from `Last-Event-ID`.
+- `POST /api/loop/start` — runs loop intake to create a loop-owned task and
+  starts the daemon if none is running.
+- `POST /api/loop/resume` — re-activates a `paused` task.
+- `POST /api/gate/approve` — runs the atomic `state.mjs gate approve` command.
+- `GET /assets/bulma.css` and `GET /assets/dashboard.css` — the vendored
+  stylesheets.
 
-The unit tests in `test/unit/ui.test.ts` cover dashboard rendering, read-only
-JSON endpoints, not-found handling, and validation of bad start/resume requests.
+The mutating endpoints (`start`, `resume`, `gate approve`) require a per-session
+token generated at server start and printed once to the terminal; it is entered
+through the Settings modal, stored in `localStorage`, and compared with a
+timing-safe hash. All three actions are thin facades that spawn the installed
+`loop-entry.mjs` or `state.mjs` scripts — the module never mutates lifecycle
+state itself. HTML output is escaped, request bodies are limited to 8192 bytes,
+and the server binds `127.0.0.1` by default on port 4173 (`--host 0.0.0.0` is an
+explicit opt-in), so canonical state is not exposed to the network.
+
+The unit tests in `test/unit/ui.test.ts` cover dashboard and detail rendering,
+the read-only JSON and SSE endpoints, artifact and gate payloads, escaping,
+token-gated fail-closed behavior, and validation of start/resume/approve
+requests.
 
 ## 3. Approved decisions applied
 
