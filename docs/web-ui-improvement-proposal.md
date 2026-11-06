@@ -108,10 +108,24 @@ requests.
 | `ui-proposal-deliverable` | Deliverable scope of this task | approved | This task produces a proposal document only; implementation remains separate. |
 | `ui-proposal-path` | Placement of proposal | approved | The proposal lives at `docs/web-ui-improvement-proposal.md`. |
 | `ui-proposal-language` | Language of proposal | approved | The proposal and UI copy remain in English. |
-| `ui-gate-approval` | Gate approval from UI | approved | Gate approval stays on the trusted terminal; the UI only displays gate state. |
-| `ui-realtime` | Realtime update mechanism | approved | Use visibility-aware polling in v1; do not add push transport yet. |
-| `ui-fleet` | Fleet/remote mode in UI | approved | v1 remains local canonical state only; fleet status is a documented follow-up. |
+| `ui-gate-approval` | Browser gate approval (approve proxy) | changed | Browser gate approval runs through a token-gated approve proxy (`POST /api/gate/approve`) that executes the atomic `state.mjs gate approve`; terminal approval remains available and the action stays fail-closed. |
+| `ui-realtime` | Realtime transport (SSE log streaming) | changed | Realtime transport uses Server-Sent Events (`GET /api/events?task-id=`); the stream replays the last 200 matching lines on connect, follows rotation and truncation, and resumes from `Last-Event-ID`. |
+| `ui-fleet` | Fleet/remote read-only status | changed | Fleet/remote task status is read-only when shown; no remote control actions and no remote gate approval from the browser. |
+| `ui-styling` | Styling approach (vendored Bulma) | approved | Styling is vendored Bulma plus a dashboard theme layer in `assets/ui/` (`GET /assets/bulma.css`, `GET /assets/dashboard.css`); no CDN and no runtime npm dependency. |
 | `ui-i18n` | UI internationalization | approved | Display task language (`vi` or `en`) as data; do not add a localization framework. |
+
+Three decisions changed during re-evaluation: gate approval moved from
+terminal-only display to a token-gated approve proxy, realtime transport moved
+from visibility-aware polling to SSE log streaming, and fleet/remote task status
+became read-only instead of a deferred follow-up. Styling was added as a new
+decision (vendored Bulma, no CDN).
+
+The mutating actions (new task, resume, gate approve) share a token-auth model:
+a per-session token generated at server start and printed once to the terminal,
+entered through the Settings modal, stored in `localStorage`, and compared with
+a timing-safe hash. Each action is a thin facade that spawns the installed
+`loop-entry.mjs` or `state.mjs` scripts; the module never mutates lifecycle
+state itself.
 
 These decisions are consistent with `docs/design-decisions.md` D10, which
 restricts task language to `vi` or `en` and defers broader internationalization.
