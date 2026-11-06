@@ -239,40 +239,59 @@ the approved language decision.
 
 ## 6. Verification plan
 
-Implementation of this proposal should be verified with:
+The implemented baseline is already covered by `test/unit/ui.test.ts`, which
+exercises dashboard and detail rendering, the read-only JSON and SSE endpoints,
+artifact and gate payloads, escaping, token-gated fail-closed behavior, and
+start/resume/approve request validation. Verification for the baseline and the
+remaining improvements should use:
 
 1. `npm run build` and `npm run lint`.
-2. `node --test dist/test/unit/ui.test.js`.
-3. Additional unit tests for:
-   - filter rendering and query forwarding,
-   - task detail rendering,
-   - conditional request headers,
-   - visibility-aware polling behavior where testable,
-   - absence of gate-approval controls.
+2. `node --test dist/test/unit/ui.test.js` for the existing UI suite.
+3. Additional unit tests for the remaining Phase 4 work:
+   - conditional-request support (`ETag`/`Last-Modified`) returning
+     `304 Not Modified` for `/api/tasks` and `/api/tasks/:id`,
+   - machine-readable error codes in JSON error payloads (validation,
+     not-found, gateway, server),
+   - SSE replay, rotation/truncation following, and `Last-Event-ID` resume
+     remain intact,
+   - the token-gated approve proxy stays fail-closed and still runs the atomic
+     `state.mjs gate approve`.
 4. Manual checks:
    - dashboard renders with no tasks,
-   - filters and pagination work,
-   - polling pauses when the tab is hidden,
-   - remote host binding requires explicit opt-in,
-   - no gate approval action is available in the UI.
+   - filters, search, pagination, and the review queue behave correctly,
+   - the SSE log stream replays and follows rotation without a polling loop,
+   - gate approval requires the session token and terminal approval still works,
+   - default host binding is `127.0.0.1` and `--host 0.0.0.0` is an explicit
+     opt-in,
+   - fleet/remote status, when shown, is read-only with no control or approval
+     action.
 
 ## 7. Risks and open questions
 
-1. Polling every five seconds may add avoidable load for large task sets; the
-   interval and conditional requests should be tuned during implementation.
-2. Inline task detail can make the dashboard dense; progressive disclosure may
+1. Each SSE connection is a long-lived stream, and replaying the last 200
+   matching lines per connection can add load with many open tabs; the replay
+   window and per-task connection limits should be tuned during implementation.
+2. The approve proxy's session token is held in `localStorage`; it is compared
+   with a timing-safe hash and never echoed in HTML or JSON, but browser-side
+   token handling remains a trust-boundary consideration, mitigated by
+   escaping-first rendering and local-first binding.
+3. Inline task detail can make the dashboard dense; progressive disclosure may
    be needed.
-3. Fleet status display must not imply that the UI can approve or mutate remote
-   state.
-4. Browser-only enhancements must not become required for core read-only access.
+4. Fleet/remote status display must not imply that the UI can approve or mutate
+   remote state, and it remains a separately scoped follow-up.
+5. Browser-only enhancements (filters, modals, shortcuts, SSE) must not become
+   required for core read-only access; server-rendered pages stay navigable
+   without JavaScript.
 
 ## 8. Acceptance criteria
 
 The proposal is complete when:
 
 1. `docs/web-ui-improvement-proposal.md` exists and is reviewable.
-2. The document maps each approved UI decision to a concrete constraint.
-3. The document preserves read-only state access, terminal-only gate approval,
-   local-first binding, and English-only UI copy.
+2. The document maps each approved UI decision (gate approval, realtime
+   transport, fleet status, styling, language) to a concrete constraint.
+3. The document preserves read-only state access, fail-closed gate approval
+   through both the terminal and the token-gated browser proxy, local-first
+   binding (`127.0.0.1` by default), and English-only UI copy.
 4. A later implementation task can derive work items and tests from sections 4
    through 6.
