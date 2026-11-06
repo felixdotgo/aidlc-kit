@@ -9,6 +9,7 @@ import { runSupervisor } from "./loop-supervisor.mjs";
 import { createLocalSupervisorAdapter } from "./loop-supervisor-local.mjs";
 import { readyTaskItems } from "./store.mjs";
 import { runLocalWorkerBatch } from "./loop-local-workers.mjs";
+import { reconcileLocalAssignments } from "./assignment-store.mjs";
 import { ensureWorkerImage, defaultWorkerImageTag } from "./loop-worker-image.mjs";
 
 const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -80,6 +81,11 @@ const itemPrompt = (root, taskId, itemId) => {
 /** Fan dependency-ready build items out to Docker-isolated workers, then record
  * each integrated item as done. No worker ever marks canonical progress itself. */
 async function dispatchLocalBuild({ root, taskId, task, workers, images, credentials, worktreesRoot, onEvent, cancelSignal }) {
+  // Reconcile completed items first so their owned paths are released for the
+  // next batch: an integrated item's assignment stays `reported` (still active)
+  // until reconciled, and overlapping owned paths would otherwise block the next
+  // claim even though the item is already done.
+  reconcileLocalAssignments(root, taskId);
   const ready = readyTaskItems(task).ready;
   if (!ready.length) return;
   const providers = Object.entries(workers);
