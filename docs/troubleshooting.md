@@ -114,7 +114,7 @@ The Approve plan check (`gate-check.mjs <task-id>`) inspects build items so para
 
 ## Loop / fleet experimental status
 
-- The end-to-end loop and coordination service are experimental and unfinished; pre-1.0 breaking changes are possible.
+- Local loop mode is usable today; fleet mode and the coordination service are still under active development. The whole loop is experimental; pre-1.0 breaking changes are possible.
 - Selecting a mode during `init` or `upgrade` never starts or approves anything. Only `aidlc-kit loop start` runs the loop daemon, in either mode.
 - See the warning in [README](../README.md) and [Coordination service](./coordination-service.md).
 

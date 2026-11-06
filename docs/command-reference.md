@@ -1,25 +1,25 @@
 # Command reference
 
-All package commands operate on local files. The examples run version `0.1.1` through npm; `npx` may ask permission to fetch that package on first use. Replace `.` with the target project path when needed. For a source checkout, see the [development guide](./development.md).
+All package commands operate on local files. The examples run version `0.2.0` through npm; `npx` may ask permission to fetch that package on first use. Replace `.` with the target project path when needed. For a source checkout, see the [development guide](./development.md).
 
 Global flags available on every invocation: `--version` (or `-v`) prints the package version and exits; `--help` prints usage.
 
 ## `init`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
 ```
 
 Plans the installation, prints a preview, and then writes the workflow only after confirmation (or `--yes`). `--dry-run` prints the same plan without writing. If exactly one installed agent is detected, it can be selected automatically. In an interactive terminal, choose multiple agents with the checkbox prompt: use arrow keys to move, Space to toggle, A to toggle all, and Enter to confirm. For scripts and non-interactive terminals, use `--agent <name[,name]>` or `--all`.
 
-In interactive setup, choose a loop mode and, when enabled, the lead and worker providers. For non-interactive setup, omit loop options to keep the default off, or specify `--loop-mode local|fleet` together with `--loop-lead` and `--loop-workers` (for example, `--loop-workers a=codex,b=opencode`). The preview includes the project config change. These settings only configure the loop; run `aidlc-kit loop start` to actually start it. The loop and the coordination service are experimental: their flags and defaults may change incompatibly in any release before `1.0.0`.
+In interactive setup, choose a loop mode and, when enabled, the lead and worker providers. For non-interactive setup, omit loop options to keep the default off, or specify `--loop-mode local|fleet` together with `--loop-lead` and `--loop-workers` (for example, `--loop-workers a=codex,b=opencode`). The preview includes the project config change. These settings only configure the loop; run `aidlc-kit loop start` to actually start it. Local loop mode is usable today; fleet mode is still under active development; the loop and the coordination service remain experimental: their flags and defaults may change incompatibly in any release before `1.0.0`.
 
 `--force` is for an intentional initial replacement of an unmanaged conflicting file. It is not an upgrade mechanism. If the project already has another workflow package version, use the human-run upgrade flow instead.
 
 ## `status`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit status [path] [--json]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit status [path] [--json]
 ```
 
 Reports the installed version and local installation status. It does not query a registry. Pass `--json` to print the same data as a JSON object (`workflow`, `installedVersion`, `schema`, `detectedAgents`).
@@ -27,7 +27,7 @@ Reports the installed version and local installation status. It does not query a
 ## `doctor`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit doctor [path] [--strict] [--json]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit doctor [path] [--strict] [--json]
 ```
 
 Checks the local manifest, configuration, and canonical state. `--strict` turns compatibility warnings such as a legacy manifest into errors. It does not query a registry. Pass `--json` to print `{level, message, strict}`; an `error` level sets a non-zero exit code.
@@ -35,7 +35,7 @@ Checks the local manifest, configuration, and canonical state. `--strict` turns 
 ## `profile validate`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit profile validate [path]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit profile validate [path]
 ```
 
 Loads `.agents/config.json`, resolves its profile chain, and prints the effective profile order. Use it after changing `extends` or local profiles.
@@ -43,7 +43,7 @@ Loads `.agents/config.json`, resolves its profile chain, and prints the effectiv
 ## `uninstall`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit uninstall [path] [--yes] [--dry-run]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit uninstall [path] [--yes] [--dry-run]
 ```
 
 Prints the removal plan before applying it. It removes eligible unchanged managed assets but preserves project configuration and state. Prefer `--dry-run` first when working in an existing project.
@@ -51,7 +51,7 @@ Prints the removal plan before applying it. It removes eligible unchanged manage
 ## `mcp setup`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
 ```
 
 Previews the optional AI-DLC Coordination service configuration, then writes only after confirmation. Non-interactive use requires `--deployment`, `--storage`, `--bind`, and `--workspace`. It never starts Docker; `--enable` is explicit and remote mode has no local fallback. See [AI-DLC Coordination service](./coordination-service.md) for deployment and credential requirements.
@@ -61,7 +61,7 @@ Previews the optional AI-DLC Coordination service configuration, then writes onl
 ## `upgrade`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--dry-run]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--dry-run]
 ```
 
 Upgrade is deliberately human-only. The command rejects `--yes` and `--force`; applying it requires an interactive terminal and an exact typed confirmation of the package version. Interactive confirmations use the same styled terminal prompt as `init`. Agents must not run, preview, detect, or suggest package upgrades on their own.
@@ -73,14 +73,14 @@ The upgrade plan handles supported legacy `.aidlc/` project data transactionally
 ## `loop`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start [--root PATH] [--mode local|fleet]
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop intake [--task-id ID] [--title TITLE] [--root PATH] [--mode local|fleet]
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop status --task-id ID [--root PATH] [--mode local|fleet]
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop worker-image [--provider opencode|codex|claude] [--tag TAG] [--root PATH]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start [--root PATH] [--mode local|fleet]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop intake [--task-id ID] [--title TITLE] [--root PATH] [--mode local|fleet]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop status --task-id ID [--root PATH] [--mode local|fleet]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop worker-image [--provider opencode|codex|claude] [--tag TAG] [--root PATH]
 ```
 
 > [!WARNING]
-> The loop commands and fleet mode are **experimental and unfinished**: they contain known bugs and rough edges, and — because the package is still pre-1.0 (`0.x`) — their options, environment variables, and diagnostics can change incompatibly in any release before `1.0.0`.
+> **Local loop mode is usable** today; **fleet mode is still under active development**. The loop commands remain **experimental** — because the package is still pre-1.0 (`0.x`), their options, environment variables, and diagnostics can change incompatibly in any release before `1.0.0`.
 
 `--mode` defaults to the configured `loop.mode`; the command fails closed when it does not match (`Requested mode does not match configured authority`). Every action except `worker-image` requires an enabled `loop.mode` with a lead and worker mapping. Local and fleet mode share one daemon and the same actions:
 
@@ -106,7 +106,7 @@ The installed `loop-entry.mjs` is the single entry point behind the CLI and the 
 ## `ui`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--token-file PATH] [--reviewer-token-file PATH]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--token-file PATH] [--reviewer-token-file PATH]
 ```
 
 Starts a web dashboard (built on `node:http`, no extra dependencies) for viewing task status and operating the loop without typing CLI commands repeatedly. The project is the positional `path` (default `.`); `ui` has no `--root` flag. The authority comes from `loop.mode`: the header shows `authority · local` or `authority · fleet`. Local dashboards read canonical local state in-process; fleet dashboards read tasks, task details, and gate snapshots (review text from the coordination service) through the `loop-entry.mjs` JSON actions.

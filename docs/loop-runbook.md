@@ -1,7 +1,7 @@
 # Loop setup runbook
 
 > [!WARNING]
-> The loop and the coordination service are **experimental and unfinished**: they contain known bugs and rough edges, and — because the package is still pre-1.0 (`0.x`) — the `loop.*` fields, provider mappings, environment variables, and diagnostics can change incompatibly in any release before `1.0.0`.
+> The loop is **experimental** and pre-1.0 (`0.x`): the `loop.*` fields, provider mappings, environment variables, and diagnostics can change incompatibly in any release before `1.0.0`. **Local mode is usable** on a single Linux host today; **fleet mode is still under active development** and is not yet stable.
 
 This runbook walks through the three most common operational journeys for the end-to-end loop, in order:
 
@@ -35,12 +35,12 @@ Pick one of three ways to set `loop.mode` and `loop.agents`:
 - **Edit `.agents/config.json` directly.** This is the project-owned config; the fields are described in [Configuration](./configuration.md#optional-loop-configuration).
 - **Use `init`** for a new install:
   ```sh
-  npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit init . \
+  npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init . \
     --loop-mode local --loop-lead codex --loop-workers a=codex,b=opencode
   ```
 - **Use the human-only `upgrade`** for an existing install, which preserves the existing config when you omit the loop flags and lets an authorised human review the change before applying:
   ```sh
-  npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit upgrade . \
+  npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit upgrade . \
     --loop-mode local --loop-lead codex --loop-workers a=codex,b=opencode --dry-run
   ```
 
@@ -111,8 +111,8 @@ The command records the tag into `loop.workerImage`; the local supervisor reuses
 `start` launches the singleton daemon (one per project) and reads no requirement. Add tasks with the web dashboard **New task** or loop intake, which reads the requirement from stdin (capped at 8192 bytes) and never from an argument:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start
-echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop intake
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start
+echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop intake
 ```
 
 The daemon runs only loop-owned tasks (created through intake), one bounded run per task in turn, and keeps polling after a task reaches a gate or completes. Stop it with `Ctrl-C`: the first signal stops after the current turn, the second cancels the turn, the third exits. A stopped run is not a pause; the task continues on the next `start`.
@@ -120,7 +120,7 @@ The daemon runs only loop-owned tasks (created through intake), one bounded run 
 `status` prints the canonical task and its derived next action:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop status --task-id <task-id>
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop status --task-id <task-id>
 ```
 
 There is no `loop resume`. After a gate approval the daemon continues the task on its next poll. A **paused** task is not actionable: fix the cause, then press **resume** on the dashboard or run `node .agents/aidlc/scripts/state.mjs task status <task-id> --status active`.
@@ -178,8 +178,8 @@ The lead agent comes from `loop.agents.lead`. Do not export `AIDLC_FLEET_REVIEWE
 `aidlc-kit loop start --mode fleet` preflights the service (`fleet_get`) and the remote integration branch, then starts the same daemon as local mode, failing closed instead of falling back to local:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start --mode fleet
-echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop intake --mode fleet
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start --mode fleet
+echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop intake --mode fleet
 ```
 
 Intake creates the remote task under a short lead claim and writes `.agents/data/tasks/<task-id>/loop-intake.json` with `authority: "fleet"` on this lead machine. Only those tasks are fleet loop-owned; a remote task created any other way is never picked up. For each actionable task the daemon runs the fleet supervisor in a bounded mode: it claims the supervisor lease, runs fenced lead turns and worker dispatch through the coordinator, publishes the gate snapshot with its checkpoint, then returns and releases the lease. After the reviewer approves, the next poll re-claims the task and continues. An unreachable service shows up as `daemon_poll_error` and does not stop the daemon. Shutdown, backoff, and `status` behave as in local mode; there is no `loop resume` (re-activate a paused task with the dashboard **resume**).

@@ -1,7 +1,7 @@
 # AI-DLC Coordination service
 
 > [!WARNING]
-> The coordination service (and the end-to-end loop that builds on it) is **experimental and unfinished**: it contains known bugs and rough edges. The package is pre-1.0 (`0.x`), so setup flags, `mcp.*`/`loop.*` configuration, endpoints, environment variables, and storage behaviour can change incompatibly in any release before `1.0.0`. Do not treat it as a stable dependency yet.
+> The coordination service and the **fleet** end-to-end loop are **experimental and still under active development**: they contain known bugs and rough edges. The package is pre-1.0 (`0.x`), so setup flags, `mcp.*`/`loop.*` configuration, endpoints, environment variables, and storage behaviour can change incompatibly in any release before `1.0.0`. Do not treat it as a stable dependency yet.
 
 The optional AI-DLC Coordination service is a separate Docker-deployable authority for a workflow workspace. It is disabled by default: without an enabled `mcp` block, installed lifecycle scripts remain local and make no network calls.
 
@@ -10,11 +10,11 @@ The optional AI-DLC Coordination service is a separate Docker-deployable authori
 Preview a configuration first. Outside an interactive terminal, provide all four selection flags.
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit mcp setup . --dry-run \
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit mcp setup . --dry-run \
   --deployment docker --storage sqlite --bind localhost --workspace engineering
 ```
 
-This command uses the npm package at version `0.1.1`. To run from a source checkout instead, see the [development guide](./development.md).
+This command uses the npm package at version `0.2.0`. To run from a source checkout instead, see the [development guide](./development.md).
 
 Remove `--dry-run` and confirm to create `.agents/aidlc-coordination/` and update `.agents/config.json`. Setup does not start Docker. Copy `.env.example` to a secret-managed `.env`, review it, then start explicitly:
 

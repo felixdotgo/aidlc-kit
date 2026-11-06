@@ -54,10 +54,10 @@ Built-in topology profiles are:
 Arrays are stable-deduplicated. Command keys are last-wins, so a project can replace a profile command intentionally. Validate the resolved profile chain with:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit profile validate .
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit profile validate .
 ```
 
-This command uses the npm package at version `0.1.1`. To run from a source checkout instead, see the [development guide](./development.md).
+This command uses the npm package at version `0.2.0`. To run from a source checkout instead, see the [development guide](./development.md).
 
 ## Rules, project data, and managed assets
 
@@ -83,12 +83,12 @@ Set the default risk level deliberately. Planning, migrations, cross-service con
 
 ## Optional AI-DLC Coordination
 
-`mcp` is absent (or `{ "enabled": false }`) by default. An enabled configuration requires an HTTP(S) `endpoint` and non-empty `workspace`; it may also name a token environment variable, polling interval from 1,000 to 3,600,000 ms, and the enabled Jira/Trello/GitHub Issues preflight providers. See [AI-DLC Coordination service](./coordination-service.md) for the remote-authority and deployment contract. The coordination service is **experimental and unfinished** (known bugs included), and it can change incompatibly in any release before `1.0.0`.
+`mcp` is absent (or `{ "enabled": false }`) by default. An enabled configuration requires an HTTP(S) `endpoint` and non-empty `workspace`; it may also name a token environment variable, polling interval from 1,000 to 3,600,000 ms, and the enabled Jira/Trello/GitHub Issues preflight providers. See [AI-DLC Coordination service](./coordination-service.md) for the remote-authority and deployment contract. The coordination service (and fleet mode) is **experimental and still under active development** (known bugs included), and it can change incompatibly in any release before `1.0.0`.
 
 ## Optional loop configuration
 
 > [!WARNING]
-> The loop and the coordination service are **experimental and unfinished**: they contain known bugs and rough edges, and — because the package is still pre-1.0 (`0.x`) — the `loop.*` fields, provider mappings, and environment variables can change incompatibly in any release before `1.0.0`.
+> The loop is **experimental** and pre-1.0 (`0.x`): the `loop.*` fields, provider mappings, and environment variables can change incompatibly in any release before `1.0.0`. **Local mode is usable** today; **fleet mode is still under active development**.
 
 `loop.mode` can be `off`, `local`, or `fleet`; an absent `loop` field means `off`. Both enabled modes run the loop as the same persistent multi-task daemon (one per project, enforced by a lock): `loop start` launches it, and it polls the configured authority — canonical local state, or the coordination service in `fleet` mode — auto-picking every actionable **loop-owned** task without prompting for a requirement. A task is loop-owned when it was created through loop intake (the web dashboard **New task**, `aidlc-kit loop intake`, or `loop-entry.mjs intake`) or, locally, already has a loop run record; fleet ownership is recorded by the intake file `.agents/data/tasks/<id>/loop-intake.json` with `authority: "fleet"`. Tasks created by an interactive lead are never picked up. The optional `loop.agents` maps one lead and named workers to `codex`, `claude`, or `opencode`, independently of `mcp.providers`:
 

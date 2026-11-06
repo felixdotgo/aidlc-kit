@@ -3,10 +3,9 @@
 End-to-end guide for running the loop on the `aidlc-kit` repo itself (dogfooding),
 single machine (`local` mode). All lead/workers use **OpenCode**.
 
-> The loop and coordination service are **experimental** (pre-1.0). Flags, `loop.*`
-> fields, environment variables, and diagnostics can change incompatibly before `1.0.0`.
+> **Local loop mode is usable** today; **fleet mode is still under active development**. The loop is **experimental** (pre-1.0): flags, `loop.*` fields, environment variables, and diagnostics can change incompatibly before `1.0.0`.
 
-> **npx vs. source.** The run commands below show **both** forms: `npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit …` (the published package — primary for end users) and `node dist/src/cli.js …` (dogfooding the `aidlc-kit` repo from a source checkout, after `npm run build`). Both drive the same installed `loop-entry.mjs`. Gate approval (§5.4) always stays on the trusted terminal via the installed `loop-gate.mjs` script and is never an `npx` command.
+> **npx vs. source.** The run commands below show **both** forms: `npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit …` (the published package — primary for end users) and `node dist/src/cli.js …` (dogfooding the `aidlc-kit` repo from a source checkout, after `npm run build`). Both drive the same installed `loop-entry.mjs`. Gate approval (§5.4) always stays on the trusted terminal via the installed `loop-gate.mjs` script and is never an `npx` command.
 
 ---
 
@@ -88,7 +87,7 @@ loop: Isolated local worker dispatcher is not integrated; loop execution is unav
 ```sh
 npm run build
 node dist/src/cli.js upgrade . --dry-run   # preview the plan
-node dist/src/cli.js upgrade .             # apply, type "0.1.1" when prompted
+node dist/src/cli.js upgrade .             # apply, type "0.2.0" when prompted
 ```
 
 Then re-run `diff -rq ...` (should be empty) and a quick test:
@@ -136,7 +135,7 @@ requirement:
 
 ```sh
 # via npx (published package):
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start --root .
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start --root .
 
 # or from a source checkout (after `npm run build`):
 node dist/src/cli.js loop start --root .
@@ -155,7 +154,7 @@ Add a loop-owned task in either way:
   task id/title are derived from its first line (override with `--task-id`/`--title`):
 
   ```sh
-  echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop intake --root .
+  echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop intake --root .
   echo "Add PDF report export" | node dist/src/cli.js loop intake --root .
   # or the installed entry point directly:
   echo "Add PDF report export" | node .agents/aidlc/scripts/loop-entry.mjs intake "" .
@@ -177,7 +176,7 @@ the whole shutdown (it forwards `SIGTERM` to the daemon and lets the terminal de
 
 ```sh
 # via npx:
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop status --task-id <task-id> --root .
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop status --task-id <task-id> --root .
 
 # or from source:
 node dist/src/cli.js loop status --task-id <task-id> --root .
@@ -255,7 +254,7 @@ carries its `taskId`.
 
 ```sh
 # via npx:
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit ui .
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit ui .
 
 # or from source:
 node dist/src/cli.js ui .

@@ -49,7 +49,7 @@ The installed kernel consists of contracts, templates, schemas, profiles, and de
 The state machine enforces the lifecycle; gates require explicit human approval; evidence is append-only. Installed scripts remain usable without an `aidlc-kit` executable or a duplicate board file.
 
 > [!WARNING]
-> The interactive-loop support and the end-to-end loop/fleet coordinator described below are **experimental and unfinished**: they contain known bugs and rough edges, and — because the package is still pre-1.0 (`0.x`) — their command surface, configuration fields, and state layout can change incompatibly in any release before `1.0.0`.
+> The **local/interactive loop is usable** today; the end-to-end **fleet** coordinator described below is **still under active development**. Both are **experimental** — because the package is still pre-1.0 (`0.x`), their command surface, configuration fields, and state layout can change incompatibly in any release before `1.0.0`.
 
 The interactive loop runs inside the current Codex, Claude Code, or OpenCode conversation. Native workers use local assignment records under `.agents/data/loop/`; those records hold claims and checkpoints while `.agents/data/state/` remains lifecycle authority. The optional headless fleet runner uses the coordination service's PostgreSQL state, fenced lead and worker claims, and Git commit handoff. Its assignment records are operational metadata; task phase, evidence, and gates stay in the canonical lifecycle state. All hosts derive dispatch from task `nextAction` and dependency-ready work.
 

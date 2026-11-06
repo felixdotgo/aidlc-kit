@@ -117,7 +117,7 @@ See [Configuration](./configuration.md) for project customisation and [Command r
 ## Optional end-to-end loop
 
 > [!WARNING]
-> The end-to-end loop and the coordination service are **experimental and unfinished**: they contain known bugs and rough edges, and — because the package is still pre-1.0 (`0.x`) — their commands, configuration, and recovery behaviour can change incompatibly in any release before `1.0.0`.
+> **Local loop mode is usable** today; **fleet mode and the coordination service are still under active development**. The loop is **experimental** — because the package is still pre-1.0 (`0.x`), its commands, configuration, and recovery behaviour can change incompatibly in any release before `1.0.0`.
 
 When the project enables `loop.mode`, `aidlc-kit loop start` accepts a requirement once (interactive prompt or stdin), creates exactly one task under the configured authority, and runs the loop to the first gate or to completion. `loop status` reports the canonical task and gate checkpoint; `loop resume` continues after an interruption. The intake is idempotent: re-running `start` with the same task ID and requirement reuses the existing task, and it refuses to create a second task while another one is actionable.
 
