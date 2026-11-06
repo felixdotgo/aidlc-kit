@@ -130,108 +130,112 @@ state itself.
 These decisions are consistent with `docs/design-decisions.md` D10, which
 restricts task language to `vi` or `en` and defers broader internationalization.
 
-## 4. Proposed improvements
+## 4. Remaining improvements and follow-ups
 
-### 4.1 Information architecture
+Sections 2 and 3 record the implemented baseline and the approved decisions it
+applies. Most of the original proposal is already implemented and covered by
+`test/unit/ui.test.ts`; the improvements below are the parts that remain.
 
-1. Add a task detail route or expandable row that links to the existing
-   `GET /api/tasks/:id` response, showing title, phase, gate, status, risk,
-   areas, artifacts, decisions, and recent evidence.
-2. Show the derived next action and loop status inline for the selected task
-   instead of requiring a separate manual status request.
-3. Add filter controls for status, phase, gate, risk, and free-text query,
-   reusing the existing `/api/tasks` query parameters.
-4. Add clear empty, loading, and error states for the dashboard and for failed
-   loop status requests.
-5. Keep the start form, but make validation and submission feedback explicit in
-   the page rather than relying only on browser form behavior.
+### 4.1 Read-only API ergonomics
 
-### 4.2 Read-only API ergonomics
+1. Add conditional-request support for polling clients using `ETag` or
+   `Last-Modified` derived from canonical state file metadata, so `/api/tasks`
+   and `/api/tasks/:id` can return `304 Not Modified`.
+2. Add machine-readable error codes to the JSON error payload so browser and CLI
+   clients can distinguish validation, not-found, gateway, and server errors
+   without matching error strings. (The current `{ ok: false, error }` payloads
+   are uniform but carry no stable code.)
+3. Preserve the existing read-only semantics, request-body limits, and strict
+   parsing for `start`, `resume`, and `gate approve`; these are already
+   implemented and tested.
 
-1. Preserve the current JSON endpoints and their read-only semantics.
-2. Add stable response envelopes and error codes so browser and CLI clients can
-   distinguish validation, not-found, and server errors.
-3. Support conditional requests for polling clients using `ETag` or
-   `Last-Modified` based on canonical state file metadata.
-4. Keep request body limits and strict parsing for `start` and `resume`.
-5. Document all query parameters and response shapes in `docs/command-reference.md`.
+### 4.2 Realtime transport
 
-### 4.3 Realtime updates
+The original plan proposed visibility-aware polling and explicitly deferred
+Server-Sent Events. That decision was reversed during re-evaluation: realtime
+transport is now Server-Sent Events over `GET /api/events?task-id=`, which
+replays the last 200 matching lines on connect, follows rotation and truncation,
+and resumes from `Last-Event-ID`. No client-side polling loop remains.
 
-1. Refresh task and loop status with visibility-aware polling every five
-   seconds while the tab is visible.
-2. Pause polling while the tab is hidden and resume on visibility change.
-3. Provide a manual refresh control.
-4. Do not introduce WebSockets or Server-Sent Events in v1. The state changes
-   originate from separate loop processes, and polling is simpler, dependency-free,
-   and consistent with the local-first model. Revisit SSE only if polling proves
-   insufficient.
+Remaining follow-up (optional): client-side auto-reconnect with backoff when the
+stream drops mid-rotation. This is hardening, not a transport change.
 
-### 4.4 Accessibility and responsive design
+### 4.3 Accessibility and responsive design
 
-1. Use semantic table markup, associated labels, and keyboard-operable controls.
-2. Do not convey status by color alone; include text labels.
-3. Ensure focus management for filters, forms, and refresh controls.
-4. Make the table horizontally scrollable or card-based on small screens.
-5. Keep the page usable without JavaScript where practical, while allowing
-   enhanced polling behavior when JavaScript is available.
+The dashboard already uses semantic markup, associated labels, keyboard-operable
+controls, keyboard shortcuts (`N`, `/`, `Esc`), non-color status labels, and a
+card-based layout that stays usable on small screens. Server-rendered board and
+detail pages remain navigable without JavaScript; filters, modals, and shortcuts
+are progressive enhancements. No further work is planned beyond applying these
+standards to any new UI.
 
-### 4.5 Security and trust boundaries
+### 4.4 Security and trust boundaries
 
-The proposal must preserve these invariants:
+The proposal preserves these invariants, updated to match the implemented
+approve proxy:
 
-1. The UI remains read-only over canonical local state.
-2. Gate approval remains on the trusted terminal through
-   `node .agents/aidlc/scripts/loop-gate.mjs <task-id>`.
-3. The UI never mutates lifecycle state or approves a gate.
-4. Loop start/resume remain thin facades over `loop-entry.mjs`.
-5. Default host binding remains `127.0.0.1`; `--host 0.0.0.0` remains an
+1. The UI remains read-only over canonical local state; the module never mutates
+   lifecycle state itself.
+2. Gate approval is available on the trusted terminal through
+   `node .agents/aidlc/scripts/loop-gate.mjs <task-id>` and, additionally,
+   through the token-gated browser approve proxy (`POST /api/gate/approve`),
+   which runs the same atomic `state.mjs gate approve` command and stays
+   fail-closed.
+3. Loop start/resume remain thin facades over `loop-entry.mjs`.
+4. Default host binding remains `127.0.0.1`; `--host 0.0.0.0` remains an
    explicit opt-in.
-6. HTML output remains escaped, and request bodies remain size-limited.
-7. No credentials, tokens, or secrets are rendered in dashboard HTML or JSON.
+5. HTML output remains escaped, and request bodies remain size-limited (8192
+   bytes).
+6. No credentials, tokens, or secrets are rendered in dashboard HTML or JSON;
+   the session token is compared with a timing-safe hash and never echoed.
 
-### 4.6 Fleet and remote mode
+### 4.5 Fleet and remote mode
 
-v1 of the UI improvement should remain scoped to local canonical state. Fleet
-and remote status are valuable, but they introduce credential, network, and
-authority concerns that should be handled in a separate, explicitly scoped
-follow-up. That follow-up may add:
+The UI remains scoped to local canonical state. Fleet and remote task status are
+valuable, but they introduce credential, network, and authority concerns that
+should be handled in a separate, explicitly scoped follow-up. When shown, that
+follow-up will:
 
-1. Read-only display of fleet/remote task status when configured.
-2. Clear indication that the displayed state is remote and not locally
-   authoritative.
-3. No remote control actions and no gate approval from the browser.
+1. Display fleet/remote task status read-only, clearly marked as remote and not
+   locally authoritative.
+2. Offer no remote control actions and no remote gate approval from the browser.
 
-### 4.7 Internationalization
+### 4.6 Internationalization
 
-The UI should remain English. Task language is project data and may be `vi` or
-`en`; the dashboard should display that value without translating task content
-or adding a localization framework. This follows D10 and avoids expanding the
-scope beyond the approved language decision.
+The UI remains English. Task language is project data and may be `vi` or `en`;
+the dashboard displays that value without translating task content or adding a
+localization framework. This follows D10 and avoids expanding the scope beyond
+the approved language decision.
 
-## 5. Proposed implementation phases
+## 5. Implementation phases and remaining work
 
-### Phase 1 — Usability and accessibility
+### Phase 1 — Usability and accessibility (complete)
 
-- Improve layout, empty/loading/error states, and responsive behavior.
-- Add filters and manual refresh.
-- Add unit tests for rendered controls and query handling.
+- Layout, empty/loading/error states, and responsive behavior.
+- Filters, search, keyboard shortcuts, and the review queue.
+- Unit tests for rendered controls, filtering, and escaping.
 
-### Phase 2 — Task detail and derived status
+### Phase 2 — Task detail and derived status (complete)
 
-- Add task detail rendering using existing task data.
-- Show derived next action and loop status inline.
-- Add conditional-request support for polling.
+- Task detail page (`/tasks/:id`) and modal fragment (`/partial/tasks/:id`).
+- Inline derived loop status and the structured gate view.
+- Rendered artifacts, decisions, work items, and evidence.
 
-### Phase 3 — Fleet status follow-up
+### Phase 3 — Realtime transport (complete)
 
-- Design read-only fleet status display separately.
-- Add tests for remote-state handling and failure modes.
+- Server-Sent Events log streaming over `/api/events?task-id=`, with replay,
+  rotation/truncation following, and `Last-Event-ID` resume. This supersedes the
+  original visibility-aware polling plan.
 
-### Phase 4 — Optional transport review
+### Phase 4 — Read-only API hardening (remaining)
 
-- Evaluate Server-Sent Events only if polling latency or load becomes a
-  demonstrated problem.
+- Conditional requests (`ETag`/`Last-Modified`) for polling clients.
+- Machine-readable error codes in JSON error payloads.
+
+### Phase 5 — Fleet status follow-up (remaining)
+
+- Read-only fleet/remote status display, designed and tested separately for
+  remote-state handling and failure modes.
 
 ## 6. Verification plan
 
