@@ -20,8 +20,11 @@ The loop runs an AI-DLC task from start to finish:
   the agent → runs one turn → re-reads canonical state → updates checkpoint/fingerprint.
 - The loop **stops at every gate** and **never self-approves** — approval happens only
   through the trusted terminal.
-- The loop also stops on its own when: `--max-turns` is exhausted, `max-stall-turns`
-  consecutive turns show no change, or the state is `blocked`/`terminal`/`complete`.
+- The loop also stops on its own when: the per-run `maxTurns` budget is exhausted (it
+  bounds one supervised run, not the task's lifetime — a resumed run gets a fresh budget),
+  `maxStallTurns` consecutive turns show no change, or the state is
+  `blocked`/`terminal`/`complete`. Both limits come from `loop.limits` (see
+  [configuration](./configuration.md#optional-loop-configuration)).
 
 Setting the config alone **does not run anything** — the loop only runs when you call
 `loop start`.
@@ -125,27 +128,47 @@ opencode models
 > A daemon started *before* you exported `AIDLC_OPENCODE_MODEL` will keep failing with
 > `opencode provider requires AIDLC_OPENCODE_MODEL` until it is restarted.
 
-### 5.2 Start (create a new task + run)
+### 5.2 Start the daemon, then add tasks
 
-The requirement is read from stdin (never passed as an argument), max 8192 bytes:
+In **local** mode `loop start` launches the persistent daemon (one per project — a second
+`loop start` fails with `Loop daemon already running (pid N)`). It does **not** read a
+requirement:
 
 ```sh
 # via npx (published package):
-echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start --root .
-
-# or from a source checkout (after `npm run build`):
-echo "Add PDF report export" | node dist/src/cli.js loop start --root .
-```
-
-Or run interactively (it will prompt for the requirement):
-
-```sh
-# via npx:
 npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start --root .
 
-# or from source:
+# or from a source checkout (after `npm run build`):
 node dist/src/cli.js loop start --root .
 ```
+
+The daemon only runs **loop-owned** tasks — tasks created through loop intake (they have
+`.agents/data/tasks/<id>/loop-intake.json`) or that already have a loop run record. A task
+you create interactively (Claude Code/Codex/OpenCode via `state.mjs task create`) is never
+picked up, so the daemon cannot race an interactive lead on the same task.
+
+Add a loop-owned task in either way:
+
+- **Web dashboard** → **New task** (§5.7): creates the task and starts the daemon if none is
+  running.
+- **Terminal** — the requirement is read from stdin (never an argument), max 8192 bytes; the
+  task id/title are derived from its first line:
+
+  ```sh
+  echo "Add PDF report export" | node .agents/aidlc/scripts/loop-entry.mjs intake "" .
+  ```
+
+Intake refuses (and creates nothing) while an **interactive** task is actionable; finish or
+pause it first. Other actionable loop-owned tasks are fine — the daemon runs them in turn.
+
+Stopping the daemon (`Ctrl-C` or `SIGTERM`) is two-stage: the first signal stops after the
+current turn, the second cancels the in-flight agent turn, the third exits immediately. A
+stopped run is recorded as `stopped` (the task is **not** paused) and resumes on the next
+`loop start`. Note that a terminal `Ctrl-C` is also delivered to the agent child process, so
+the in-flight turn usually ends right away even on the first press; it is still recorded as
+`stopped`, not as a transport failure. `aidlc-kit loop start` stays in the foreground for
+the whole shutdown (it forwards `SIGTERM` to the daemon and lets the terminal deliver
+`Ctrl-C`), so the second and third presses still reach the daemon.
 
 ### 5.3 Watch status
 
@@ -177,10 +200,10 @@ task). What you do depends on why the task stopped:
 
 - **After approving a gate** — nothing to do. Approval moves the task back to `active`, the
   daemon's next poll sees it as actionable, and it runs the next lead turn automatically.
-- **After a pause** (e.g. an agent transport failure) — the loop marks the task `paused`
-  (`nextAction` becomes `blocked`), which is **not** actionable, so the daemon skips it and
-  `loop status` shows `actionable: []`. Fix the root cause, then set the task back to
-  `active`:
+- **After a pause** (e.g. an agent transport failure or the per-run turn limit) — the loop
+  marks the task `paused` (`nextAction` becomes `blocked`), which is **not** actionable, so
+  the daemon skips it. Fix the root cause, then set the task back to `active` (or press
+  **resume** on the dashboard, which does exactly this):
 
   ```sh
   node .agents/aidlc/scripts/state.mjs task status <task-id> --status active
@@ -206,16 +229,17 @@ what the lead is doing during a long turn:
 ━━ turn done ━━
 ```
 
-When the lead reaches a gate, the loop immediately prints the **gate view** (approval
-instructions) instead of polling silently. After printing, the supervisor **keeps running
-in the foreground and polls (~5s)** waiting for you to approve in a second terminal via
-`loop-gate.mjs <id>` — this is by design: the loop neither self-approves nor exits at a
-gate.
+When the lead reaches a gate, the daemon immediately prints the **gate view** (approval
+instructions) and moves on to the next actionable task; after you approve in a second
+terminal via `loop-gate.mjs <id>` (or on the dashboard), the next poll resumes that task.
+The loop never self-approves.
 
 Streamed events: `turn_start`/`turn_end` (turn boundary + phase + agent), `agent_text`
 (lead text, capped at 4096 chars/chunk), `agent_tool` (tool being used such as
 `grep`/`read`/`glob`/`shell`), `lifecycle_command` (shell result + exit code), and `gate`
-(gate view).
+(gate view), plus daemon events `daemon_poll`, `daemon_turn`, `daemon_turn_error` (a task
+whose run throws is retried with exponential backoff: poll interval doubled per failure,
+capped at 10 minutes) and `loop_stopped`. Every event of a run carries its `taskId`.
 
 ### 5.7 Web dashboard (`aidlc-kit ui`)
 
@@ -229,7 +253,8 @@ node dist/src/cli.js ui --root .
 
 Binds `127.0.0.1:4173` by default and prints a **one-time approve token** to the terminal.
 Open the dashboard and paste that token into **⚙ Settings → save** before using any
-mutating action (loop start, gate approve); it is stored in `localStorage`.
+mutating action (new task, resume, gate approve); it is stored in `localStorage`. The header
+shows whether the daemon is running.
 
 Where things live (this is the #1 source of confusion):
 
@@ -238,14 +263,16 @@ Where things live (this is the #1 source of confusion):
   **"open in page"**, or ctrl/cmd-click / middle-click the task link to jump straight to the
   detail page. On the detail page the **Approve `<gate>`** box (note field + green
   **approve** button) appears only while the task is `blocked_on_user`.
-- **The dashboard "resume" button does not work in local mode** — it calls the removed
-  one-shot `loop resume` (see §5.5). For a `blocked_on_user` task, approve the gate instead;
-  for a `paused` task, set it back to `active` with `state.mjs`.
-- **The live log (bottom of the detail page) reads a fixed file**
-  `.agents/data/loop/ui-events.jsonl`. The daemon only writes there when `AIDLC_LOOP_EVENT_LOG`
-  points at that exact path. Starting the loop via the dashboard's **New task → start loop**
-  sets it automatically; a **manually started** daemon needs the export from §5.1, otherwise
-  the live log stays empty even though the loop is running fine.
+- **New task → create task** runs loop intake (§5.2) and starts the daemon only if none is
+  running (its stderr goes to `.agents/data/loop/daemon.log`). The response shows the new
+  task id, or the real intake error (for example an actionable interactive task).
+- **Task buttons follow the status:** a `paused` task shows **resume** (sets it back to
+  `active`); a `blocked_on_user` task shows **approve**, which opens the detail page.
+- **The live log (bottom of the detail page)** shows only that task's events (on connect, the
+  last 200 of them found in the most recent 256 KB of the file, then live). It reads the fixed file `.agents/data/loop/ui-events.jsonl`, which
+  rotates to `.jsonl.1` at 5 MB. The daemon only writes there when `AIDLC_LOOP_EVENT_LOG`
+  points at that exact path: a daemon started from the dashboard sets it automatically; a
+  **manually started** daemon needs the export from §5.1.
 
 Gate approval stays equally available on the trusted terminal (`loop-gate.mjs`, §5.4), which
 needs no token.
@@ -378,7 +405,10 @@ without it keeps failing until restarted.
   daemon without that export produces no events — see §5.1. Restart the daemon after setting
   it.
 - The live log is only on the task **detail** page (`/tasks/<id>`), not the dashboard.
-- A stopped daemon produces no events. Confirm it is alive with `ps` and `loop status`.
+- A stopped daemon produces no events. The dashboard header shows whether it is running;
+  check `.agents/data/loop/daemon.log` for start-up errors.
+- The detail-page log is filtered to that task; daemon-wide events (`daemon_poll`) appear
+  only in the raw file.
 - Check `tail -f .agents/data/loop/ui-events.jsonl` directly: if the file grows with
   `daemon_poll` lines, the daemon is healthy and only the browser side is stale (hard refresh).
 
@@ -392,8 +422,10 @@ paused task is not actionable. Diagnose from the evidence:
 node .agents/aidlc/scripts/state.mjs task show <task-id>
 ```
 
-Look for a `diagnostic` with `Paused while active: agent transport failure: …`. The cause is
-almost always the missing/invalid `AIDLC_OPENCODE_MODEL` (or an unavailable model). Then:
+Look for a `diagnostic` with `Paused while active: …`. For `agent transport failure: …` the
+cause is almost always the missing/invalid `AIDLC_OPENCODE_MODEL` (or an unavailable model).
+For `turn limit reached` the run used its whole per-run `maxTurns` budget without reaching a
+gate; raise `loop.limits.maxTurns` if the phase legitimately needs more turns. Then:
 
 1. Fix the environment (`opencode models`, export `AIDLC_OPENCODE_MODEL`).
 2. Kill and restart the daemon with the corrected environment (§5.1).
@@ -405,12 +437,13 @@ almost always the missing/invalid `AIDLC_OPENCODE_MODEL` (or an unavailable mode
 
 ### 9.8 Clicking "approve" (or "resume") on the web UI does nothing
 
-- The **approve** button exists only on the full detail page `/tasks/<id>`, not the
-  dashboard. Click the task → **"open in page"** (or ctrl/cmd-click the link).
+- The gate **approve** form exists only on the full detail page `/tasks/<id>`; the
+  dashboard's **approve** button on a `blocked_on_user` card just opens that page.
 - Mutating actions need the session token pasted into **Settings** first; without it they
   return `401` (shown inline under the button).
-- The dashboard **resume** button is a no-op in local mode (the one-shot `loop resume` was
-  removed — §5.5). Approve the gate or use `state.mjs task status --status active` instead.
+- **resume** only applies to a `paused` task; on any other status it returns `409` with the
+  reason (a gate wait must be approved instead). A resumed task runs only if it is
+  loop-owned and a daemon is running (§5.2).
 - If approve does *literally nothing* (no inline result, no error, no reload) and you are on
   an old build: open the browser DevTools console and look for
   `SyntaxError: Identifier 'post' has already been declared`. That was a UI bug (the detail

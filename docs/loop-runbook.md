@@ -91,7 +91,7 @@ Set `loop.mode` to `local` with a lead and workers (see [Enable the loop from `o
 | `ANTHROPIC_API_KEY` | if a provider is `claude` | Claude Code worker credential. |
 | `OPENCODE_API_KEY` | if a provider is `opencode` | OpenCode worker credential. The key follows the model provider: `openai/` → `OPENAI_API_KEY`, `anthropic/` → `ANTHROPIC_API_KEY`, otherwise `OPENCODE_API_KEY`. |
 | `AIDLC_LOCAL_WORKTREES_ROOT` | no | Root for worker worktrees; defaults to a system temp directory. It must be outside the integration checkout. |
-| `AIDLC_LOOP_EVENT_LOG` | no (see note) | Path to a JSONL event-log sidecar that feeds the web dashboard live log. The `aidlc-kit ui` **start loop** action sets it to `.agents/data/loop/ui-events.jsonl` automatically; a **manually started** daemon must set it to the same path or the dashboard live log stays empty. |
+| `AIDLC_LOOP_EVENT_LOG` | no (see note) | Path to a JSONL event-log sidecar that feeds the web dashboard live log. The `aidlc-kit ui` **New task** action (when it starts the daemon) sets it to `.agents/data/loop/ui-events.jsonl` automatically; a **manually started** daemon must set it to the same path or the dashboard live log stays empty. |
 
 Local Docker workers authenticate OpenCode from the environment and redirect OpenCode's XDG data/config roots into the worker's ephemeral HOME. The **isolated lead** container and **fleet worker** containers do not support OpenCode yet (`OpenCode workers require file-based credentials and are not available in isolated containers yet`); use a host-executed OpenCode lead (`loop.mjs run --agent opencode`) or choose Codex/Claude Code where container isolation is required.
 
@@ -108,10 +108,11 @@ The command records the tag into `loop.workerImage`; the local supervisor reuses
 
 ### Step 4 — Start, watch, and resume
 
-`start` reads the requirement from an interactive prompt or stdin — the requirement is never passed as an argument, and it is capped at 8192 bytes:
+In **local** mode `start` launches the singleton daemon and reads no requirement; add tasks with the web dashboard **New task** or loop intake (requirement on stdin, capped at 8192 bytes). In **fleet** mode `start` reads the requirement from an interactive prompt or stdin — never an argument:
 
 ```sh
 npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start
+echo "Add PDF report export" | node .agents/aidlc/scripts/loop-entry.mjs intake "" .   # local: add a task
 ```
 
 `status` prints the canonical task and its derived next action:
@@ -120,7 +121,7 @@ npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop start
 npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop status --task-id <task-id>
 ```
 
-`resume` continues a run that stopped at a pause, blocked state, or completion boundary:
+`resume` (fleet only) continues a run that stopped at a pause, blocked state, or completion boundary. In local mode the daemon auto-resumes; re-activate a paused task with `state.mjs task status <id> --status active` or the dashboard **resume** button:
 
 ```sh
 npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop resume --task-id <task-id>

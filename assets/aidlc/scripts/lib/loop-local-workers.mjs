@@ -30,7 +30,7 @@ const clean = (root) => { if (statusPaths(root).some((path) => !path.startsWith(
  * state: the caller alone marks canonical items done after inspecting results.
  * A failed batch is deliberately left for reconciliation, not auto-retried.
  */
-export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, worktreesRoot: inputWorktreesRoot, docker, timeoutMs = 600000, leaseMs = 300000, maxTurns = 12, maxStallTurns = 2, claim = claimLocalAssignment, heartbeat = heartbeatLocalAssignment, report = reportLocalAssignment, release = releaseLocalAssignment, onEvent = () => {} }) {
+export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, worktreesRoot: inputWorktreesRoot, docker, timeoutMs = 600000, leaseMs = 300000, maxTurns = 12, maxStallTurns = 2, claim = claimLocalAssignment, heartbeat = heartbeatLocalAssignment, report = reportLocalAssignment, release = releaseLocalAssignment, onEvent = () => {}, signal } = {}) {
   const root = resolve(inputRoot), worktreesRoot = resolve(inputWorktreesRoot);
   if (!identifier(taskId) || !Array.isArray(jobs) || !jobs.length) throw new Error("Valid task and non-empty jobs are required");
   if (root === worktreesRoot || worktreesRoot.startsWith(`${root}${sep}`)) throw new Error("Worker worktree root must be outside the integration checkout");
@@ -104,6 +104,10 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
   const execute = async ({ job, assignment, workspace, snapshot, baseline, branch }) => {
     let renewalError;
     const controller = new AbortController();
+    // An external cancel (daemon shutdown stage 2) aborts every worker turn the
+    // same way a lost lease does; the batch then fails and is not integrated.
+    const onCancel = () => { renewalError ??= new Error("Worker batch cancelled by daemon shutdown"); controller.abort(); };
+    if (signal?.aborted) onCancel(); else signal?.addEventListener("abort", onCancel, { once: true });
     const timer = setInterval(() => { Promise.resolve().then(() => heartbeat(root, taskId, assignment.id, leaseMs)).catch((error) => { renewalError = error; controller.abort(); }); }, Math.max(500, Math.floor(leaseMs / 3)));
     try {
       const home=mkdtempSync(join(tmpdir(), "aidlc-local-home-")); chmodSync(home,0o700);
@@ -162,7 +166,7 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
       if (commit === base || !committed.length || !scoped(committed, job.ownedPaths)) throw new Error("Worker commit is outside assignment scope");
       await report(root, taskId, assignment.id, { commit, changedPaths: committed, checkpoint: `provider=${job.agent}` });
       return { assignmentId: assignment.id, itemId: job.itemId, workerId: job.workerId, agent: job.agent, baseCommit: base, branch, commit, changedPaths: committed, workspace };
-    } finally { clearInterval(timer); }
+    } finally { clearInterval(timer); signal?.removeEventListener("abort", onCancel); }
   };
   const results = await Promise.allSettled(prepared.map(execute));
   const failure = results.find((result) => result.status === "rejected");

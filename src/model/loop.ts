@@ -6,4 +6,14 @@ export interface LoopConfig {
   mode: LoopMode;
   agents?: { lead: LoopAgent; workers: Record<string, LoopAgent> };
   workerImage?: Partial<Record<LoopAgent, string>>;
+  /** Local daemon canonical-state poll interval (1000–300000 ms). */
+  pollMs?: number;
+  /** Per-run lead loop limits; bounds mirror `validateLimits` in loop-runtime.mjs. */
+  limits?: LoopLimits;
+}
+
+export interface LoopLimits {
+  maxTurns?: number;
+  turnTimeoutMs?: number;
+  maxStallTurns?: number;
 }

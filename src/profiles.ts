@@ -6,7 +6,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { LOOP_PROVIDERS } from "./model.js";
-import type { AgentId, CommandSpec, LoopConfig, LoopAgent, McpConfig, Profile, ProjectConfig, RiskLevel, StateMutationMode, TrackerConfig } from "./model.js";
+import type { AgentId, CommandSpec, LoopConfig, LoopAgent, LoopLimits, McpConfig, Profile, ProjectConfig, RiskLevel, StateMutationMode, TrackerConfig } from "./model.js";
 
 const loopProviderNames = `${LOOP_PROVIDERS.slice(0, -1).join(", ")}, or ${LOOP_PROVIDERS[LOOP_PROVIDERS.length - 1]}`;
 const isLoopProvider = (value: unknown): value is LoopAgent => typeof value === "string" && (LOOP_PROVIDERS as readonly string[]).includes(value);
@@ -37,14 +37,33 @@ const object = (value: unknown, label: string): Record<string, unknown> => {
 export const validateLoopConfig = (value: unknown): LoopConfig => {
   if (value === undefined) return { mode: "off" };
   const item = object(value, "config.loop");
-  if (Object.keys(item).some((key) => !["mode", "agents", "workerImage"].includes(key)) || typeof item.mode !== "string" || !["off", "local", "fleet"].includes(item.mode)) throw new Error("config.loop requires a valid mode and only supported fields");
+  if (Object.keys(item).some((key) => !["mode", "agents", "workerImage", "pollMs", "limits"].includes(key)) || typeof item.mode !== "string" || !["off", "local", "fleet"].includes(item.mode)) throw new Error("config.loop requires a valid mode and only supported fields");
   const workerImage = validateWorkerImageMap(item.workerImage);
-  if (item.agents === undefined) return { mode: item.mode as LoopConfig["mode"], ...(workerImage ? { workerImage } : {}) };
+  if (item.pollMs !== undefined && (!Number.isSafeInteger(item.pollMs) || Number(item.pollMs) < 1_000 || Number(item.pollMs) > 300_000)) throw new Error("config.loop.pollMs must be an integer from 1000 to 300000");
+  const limits = validateLoopLimits(item.limits);
+  const optional = { ...(workerImage ? { workerImage } : {}), ...(item.pollMs !== undefined ? { pollMs: Number(item.pollMs) } : {}), ...(limits ? { limits } : {}) };
+  if (item.agents === undefined) return { mode: item.mode as LoopConfig["mode"], ...optional };
   const agents = object(item.agents, "config.loop.agents");
   if (Object.keys(agents).some((key) => !["lead", "workers"].includes(key)) || !isLoopProvider(agents.lead)) throw new Error(`config.loop.agents.lead must be ${loopProviderNames}`);
   const workers = object(agents.workers, "config.loop.agents.workers");
   for (const [id, provider] of Object.entries(workers)) if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || !isLoopProvider(provider)) throw new Error(`config.loop.agents.workers must map worker IDs to ${loopProviderNames}`);
-  return { mode: item.mode as LoopConfig["mode"], agents: { lead: agents.lead as LoopAgent, workers: workers as Record<string, LoopAgent> }, ...(workerImage ? { workerImage } : {}) };
+  return { mode: item.mode as LoopConfig["mode"], agents: { lead: agents.lead as LoopAgent, workers: workers as Record<string, LoopAgent> }, ...optional };
+};
+
+/** Bounds mirror `validateLimits` in assets/aidlc/scripts/lib/loop-runtime.mjs. */
+const LOOP_LIMIT_BOUNDS = { maxTurns: 1_000, turnTimeoutMs: 3_600_000, maxStallTurns: 20 } as const;
+
+const validateLoopLimits = (value: unknown): LoopLimits | undefined => {
+  if (value === undefined) return undefined;
+  const map = object(value, "config.loop.limits");
+  const result: LoopLimits = {};
+  for (const [key, entry] of Object.entries(map)) {
+    if (!Object.hasOwn(LOOP_LIMIT_BOUNDS, key)) throw new Error(`config.loop.limits supports only ${Object.keys(LOOP_LIMIT_BOUNDS).join(", ")}`);
+    const max = LOOP_LIMIT_BOUNDS[key as keyof typeof LOOP_LIMIT_BOUNDS];
+    if (!Number.isSafeInteger(entry) || Number(entry) < 1 || Number(entry) > max) throw new Error(`config.loop.limits.${key} must be an integer from 1 to ${max}`);
+    result[key as keyof LoopLimits] = Number(entry);
+  }
+  return result;
 };
 
 const validateWorkerImageMap = (value: unknown): Partial<Record<LoopAgent, string>> | undefined => {

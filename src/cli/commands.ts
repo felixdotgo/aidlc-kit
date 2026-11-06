@@ -3,7 +3,7 @@
  * Interactive prompting stays in ./prompt.ts and is invoked from here after
  * argv parsing.
  */
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { doctor, doctorData, status, statusData } from "../installer.js";
@@ -13,7 +13,7 @@ import { startUiServer } from "../task-ui.js";
 import { assertKnownOptions, DOCTOR_FLAGS, flags, MCP_FLAGS, rootArg, STATUS_FLAGS, UI_FLAGS, value } from "./argv.js";
 import { confirmGeneral, mcpSetupSelections } from "./prompt.js";
 
-export const runLoopCommand = (args: string[]): void => {
+export const runLoopCommand = async (args: string[]): Promise<void> => {
   const action = args[0] ?? "";
   if (!["start", "status", "resume", "worker-image"].includes(action)) throw new Error("Expected loop start, status, resume, or worker-image");
   const parsed = new Map<string, string>();
@@ -25,9 +25,26 @@ export const runLoopCommand = (args: string[]): void => {
   }
   const root = resolve(parsed.get("--root") ?? ".");
   const script = join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs");
-  const child = spawnSync(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? "", parsed.get("--provider") ?? "", parsed.get("--tag") ?? "", parsed.get("--title") ?? ""], { stdio: "inherit" });
-  if (child.error) throw child.error;
-  if (child.status !== 0) process.exitCode = child.status ?? 1;
+  const child = spawn(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? "", parsed.get("--provider") ?? "", parsed.get("--tag") ?? "", parsed.get("--title") ?? ""], { stdio: "inherit" });
+  // Stay alive while the child runs so its own staged shutdown (stop after the
+  // current turn → cancel the turn → exit) stays reachable. A terminal Ctrl-C
+  // already reaches the child through the process group, so SIGINT is only
+  // swallowed here (forwarding it would count twice); SIGTERM sent to this
+  // wrapper alone (e.g. `kill <pid>`) is forwarded instead of orphaning the child.
+  const onInterrupt = (): void => {};
+  const onTerminate = (): void => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); };
+  process.on("SIGINT", onInterrupt);
+  process.on("SIGTERM", onTerminate);
+  try {
+    const { code, signal } = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, rejectExit) => {
+      child.once("error", rejectExit);
+      child.once("exit", (exitCode, exitSignal) => resolveExit({ code: exitCode, signal: exitSignal }));
+    });
+    if (code !== 0) process.exitCode = code ?? (signal === "SIGINT" ? 130 : 1);
+  } finally {
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGTERM", onTerminate);
+  }
 };
 
 export const runUi = async (args: string[]): Promise<void> => {

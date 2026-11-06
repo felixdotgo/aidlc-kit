@@ -12,9 +12,9 @@
  * approve) require a per-session token generated at server start and printed
  * once to the terminal.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,10 @@ export interface UiOptions {
 
 const loopEntryPath = (root: string): string => join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs");
 const stateScriptPath = (root: string): string => join(root, ".agents", "aidlc", "scripts", "state.mjs");
-const eventsLogPath = (root: string): string => join(root, ".agents", "data", "loop", "ui-events.jsonl");
+const loopDataDir = (root: string): string => join(root, ".agents", "data", "loop");
+const eventsLogPath = (root: string): string => join(loopDataDir(root), "ui-events.jsonl");
+const daemonLockPath = (root: string): string => join(loopDataDir(root), "daemon.lock");
+const daemonLogPath = (root: string): string => join(loopDataDir(root), "daemon.log");
 const loopArgs = (root: string, action: string, taskId = ""): string[] => [loopEntryPath(root), action, taskId, root, "", "", "", ""];
 
 const ARTIFACT_NAMES = ["intent", "design", "workplan"] as const;
@@ -76,7 +79,7 @@ const readBody = (req: IncomingMessage): Promise<string> =>
     let size = 0;
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > 8192) { reject(new Error("Request body exceeds 8192 bytes")); req.destroy(); return; }
+      if (size > 8192) { reject(new BadRequest("Request body exceeds 8192 bytes")); req.destroy(); return; }
       chunks.push(chunk);
     });
     req.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));
@@ -98,9 +101,14 @@ const parseForm = (body: string): Record<string, string> => {
 
 const isJson = (contentType: string | undefined): boolean => (contentType ?? "").includes("application/json");
 
+/** A client error mapped to HTTP 400 by the request handler. */
+class BadRequest extends Error {}
+
 const readFields = (body: string, contentType: string | undefined): Record<string, string> => {
   if (isJson(contentType)) {
-    const value = JSON.parse(body) as Record<string, unknown>;
+    let value: unknown;
+    try { value = JSON.parse(body); } catch { throw new BadRequest("Request body is not valid JSON"); }
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new BadRequest("JSON body must be an object");
     const result: Record<string, string> = {};
     for (const [key, entry] of Object.entries(value)) if (typeof entry === "string") result[key] = entry;
     return result;
@@ -123,38 +131,72 @@ const tokenMatches = (token: string, supplied: string): boolean => {
   return timingSafeEqual(a, b);
 };
 
-const loopStatusJson = (root: string, taskId: string): unknown => {
-  const output = execFileSync(process.execPath, loopArgs(root, "status", taskId), {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024,
-    timeout: 5000,
-    stdio: ["ignore", "pipe", "pipe"],
+/** Runs an installed workflow script with the current Node binary without
+ * blocking the event loop; rejects with the child's stderr attached. */
+const runNode = (root: string, args: string[], options: { input?: string; timeout: number }): Promise<string> =>
+  new Promise((resolveRun, rejectRun) => {
+    const child = execFile(process.execPath, args, { cwd: root, encoding: "utf8", maxBuffer: 1024 * 1024, timeout: options.timeout }, (error, stdout, stderr) => {
+      if (error) { rejectRun(Object.assign(error, { stderr })); return; }
+      resolveRun(stdout);
+    });
+    child.stdin?.end(options.input ?? "");
   });
-  return JSON.parse(output) as unknown;
+
+export interface DaemonStatus { running: boolean; pid: number | null; startedAt: string | null }
+
+const pidAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 };
 
-const spawnLoop = (root: string, action: "start" | "resume", taskId: string, requirement?: string): number => {
-  const child = spawn(process.execPath, loopArgs(root, action, taskId), {
-    cwd: root,
-    detached: true,
-    stdio: requirement !== undefined ? ["pipe", "ignore", "ignore"] : ["ignore", "ignore", "ignore"],
-    env: { ...process.env, AIDLC_LOOP_EVENT_LOG: eventsLogPath(root) },
-  });
-  if (requirement !== undefined && child.stdin) { child.stdin.write(requirement); child.stdin.end(); }
-  child.unref();
-  return child.pid ?? 0;
+/** Reads the singleton loop daemon lock written by `loop-daemon.mjs`. */
+export const daemonStatus = (root: string): DaemonStatus => {
+  try {
+    const lock = JSON.parse(readFileSync(daemonLockPath(root), "utf8")) as { pid?: unknown; startedAt?: unknown };
+    const pid = typeof lock.pid === "number" && Number.isSafeInteger(lock.pid) && lock.pid > 0 ? lock.pid : null;
+    return { running: pid !== null && pidAlive(pid), pid, startedAt: typeof lock.startedAt === "string" ? lock.startedAt : null };
+  } catch {
+    return { running: false, pid: null, startedAt: null };
+  }
 };
 
-const approveGate = (root: string, taskId: string, gate: string, source: string): unknown => {
-  const output = execFileSync(process.execPath, [stateScriptPath(root), "gate", "approve", taskId, "--gate", gate, "--source", source, "--root", root], {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  return JSON.parse(output) as unknown;
+/** Starts the local daemon unless a live one already holds the singleton lock.
+ * The daemon's stderr goes to `daemon.log` so start-up failures are visible. */
+const ensureDaemon = (root: string): { pid: number | null; started: boolean } => {
+  const current = daemonStatus(root);
+  if (current.running) return { pid: current.pid, started: false };
+  mkdirSync(loopDataDir(root), { recursive: true });
+  const log = openSync(daemonLogPath(root), "a");
+  try {
+    const child = spawn(process.execPath, loopArgs(root, "start"), {
+      cwd: root,
+      detached: true,
+      stdio: ["ignore", log, log],
+      env: { ...process.env, AIDLC_LOOP_EVENT_LOG: eventsLogPath(root) },
+    });
+    // Without a listener a spawn failure would be an unhandled 'error' event and
+    // crash the UI server; the daemon's own start-up errors go to daemon.log.
+    child.on("error", () => { /* reported via daemon status on the next render */ });
+    child.unref();
+    return { pid: child.pid ?? null, started: true };
+  } finally { closeSync(log); }
 };
+
+const intakeTask = async (root: string, requirement: string): Promise<{ taskId: string; title: string }> => {
+  const output = await runNode(root, loopArgs(root, "intake"), { input: requirement, timeout: 30000 });
+  const parsed = JSON.parse(output) as { taskId?: unknown; title?: unknown };
+  if (typeof parsed.taskId !== "string" || typeof parsed.title !== "string") throw new Error("loop intake returned no task id");
+  return { taskId: parsed.taskId, title: parsed.title };
+};
+
+const activateTask = async (root: string, taskId: string): Promise<unknown> =>
+  JSON.parse(await runNode(root, [stateScriptPath(root), "task", "status", taskId, "--status", "active", "--root", root], { timeout: 30000 })) as unknown;
+
+const loopStatusJson = async (root: string, taskId: string): Promise<unknown> =>
+  JSON.parse(await runNode(root, loopArgs(root, "status", taskId), { timeout: 5000 })) as unknown;
+
+const approveGate = async (root: string, taskId: string, gate: string, source: string): Promise<unknown> =>
+  JSON.parse(await runNode(root, [stateScriptPath(root), "gate", "approve", taskId, "--gate", gate, "--source", source, "--root", root], { timeout: 30000 })) as unknown;
 
 const childError = (error: unknown): string => {
   if (error && typeof error === "object" && "stderr" in error) {
@@ -440,7 +482,10 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-resume]");
   if (!button) return;
   event.preventDefault();
-  post("/api/loop/resume", { taskId: button.getAttribute("data-resume") }).then((res) => { window.alert(JSON.stringify(res.body, null, 2)); location.reload(); });
+  post("/api/loop/resume", { taskId: button.getAttribute("data-resume") }).then((res) => {
+    if (res.status >= 200 && res.status < 300) location.reload();
+    else window.alert(res.body && res.body.error ? res.body.error : JSON.stringify(res.body, null, 2));
+  });
 });
 </script>`;
 
@@ -450,10 +495,24 @@ document.addEventListener("click", (event) => {
 
 const riskClass = (risk: string): string => risk === "high" || risk === "regulated" ? "is-danger" : risk === "normal" ? "is-warning" : "is-success";
 
-const renderTaskCard = (task: { id: string; title: string; phase: string; gate: string; status: string; risk: string; areas: string[] }): string => {
-  const resume = task.status === "blocked_on_user" || task.status === "paused"
-    ? `<button class="button is-small is-light" data-resume="${escapeHtml(task.id)}">resume</button>`
-    : "";
+/** Per-status action: a paused task can be re-activated for the daemon; a task
+ * waiting at a human gate links to the detail page that hosts gate approval. */
+const taskAction = (task: { id: string; status: string }, handedOff = false): string => {
+  if (handedOff) return `<a class="button is-small is-warning is-light" href="/tasks/${encodeURIComponent(task.id)}" title="handed off: follow the handoff actions">handoff</a>`;
+  if (task.status === "paused") return `<button class="button is-small is-light" data-resume="${escapeHtml(task.id)}">resume</button>`;
+  if (task.status === "blocked_on_user") return `<a class="button is-small is-success is-light" href="/tasks/${encodeURIComponent(task.id)}">approve</a>`;
+  return "";
+};
+
+const renderDaemonTag = (root: string): string => {
+  const daemon = daemonStatus(root);
+  return daemon.running
+    ? `<span class="tag is-success is-light" title="started ${escapeHtml(daemon.startedAt ?? "")}">daemon running · pid ${daemon.pid}</span>`
+    : `<span class="tag is-light" title="start it with: aidlc-kit loop start (or New task)">daemon stopped</span>`;
+};
+
+const renderTaskCard = (task: { id: string; title: string; phase: string; gate: string; status: string; risk: string; areas: string[] }, handedOff = false): string => {
+  const resume = taskAction(task, handedOff);
   return `<div class="box mb-2">
     <p class="is-size-7 has-text-grey"><a href="/tasks/${encodeURIComponent(task.id)}" data-task-link="${escapeHtml(task.id)}"><code>${escapeHtml(task.id)}</code></a></p>
     <p class="has-text-weight-semibold">${escapeHtml(task.title)}</p>
@@ -504,7 +563,7 @@ const renderModals = (): string => `
       <pre id="new-task-result" class="mt-3"></pre>
     </section>
     <footer class="modal-card-foot">
-      <button id="new-task-submit" class="button is-primary">start loop</button>
+      <button id="new-task-submit" class="button is-primary">create task</button>
       <button class="button" data-close>cancel</button>
     </footer>
   </div>
@@ -525,10 +584,12 @@ const renderModals = (): string => `
 </div>`;
 
 const renderDashboard = (options: UiOptions): string => {
-  const { items } = listTaskSummaries(loadState(options.root));
+  const state = loadState(options.root);
+  const { items } = listTaskSummaries(state);
+  const handedOff = new Set(Object.values(state.tasks).filter((task) => task.handoff).map((task) => task.id));
 
   const kanban = PHASES.map((phase) => {
-    const cards = items.filter((task) => task.phase === phase).map(renderTaskCard).join("\n");
+    const cards = items.filter((task) => task.phase === phase).map((task) => renderTaskCard(task, handedOff.has(task.id))).join("\n");
     return `<div class="column kanban-column">
       <h3 class="subtitle is-6 has-text-centered">${escapeHtml(phase)} <span class="tag is-light">${items.filter((t) => t.phase === phase).length}</span></h3>
       ${cards || "<p class=\"has-text-grey is-size-7 has-text-centered\">none</p>"}
@@ -537,9 +598,7 @@ const renderDashboard = (options: UiOptions): string => {
 
   const rows = items.length
     ? items.map((task) => {
-      const resume = task.status === "blocked_on_user" || task.status === "paused"
-        ? `<button class="button is-small" data-resume="${escapeHtml(task.id)}">resume</button>`
-        : "";
+      const resume = taskAction(task, handedOff.has(task.id));
       return `<tr><td><a href="/tasks/${encodeURIComponent(task.id)}" data-task-link="${escapeHtml(task.id)}"><code>${escapeHtml(task.id)}</code></a></td><td>${escapeHtml(task.title)}</td><td>${escapeHtml(task.phase)}</td><td>${escapeHtml(task.gate)}</td><td>${escapeHtml(task.status)}</td><td>${escapeHtml(task.risk)}</td><td>${escapeHtml(task.areas.join(", "))}</td><td>${resume}</td></tr>`;
     }).join("\n")
     : "<tr><td colspan=\"8\"><em>No active tasks</em></td></tr>";
@@ -548,7 +607,7 @@ const renderDashboard = (options: UiOptions): string => {
 <section class="section">
   <div class="container">
     <nav class="level">
-      <div class="level-left"><h1 class="title is-3">AI-DLC Loop</h1></div>
+      <div class="level-left"><h1 class="title is-3 mr-3">AI-DLC Loop</h1>${renderDaemonTag(options.root)}</div>
       <div class="level-right">
         <div class="buttons">
           <button class="button is-primary" data-open="new-task-modal">New task</button>
@@ -571,7 +630,7 @@ const renderDashboard = (options: UiOptions): string => {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <p class="help">Click a task to open a quick detail modal; ctrl/cmd-click or middle-click opens the full detail page. Gate approval stays available on the detail page and on the trusted terminal (<code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>).</p>
+    <p class="help">Click a task to open a quick detail modal; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. Gate approval stays available on the detail page and on the trusted terminal (<code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>).</p>
   </div>
 </section>
 ${renderModals()}
@@ -584,7 +643,7 @@ ${sharedScript}
  * Task detail (page and modal fragment share the same body).
  * ------------------------------------------------------------------------- */
 
-const renderTaskDetail = (options: UiOptions, id: string, fragment = false): string => {
+const renderTaskDetail = async (options: UiOptions, id: string, fragment = false): Promise<string> => {
   const state = loadState(options.root);
   const task = loadTask(options.root, id, state);
   if (!task) {
@@ -621,7 +680,7 @@ const renderTaskDetail = (options: UiOptions, id: string, fragment = false): str
 
   let loopStatus: string;
   try {
-    loopStatus = `<div class="box"><h3 class="subtitle">Loop status</h3>${jsonToHtml(loopStatusJson(options.root, id))}</div>`;
+    loopStatus = `<div class="box"><h3 class="subtitle">Loop status</h3>${jsonToHtml(await loopStatusJson(options.root, id))}</div>`;
   } catch (error) {
     loopStatus = `<div class="box"><h3 class="subtitle">Loop status</h3><p class="help is-danger">Loop status unavailable: ${escapeHtml(childError(error))}</p></div>`;
   }
@@ -665,7 +724,7 @@ document.getElementById("approve-button")?.addEventListener("click", async () =>
   if (res.status >= 200 && res.status < 300) setTimeout(() => location.reload(), 1500);
 });
 const logEl = document.getElementById("log");
-const events = new EventSource("/api/events");
+const events = new EventSource("/api/events?task-id=" + encodeURIComponent(${JSON.stringify(id)}));
 events.onmessage = (message) => {
   if (logEl.textContent === "connecting…") logEl.textContent = "";
   logEl.textContent += message.data + "\\n";
@@ -692,28 +751,103 @@ ${detailScript}
 </html>`;
 };
 
-const streamEvents = (options: UiOptions, res: ServerResponse, req: IncomingMessage): void => {
+/** On a fresh connection the SSE stream replays at most this many lines. */
+export const SSE_REPLAY_LINES = 200;
+const SSE_REPLAY_BYTES = 256 * 1024;
+const SSE_CHUNK_BYTES = 1024 * 1024;
+
+const readRange = (path: string, start: number, end: number): Buffer => {
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.alloc(Math.max(0, end - start));
+    let read = 0;
+    while (read < buffer.length) {
+      const count = readSync(fd, buffer, read, buffer.length - read, start + read);
+      if (!count) break;
+      read += count;
+    }
+    return buffer.subarray(0, read);
+  } finally { closeSync(fd); }
+};
+
+/**
+ * Streams the JSONL event-log sidecar as SSE. Tracks a byte offset (no full
+ * re-read per tick), emits only newline-terminated lines (a half-written line
+ * waits for the next tick), restarts at 0 when the file is truncated or rotated
+ * (inode change), and replays only the last SSE_REPLAY_LINES on a fresh
+ * connection. `?task-id=<id>` keeps only events stamped with that task id.
+ * Event ids are `<inode>:<offset>` so EventSource reconnects resume exactly.
+ */
+const streamEvents = (options: UiOptions, res: ServerResponse, req: IncomingMessage, url: URL): void => {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-store",
     "connection": "keep-alive",
   });
+  // Flush headers immediately (an empty log would otherwise leave the client
+  // waiting for the first event) and keep idle connections alive.
+  res.write(": connected\n\n");
+  let idleTicks = 0;
   const path = eventsLogPath(options.root);
-  const lastEventId = Number.parseInt(String(req.headers["last-event-id"] ?? "0"), 10);
-  let cursor = Number.isFinite(lastEventId) && lastEventId > 0 ? lastEventId : 0;
+  const taskFilter = url.searchParams.get("task-id") ?? "";
+  const resume = /^(\d+):(\d+)$/.exec(String(req.headers["last-event-id"] ?? ""));
+  let inode: number | null = resume ? Number(resume[1]) : null;
+  let position = resume ? Number(resume[2]) : -1;
+  let firstTick = true;
+  let discarding = false; // inside an oversized line that was skipped
+  const matches = (line: string): boolean => {
+    if (!taskFilter) return true;
+    try { return (JSON.parse(line) as { taskId?: unknown }).taskId === taskFilter; } catch { return false; }
+  };
+  const send = (line: string, id: string): void => { res.write(`id: ${id}\ndata: ${line}\n\n`); };
   const emit = (): void => {
     try {
-      const content = existsSync(path) ? readFileSync(path, "utf8") : "";
-      const lines = content.split("\n").filter((line) => line.length > 0);
-      while (cursor < lines.length) {
-        const line = lines[cursor] ?? "";
-        cursor += 1;
-        res.write(`id: ${cursor}\ndata: ${line}\n\n`);
+      let stat;
+      try { stat = statSync(path); } catch { return; }
+      // A stale Last-Event-ID from a rotated-away file replays the tail like a
+      // fresh connection; a rotation seen while streaming follows the new file.
+      if (inode !== null && stat.ino !== inode) { position = firstTick ? -1 : 0; discarding = false; }
+      firstTick = false;
+      inode = stat.ino;
+      if (position < 0) {
+        const start = Math.max(0, stat.size - SSE_REPLAY_BYTES);
+        const buffer = readRange(path, start, stat.size);
+        const last = buffer.lastIndexOf(0x0a);
+        if (last < 0) { position = start; return; }
+        position = start + last + 1;
+        let lines = buffer.subarray(0, last).toString("utf8").split("\n");
+        if (start > 0) lines = lines.slice(1);
+        for (const line of lines.filter((entry) => entry.length > 0 && matches(entry)).slice(-SSE_REPLAY_LINES)) send(line, `${inode}:${position}`);
+        return;
       }
+      if (stat.size < position) { position = 0; discarding = false; }
+      if (stat.size === position) return;
+      const end = Math.min(stat.size, position + SSE_CHUNK_BYTES);
+      let buffer = readRange(path, position, end);
+      if (discarding) {
+        // Drop the rest of an oversized line up to and including its newline.
+        const newline = buffer.indexOf(0x0a);
+        if (newline < 0) { position = end; return; }
+        position += newline + 1;
+        buffer = buffer.subarray(newline + 1);
+        discarding = false;
+      }
+      const last = buffer.lastIndexOf(0x0a);
+      if (last < 0) { if (buffer.length >= SSE_CHUNK_BYTES) { position = end; discarding = true; } return; }
+      let cursor = position;
+      for (const line of buffer.subarray(0, last).toString("utf8").split("\n")) {
+        cursor += Buffer.byteLength(line) + 1;
+        if (line.length > 0 && matches(line)) send(line, `${inode}:${cursor}`);
+      }
+      position += last + 1;
     } catch { /* transient read errors are ignored until the next poll */ }
   };
   emit();
-  const timer = setInterval(emit, 500);
+  const timer = setInterval(() => {
+    emit();
+    idleTicks += 1;
+    if (idleTicks >= 30) { idleTicks = 0; res.write(": keep-alive\n\n"); }
+  }, 500);
   const cleanup = (): void => clearInterval(timer);
   req.on("close", cleanup);
   res.on("close", cleanup);
@@ -726,7 +860,7 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
     const method = req.method ?? "GET";
     const path = url.pathname;
 
-    if (method === "GET" && path === "/api/events") return streamEvents(options, res, req);
+    if (method === "GET" && path === "/api/events") return streamEvents(options, res, req, url);
 
     void (async () => {
       try {
@@ -735,12 +869,12 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
         if (method === "GET" && path.startsWith("/partial/tasks/")) {
           const id = decodeURIComponent(path.slice("/partial/tasks/".length));
           if (!id) return sendJson(res, 404, { ok: false, error: "Not found" });
-          return sendHtml(res, renderTaskDetail(options, id, true));
+          return sendHtml(res, await renderTaskDetail(options, id, true));
         }
         if (method === "GET" && path.startsWith("/tasks/")) {
           const id = decodeURIComponent(path.slice("/tasks/".length));
           if (!id) return sendJson(res, 404, { ok: false, error: "Not found" });
-          return sendHtml(res, renderTaskDetail(options, id));
+          return sendHtml(res, await renderTaskDetail(options, id));
         }
         if (method === "GET" && path === "/api/tasks") {
           const query = url.searchParams;
@@ -773,7 +907,8 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
         if (method === "GET" && path === "/api/loop/status") {
           const taskId = url.searchParams.get("task-id") ?? "";
           if (!taskId) return sendJson(res, 400, { ok: false, error: "task-id query parameter is required" });
-          return sendJson(res, 200, { ok: true, result: loopStatusJson(options.root, taskId) });
+          try { return sendJson(res, 200, { ok: true, result: await loopStatusJson(options.root, taskId) }); }
+          catch (error) { return sendJson(res, 502, { ok: false, error: childError(error) }); }
         }
         if (method === "POST" && path === "/api/loop/start") {
           const body = await readBody(req);
@@ -781,8 +916,11 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           if (!tokenMatches(options.token ?? "", suppliedToken(req, fields))) return sendJson(res, 401, { ok: false, error: "Invalid or missing approve token" });
           const requirement = fields["requirement"] ?? "";
           if (!requirement.trim()) return sendJson(res, 400, { ok: false, error: "requirement is required" });
-          const pid = spawnLoop(options.root, "start", "", requirement);
-          return sendJson(res, 202, { ok: true, pid });
+          if (Buffer.byteLength(requirement) > 8192) return sendJson(res, 400, { ok: false, error: "requirement exceeds 8192 bytes" });
+          let created: { taskId: string; title: string };
+          try { created = await intakeTask(options.root, requirement); }
+          catch (error) { return sendJson(res, 409, { ok: false, error: childError(error) }); }
+          return sendJson(res, 201, { ok: true, ...created, daemon: ensureDaemon(options.root) });
         }
         if (method === "POST" && path === "/api/loop/resume") {
           const body = await readBody(req);
@@ -790,8 +928,16 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           if (!tokenMatches(options.token ?? "", suppliedToken(req, fields))) return sendJson(res, 401, { ok: false, error: "Invalid or missing approve token" });
           const taskId = fields["taskId"] ?? "";
           if (!taskId.trim()) return sendJson(res, 400, { ok: false, error: "taskId is required" });
-          const pid = spawnLoop(options.root, "resume", taskId);
-          return sendJson(res, 202, { ok: true, pid });
+          const task = loadTask(options.root, taskId);
+          if (!task) return sendJson(res, 404, { ok: false, error: `Task not found: ${taskId}` });
+          if (task.handoff) return sendJson(res, 409, { ok: false, error: "Task is handed off; follow its handoff actions (state.mjs task next) instead of resuming" });
+          if (task.status === "blocked_on_user") return sendJson(res, 409, { ok: false, error: "Task is waiting at a human gate; approve it on the task detail page" });
+          if (task.status !== "paused") return sendJson(res, 409, { ok: false, error: `Only a paused task can be resumed (status: ${task.status})` });
+          try {
+            return sendJson(res, 200, { ok: true, result: await activateTask(options.root, taskId), daemon: daemonStatus(options.root) });
+          } catch (error) {
+            return sendJson(res, 502, { ok: false, error: childError(error) });
+          }
         }
         if (method === "POST" && path === "/api/gate/approve") {
           const body = await readBody(req);
@@ -805,13 +951,15 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           if (!task) return sendJson(res, 404, { ok: false, error: `Task not found: ${taskId}` });
           if (task.status !== "blocked_on_user" || task.gate === "none") return sendJson(res, 409, { ok: false, error: "Task is not waiting at a human gate" });
           try {
-            return sendJson(res, 200, { ok: true, result: approveGate(options.root, taskId, task.gate, source) });
+            return sendJson(res, 200, { ok: true, result: await approveGate(options.root, taskId, task.gate, source) });
           } catch (error) {
             return sendJson(res, 502, { ok: false, error: childError(error) });
           }
         }
         return sendJson(res, 404, { ok: false, error: `Not found: ${method} ${path}` });
       } catch (error) {
+        if (res.headersSent || res.destroyed) return;
+        if (error instanceof BadRequest || error instanceof URIError) return sendJson(res, 400, { ok: false, error: error.message });
         sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
     })();

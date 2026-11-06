@@ -10,7 +10,7 @@ import { acquireLoopLease, assertLoopPath, readLiveLease } from "./loop-lease.mj
 import { isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
 
 export const DEFAULT_LIMITS = Object.freeze({ maxTurns: 12, turnTimeoutMs: 600000, maxStallTurns: 2 });
-const states = new Set(["running", "gate", "paused", "blocked", "terminal", "complete"]);
+const states = new Set(["running", "gate", "paused", "blocked", "terminal", "complete", "stopped"]);
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const iso = () => new Date().toISOString();
 const bounded = (value, name, max) => { const n = Number(value); if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new Error(`${name} must be an integer from 1 to ${max}`); return n; };
@@ -167,7 +167,16 @@ function pendingFeedback(task) {
 }
 function outputStop(record, action, gateView) { return { taskId: record.taskId, runId: record.runId, status: record.status, iteration: record.iteration, sessionId: record.sessionId, stopReason: record.stopReason, nextAction: action, ...(gateView ? { gateView } : {}) }; }
 
-export async function runLoop({ root: rootInput, taskId, agent, mode = "run", limits: limitInput, driver, dispatchBuild, onEvent = () => {}, preflight = false, precondition }) {
+/**
+ * `signal` requests a graceful stop at the next turn boundary; `cancelSignal`
+ * additionally cancels the in-flight agent turn. Either way the run ends as
+ * `stopped` (the canonical task is NOT paused) and a later resume continues
+ * from fresh canonical nextAction. A failure observed while stopping is a
+ * shutdown side effect (a terminal Ctrl-C also reaches the agent child), not a
+ * transport failure, so it never pauses the task.
+ */
+export async function runLoop({ root: rootInput, taskId, agent, mode = "run", limits: limitInput, driver, dispatchBuild, onEvent = () => {}, preflight = false, precondition, signal: stopSignal, cancelSignal }) {
+  const stopping = () => Boolean(stopSignal?.aborted || cancelSignal?.aborted);
   const root = validateRoot(rootInput);
   // --- Validate mode and load/create the loop record -------------------------
   let record = readLoopRecord(root, taskId);
@@ -199,6 +208,10 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
       envelope(root, "state.mjs", ["task", "status", taskId, "--status", "active"]);
       record.pausedByLoop = false;
       current = readCanonical(root, taskId);
+    } else if (mode === "resume" && record.pausedByLoop && current.task.status === "active") {
+      // A human (CLI or dashboard) already re-activated the task: the loop no
+      // longer owns that pause, so a later human pause must not be auto-undone.
+      record.pausedByLoop = false;
     }
     const initial = fingerprint(root, current.task, current.action);
     if (mode === "resume" && record.lastFingerprint && record.lastFingerprint !== initial.digest) onEvent({ type: "context_changed", message: "Canonical task context changed since the last checkpoint; continuing from fresh nextAction", previousCheckpointAt: record.checkpoint?.capturedAt ?? null });
@@ -206,6 +219,10 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
     record.checkpoint = checkpoint(current.task, current.action, initial.tree, record.iteration);
     record.status = "running"; record.stopReason = null; record.updatedAt = iso(); writeLoopRecord(root, record);
     // --- Main turn loop --------------------------------------------------------
+    // maxTurns bounds one runLoop invocation (a supervised run), not the task's
+    // lifetime: record.iteration stays a cumulative observability counter, so a
+    // long multi-gate task is not permanently re-paused on every resume.
+    let runTurns = 0;
   for (;;) {
       const kind = classifyAction(current.action);
       if (kind !== "run_phase") {
@@ -215,21 +232,24 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
         const gateView = kind === "await_user" ? cli(root, "gate-view.mjs", [taskId]).trim() : undefined;
         return outputStop(record, current.action, gateView);
       }
-      if (record.iteration >= limits.maxTurns) return pause("turn limit reached");
+      if (stopping()) return stop(cancelSignal?.aborted ? "daemon cancelled the run" : "daemon shutdown");
+      if (runTurns >= limits.maxTurns) return pause("turn limit reached");
       if (dispatchBuild && current.task.phase === "build" && current.task.tasks.some((item) => item.status === "todo" || item.status === "in_progress")) {
         try {
           await dispatchBuild({ root, taskId, task: current.task, action: current.action, record });
         } catch (error) {
+          if (stopping()) return stop("daemon shutdown interrupted build dispatch");
           return pause(`build dispatch failure: ${error.message}`);
         }
         const refreshed = readCanonical(root, taskId);
         const signal = fingerprint(root, refreshed.task, refreshed.action);
-        record.iteration += 1;
+        record.iteration += 1; runTurns += 1;
         record.stallTurns = signal.digest === record.lastFingerprint ? record.stallTurns + 1 : 0;
         record.lastFingerprint = signal.digest;
         record.checkpoint = checkpoint(refreshed.task, refreshed.action, signal.tree, record.iteration);
         record.updatedAt = iso(); writeLoopRecord(root, record);
         current = refreshed;
+        if (stopping()) continue; // the loop top records `stopped` (or the reached stop) instead of a stall pause
         if (classifyAction(current.action) === "run_phase" && record.stallTurns >= limits.maxStallTurns) return pause(`${record.stallTurns} consecutive turns without observable progress`);
         continue;
       }
@@ -239,6 +259,8 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
         if (typeof packet?.content !== "string" || !packet.content.trim()) throw new Error("Context packet was empty or invalid");
         prompt = packet.content;
       } catch {
+        // A terminal Ctrl-C also kills the context.mjs child: that is a shutdown, not a broken packet.
+        if (stopping()) return stop("daemon shutdown interrupted context generation");
         // No driver has started for this turn, so it is safe to resume after repairing context.
         // Do not persist arbitrary subprocess output or malformed context in the stop reason.
         return pause("context packet generation or validation failed; inspect context.mjs and resume after repair");
@@ -251,25 +273,37 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
       onEvent({ type: "turn_start", taskId, iteration: record.iteration, phase: current.action.phase, agent: record.agent });
       let observedId = record.sessionId;
       try {
-        const result = await driver({ agent: record.agent, root, sessionId: record.sessionId ?? undefined, prompt: `${prompt}\n\nLoop supervisor: complete the current authorized phase or item. Use canonical lifecycle commands for evidence and gates. Never approve a human gate. Stop at a gate and report progress.`, timeoutMs: limits.turnTimeoutMs, onSessionId: (id) => { if (typeof id !== "string" || !id) throw new Error("Invalid agent session id"); observedId = id; record.sessionId = id; record.updatedAt = iso(); writeLoopRecord(root, record); }, onEvent: (event) => { onEvent(event); if (event?.type === "lifecycle_command") { const observed = readCanonical(root, taskId); const signal = fingerprint(root, observed.task, observed.action); record.checkpoint = checkpoint(observed.task, observed.action, signal.tree, record.iteration); record.updatedAt = iso(); writeLoopRecord(root, record); } } });
+        const result = await driver({ agent: record.agent, root, sessionId: record.sessionId ?? undefined, prompt: `${prompt}\n\nLoop supervisor: complete the current authorized phase or item. Use canonical lifecycle commands for evidence and gates. Never approve a human gate. Stop at a gate and report progress.`, timeoutMs: limits.turnTimeoutMs, ...(cancelSignal ? { signal: cancelSignal } : {}), onSessionId: (id) => { if (typeof id !== "string" || !id) throw new Error("Invalid agent session id"); observedId = id; record.sessionId = id; record.updatedAt = iso(); writeLoopRecord(root, record); }, onEvent: (event) => { onEvent(event); if (event?.type === "lifecycle_command") { const observed = readCanonical(root, taskId); const signal = fingerprint(root, observed.task, observed.action); record.checkpoint = checkpoint(observed.task, observed.action, signal.tree, record.iteration); record.updatedAt = iso(); writeLoopRecord(root, record); } } });
         if (!observedId && result?.sessionId) { observedId = result.sessionId; record.sessionId = observedId; record.updatedAt = iso(); writeLoopRecord(root, record); }
         if (!observedId) throw new Error("Agent turn ended without a resumable session id");
       } catch (error) {
         current = readCanonical(root, taskId);
         if (classifyAction(current.action) === "await_user") continue;
+        if (stopping()) return stop(cancelSignal?.aborted ? "daemon cancelled the in-flight turn" : "daemon shutdown interrupted the turn");
         return pause(`agent transport failure: ${error.message}`);
       }
       onEvent({ type: "turn_end", taskId, iteration: record.iteration });
       const refreshed = readCanonical(root, taskId);
       if (approvalCount(refreshed.task) !== beforeApprovals) return pause("Approval evidence changed during an agent turn");
       const signal = fingerprint(root, refreshed.task, refreshed.action);
-      record.iteration += 1;
+      record.iteration += 1; runTurns += 1;
       record.stallTurns = signal.digest === record.lastFingerprint ? record.stallTurns + 1 : 0;
       record.lastFingerprint = signal.digest;
       record.checkpoint = checkpoint(refreshed.task, refreshed.action, signal.tree, record.iteration);
       record.updatedAt = iso(); writeLoopRecord(root, record);
       current = refreshed;
+      if (stopping()) continue; // the loop top records `stopped` (or the reached stop) instead of a stall pause
       if (classifyAction(current.action) === "run_phase" && record.stallTurns >= limits.maxStallTurns) return pause(`${record.stallTurns} consecutive turns without observable progress`);
+    }
+    function stop(reason) {
+      const stopped = readCanonical(root, taskId);
+      const signal = fingerprint(root, stopped.task, stopped.action);
+      record.status = "stopped"; record.stopReason = reason;
+      record.lastFingerprint = signal.digest;
+      record.checkpoint = checkpoint(stopped.task, stopped.action, signal.tree, record.iteration, reason);
+      record.updatedAt = iso(); writeLoopRecord(root, record);
+      onEvent({ type: "loop_stopped", taskId, reason });
+      return outputStop(record, stopped.action);
     }
     function pause(reason) {
       const fresh = readCanonical(root, taskId);

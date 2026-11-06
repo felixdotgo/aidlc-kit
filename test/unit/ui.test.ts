@@ -204,8 +204,9 @@ test("loop-stream sidecar appends JSONL when AIDLC_LOOP_EVENT_LOG is set", async
     streamLog({ type: "agent_text", text: "hello" });
     const lines = readFileSync(logPath, "utf8").trim().split("\n");
     assert.equal(lines.length, 2);
-    assert.deepEqual(JSON.parse(lines[0] ?? "{}"), { type: "daemon_poll", actionable: [] });
-    assert.deepEqual(JSON.parse(lines[1] ?? "{}"), { type: "agent_text", text: "hello" });
+    const strip = (line: string | undefined): Record<string, unknown> => { const { at, ...rest } = JSON.parse(line ?? "{}"); assert.match(String(at), /^\d{4}-\d{2}-\d{2}T/); return rest; };
+    assert.deepEqual(strip(lines[0]), { type: "daemon_poll", actionable: [] });
+    assert.deepEqual(strip(lines[1]), { type: "agent_text", text: "hello" });
   } finally {
     if (previous === undefined) delete process.env.AIDLC_LOOP_EVENT_LOG;
     else process.env.AIDLC_LOOP_EVENT_LOG = previous;
@@ -276,6 +277,237 @@ test("task detail page declares `post` exactly once so the approve handler is no
     assert.equal((html.match(/const post\s*=/g) ?? []).length, 1);
     assert.match(html, /approve-button/);
     assert.match(html, /\/api\/gate\/approve/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+/* Installed-workflow fixture: real state.mjs/loop-entry.mjs with a local loop config. */
+const startInstalledFixture = async (): Promise<{ base: string; token: string; root: string; close: () => Promise<void>; state: (...args: string[]) => any }> => {
+  const { applyPlan, planInit } = await import("../../src/installer.js");
+  const { startUiServer } = await import("../../src/task-ui.js");
+  const { execFileSync } = await import("node:child_process");
+  const root = mkdtempSync(join(tmpdir(), "aidlc-ui-installed-"));
+  applyPlan(root, planInit({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false }));
+  const configPath = join(root, ".agents", "config.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  config.loop = { mode: "local", agents: { lead: "codex", workers: { "worker-a": "codex" } } };
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  // A live lock owned by this test process keeps ensureDaemon from spawning a real daemon.
+  mkdirSync(join(root, ".agents", "data", "loop"), { recursive: true });
+  writeFileSync(join(root, ".agents", "data", "loop", "daemon.lock"), JSON.stringify({ schemaVersion: 1, pid: process.pid, token: "test", startedAt: new Date().toISOString() }));
+  const state = (...args: string[]): any => JSON.parse(execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), ...args, "--root", root], { encoding: "utf8" }));
+  const { server, port, token } = await startUiServer({ root, host: "127.0.0.1", port: 0 });
+  const close = (): Promise<void> => new Promise<void>((resolveClose) => { server.close(() => resolveClose()); rmSync(root, { recursive: true, force: true }); });
+  return { base: `http://127.0.0.1:${port}`, token, root, close, state };
+};
+
+test("new task creates a loop-owned task through intake and reuses the live daemon", { skip: process.platform === "win32" }, async () => {
+  const fixture = await startInstalledFixture();
+  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  try {
+    const first = await fetch(`${fixture.base}/api/loop/start`, { method: "POST", headers, body: JSON.stringify({ requirement: "Add login retry\nwith backoff" }) });
+    assert.equal(first.status, 201);
+    const created = (await first.json()) as { taskId: string; title: string; daemon: { pid: number; started: boolean } };
+    assert.equal(created.taskId, "add-login-retry");
+    assert.equal(created.title, "Add login retry");
+    assert.deepEqual(created.daemon, { pid: process.pid, started: false });
+    assert.equal(fixture.state("task", "show", "add-login-retry").result.status, "active");
+    assert.ok(readFileSync(join(fixture.root, ".agents/data/tasks/add-login-retry/loop-intake.json"), "utf8").includes("\"authority\":\"local\""));
+
+    // A second loop task is allowed while the first (loop-owned) one is actionable, with a de-duplicated id.
+    const second = await fetch(`${fixture.base}/api/loop/start`, { method: "POST", headers, body: JSON.stringify({ requirement: "Add login retry" }) });
+    assert.equal(second.status, 201);
+    assert.equal(((await second.json()) as { taskId: string }).taskId, "add-login-retry-2");
+
+    // An actionable interactive (non-loop) task blocks intake instead of being silently switched away from.
+    fixture.state("task", "create", "manual-work", "--title", "Manual", "--switch-from", "add-login-retry,add-login-retry-2");
+    const blocked = await fetch(`${fixture.base}/api/loop/start`, { method: "POST", headers, body: JSON.stringify({ requirement: "Another thing" }) });
+    assert.equal(blocked.status, 409);
+    assert.match(((await blocked.json()) as { error: string }).error, /interactive work is actionable: manual-work/);
+    const { existsSync } = await import("node:fs");
+    assert.equal(existsSync(join(fixture.root, ".agents/data/tasks/another-thing")), false);
+
+    // A create failure after intake files are written rolls them back (no orphan loop-intake.json).
+    const { execFileSync } = await import("node:child_process");
+    fixture.state("task", "status", "manual-work", "--status", "paused", "--mode", "audited", "--reason", "test", "--source", "test");
+    assert.throws(() => execFileSync(process.execPath, [join(fixture.root, ".agents/aidlc/scripts/loop-entry.mjs"), "intake", "Manual-Work", fixture.root], { input: "Collides by case", stdio: ["pipe", "pipe", "pipe"] }), /collides case-insensitively/);
+    assert.equal(existsSync(join(fixture.root, ".agents/data/tasks/Manual-Work/loop-intake.json")), false);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("resume re-activates only a paused task and points gate waits to approval", { skip: process.platform === "win32" }, async () => {
+  const fixture = await startInstalledFixture();
+  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  try {
+    fixture.state("task", "create", "paused-task", "--title", "Paused");
+    const active = await fetch(`${fixture.base}/api/loop/resume`, { method: "POST", headers, body: JSON.stringify({ taskId: "paused-task" }) });
+    assert.equal(active.status, 409);
+
+    fixture.state("task", "status", "paused-task", "--status", "paused", "--mode", "audited", "--reason", "test", "--source", "test");
+    const home = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(home, /data-resume="paused-task"/);
+    assert.match(home, /daemon running · pid/);
+
+    const resumed = await fetch(`${fixture.base}/api/loop/resume`, { method: "POST", headers, body: JSON.stringify({ taskId: "paused-task" }) });
+    assert.equal(resumed.status, 200);
+    assert.equal(fixture.state("task", "show", "paused-task").result.status, "active");
+
+    const missing = await fetch(`${fixture.base}/api/loop/resume`, { method: "POST", headers, body: JSON.stringify({ taskId: "nope" }) });
+    assert.equal(missing.status, 404);
+
+    fixture.state("task", "create", "handed-off", "--title", "Handed off", "--switch-from", "paused-task");
+    fixture.state("task", "handoff", "handed-off", "--kind", "other", "--reason", "test", "--source", "test");
+    const handoff = await fetch(`${fixture.base}/api/loop/resume`, { method: "POST", headers, body: JSON.stringify({ taskId: "handed-off" }) });
+    assert.equal(handoff.status, 409);
+    assert.match(((await handoff.json()) as { error: string }).error, /handed off/);
+    assert.match(await (await fetch(`${fixture.base}/`)).text(), /href="\/tasks\/handed-off"[^>]*>handoff<\/a>/);
+  } finally {
+    await fixture.close();
+  }
+
+  const gated = await startFixture(makeTask({ status: "blocked_on_user" }), true);
+  try {
+    const res = await fetch(`${gated.base}/api/loop/resume`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": gated.token }, body: JSON.stringify({ taskId: "task-a" }) });
+    assert.equal(res.status, 409);
+    assert.match(((await res.json()) as { error: string }).error, /approve it on the task detail page/);
+    const home = await (await fetch(`${gated.base}/`)).text();
+    assert.match(home, /href="\/tasks\/task-a">approve<\/a>/);
+    assert.doesNotMatch(home, /data-resume="task-a"/);
+  } finally {
+    await gated.close();
+  }
+});
+
+/** Reads an SSE response until `done(text)` holds or the timeout elapses. */
+const readSse = async (url: string, done: (text: string) => boolean, headers: Record<string, string> = {}, timeoutMs = 3000): Promise<string> => {
+  const controller = new AbortController();
+  const response = await fetch(url, { headers, signal: controller.signal });
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (!done(text) && Date.now() < deadline) {
+      const next = await Promise.race([reader.read(), new Promise<null>((resolveWait) => setTimeout(() => resolveWait(null), Math.max(1, deadline - Date.now())))]);
+      if (!next || next.done) break;
+      text += decoder.decode(next.value, { stream: true });
+    }
+  } finally { controller.abort(); }
+  return text;
+};
+// Only complete events (terminated by a blank line) count; a chunk may end mid-event.
+const sseData = (text: string): any[] => text.split("\n\n").slice(0, -1).flatMap((block) => block.split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6))));
+
+test("SSE replays only the last lines, filters by task, and waits for complete lines", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const dir = join(fixture.root, ".agents", "data", "loop");
+    const logPath = join(dir, "ui-events.jsonl");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(logPath, Array.from({ length: 250 }, (_x, n) => JSON.stringify({ type: "agent_text", taskId: n % 2 ? "odd" : "even", n })).join("\n") + "\n");
+
+    const all = sseData(await readSse(`${fixture.base}/api/events`, (text) => sseData(text).length >= 200));
+    assert.equal(all.length, 200);
+    assert.equal(all[0].n, 50);
+    assert.equal(all[199].n, 249);
+
+    const odd = sseData(await readSse(`${fixture.base}/api/events?task-id=odd`, (text) => sseData(text).length >= 125));
+    assert.equal(odd.length, 125);
+    assert.ok(odd.every((event) => event.taskId === "odd"));
+
+    // A half-written line is held back until its newline arrives.
+    const controller = new AbortController();
+    const response = await fetch(`${fixture.base}/api/events?task-id=live`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    const pump = (async () => { try { for (;;) { const next = await reader.read(); if (next.done) break; text += decoder.decode(next.value, { stream: true }); } } catch { /* aborted */ } })();
+    await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+    appendFileSync(logPath, '{"type":"agent_text","taskId":"live","text":"par');
+    await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+    assert.equal(sseData(text).length, 0);
+    appendFileSync(logPath, 'tial"}\n');
+    await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+    assert.deepEqual(sseData(text).map((event) => event.text), ["partial"]);
+
+    // Rotation (new inode) restarts from the beginning of the new file.
+    const { renameSync } = await import("node:fs");
+    renameSync(logPath, `${logPath}.1`);
+    writeFileSync(logPath, `${JSON.stringify({ type: "agent_text", taskId: "live", text: "rotated" })}\n`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+    assert.deepEqual(sseData(text).map((event) => event.text), ["partial", "rotated"]);
+    controller.abort();
+    await pump;
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("SSE resumes from a Last-Event-ID offset and restarts after truncation", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const dir = join(fixture.root, ".agents", "data", "loop");
+    const logPath = join(dir, "ui-events.jsonl");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(logPath, `${JSON.stringify({ n: 1 })}\n${JSON.stringify({ n: 2 })}\n`);
+    const first = await readSse(`${fixture.base}/api/events`, (text) => sseData(text).length >= 2);
+    const lastId = first.split("\n").filter((line) => line.startsWith("id: ")).pop()!.slice(4);
+    appendFileSync(logPath, `${JSON.stringify({ n: 3 })}\n`);
+    const resumed = sseData(await readSse(`${fixture.base}/api/events`, (text) => sseData(text).length >= 1, { "last-event-id": lastId }));
+    assert.deepEqual(resumed.map((event) => event.n), [3]);
+
+    // A Last-Event-ID from a rotated-away file (other inode) replays the tail instead of the whole file.
+    const stale = sseData(await readSse(`${fixture.base}/api/events`, (text) => sseData(text).length >= 3, { "last-event-id": "1:999999" }));
+    assert.deepEqual(stale.map((event) => event.n), [1, 2, 3]);
+
+    // Truncated in place (same inode, smaller size): restart at 0.
+    writeFileSync(logPath, `${JSON.stringify({ n: 9 })}\n`);
+    const afterTruncate = sseData(await readSse(`${fixture.base}/api/events`, (text) => sseData(text).length >= 1, { "last-event-id": lastId }));
+    assert.deepEqual(afterTruncate.map((event) => event.n), [9]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("loop-stream sidecar creates its directory and rotates at the size cap", async () => {
+  const base = mkdtempSync(join(tmpdir(), "aidlc-events-rotate-"));
+  const logPath = join(base, "nested", "dir", "events.jsonl");
+  const previous = process.env.AIDLC_LOOP_EVENT_LOG;
+  process.env.AIDLC_LOOP_EVENT_LOG = logPath;
+  try {
+    // @ts-ignore -- runtime conformance; assets are copied to dist by build-assets
+    const { streamLog, EVENT_LOG_MAX_BYTES } = await import("../../assets/.agents/aidlc/scripts/lib/loop-stream.mjs");
+    streamLog({ type: "daemon_poll", actionable: [] });
+    assert.equal(readFileSync(logPath, "utf8").trim().split("\n").length, 1);
+    writeFileSync(logPath, "x".repeat(EVENT_LOG_MAX_BYTES));
+    streamLog({ type: "daemon_poll", actionable: ["t"] });
+    assert.equal(readFileSync(`${logPath}.1`, "utf8").length, EVENT_LOG_MAX_BYTES);
+    const lines = readFileSync(logPath, "utf8").trim().split("\n");
+    assert.equal(lines.length, 1);
+    assert.deepEqual(JSON.parse(lines[0] ?? "{}").actionable, ["t"]);
+  } finally {
+    if (previous === undefined) delete process.env.AIDLC_LOOP_EVENT_LOG;
+    else process.env.AIDLC_LOOP_EVENT_LOG = previous;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("malformed or non-object JSON bodies are client errors, and a failing loop status is a gateway error", async () => {
+  const fixture = await startFixture(makeTask());
+  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  try {
+    for (const body of ["{not json", "null", "[1,2]", "\"text\""]) {
+      const res = await fetch(`${fixture.base}/api/gate/approve`, { method: "POST", headers, body });
+      assert.equal(res.status, 400, body);
+    }
+    const badPath = await fetch(`${fixture.base}/tasks/%E0%A4%A`);
+    assert.equal(badPath.status, 400);
+    // No installed loop-entry in this fixture: the async status call fails and is reported, not thrown.
+    const status = await fetch(`${fixture.base}/api/loop/status?task-id=task-a`);
+    assert.equal(status.status, 502);
   } finally {
     await fixture.close();
   }

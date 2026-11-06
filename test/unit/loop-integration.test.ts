@@ -152,3 +152,79 @@ test("context failures before the driver pause safely and permit resume after re
     });
   }
 });
+
+test("maxTurns bounds each supervised run, not the task lifetime", { skip: process.platform === "win32" }, async () => {
+  await fixture("turns", async (root) => {
+    const id = "loop-turns";
+    runState(root, "task", "create", id, "--title", "Loop turns");
+    const taskDir = join(root, ".agents/data/tasks", id);
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(join(taskDir, "intent.md"), intent);
+    const { runLoop } = await loadRuntime();
+    let calls = 0;
+    // Each turn makes observable progress (new evidence) but never reaches a gate.
+    const progress = async ({ onSessionId }: { onSessionId: (id: string) => void }) => {
+      calls += 1;
+      onSessionId("turns-session");
+      runState(root, "evidence", "add", id, "--kind", "test", "--area", "root", "--result", "pass", "--source", "fixture", "--detail", `turn ${calls}`);
+      return { sessionId: "turns-session", resultText: "", diagnostics: [] };
+    };
+    const first = await runLoop({ root, taskId: id, agent: "codex", driver: progress, limits: { maxTurns: 2, maxStallTurns: 5 } });
+    assert.equal(first.status, "paused");
+    assert.match(first.stopReason, /turn limit reached/);
+    assert.equal(calls, 2);
+    // Resuming grants a fresh per-run budget instead of re-pausing immediately.
+    const second = await runLoop({ root, taskId: id, mode: "resume", driver: progress });
+    assert.equal(second.status, "paused");
+    assert.match(second.stopReason, /turn limit reached/);
+    assert.equal(calls, 4);
+    const record = JSON.parse(readFileSync(join(root, ".agents/data/loop", `${id}.json`), "utf8"));
+    assert.equal(record.iteration, 4);
+  });
+});
+
+test("a daemon stop ends the run as stopped without pausing the task, and the run resumes later", { skip: process.platform === "win32" }, async () => {
+  await fixture("stop", async (root) => {
+    const id = "loop-stop";
+    runState(root, "task", "create", id, "--title", "Loop stop");
+    const taskDir = join(root, ".agents/data/tasks", id);
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(join(taskDir, "intent.md"), intent);
+    const { runLoop } = await loadRuntime();
+    const stop = new AbortController();
+    // Simulates a terminal Ctrl-C: the stop signal fires and the agent child dies mid-turn.
+    const interrupted = async ({ onSessionId }: { onSessionId: (id: string) => void }) => {
+      onSessionId("stop-session");
+      stop.abort();
+      throw new Error("codex exited SIGINT");
+    };
+    const stopped = await runLoop({ root, taskId: id, agent: "codex", driver: interrupted, signal: stop.signal });
+    assert.equal(stopped.status, "stopped");
+    assert.match(stopped.stopReason, /daemon shutdown/);
+    assert.equal(runState(root, "task", "show", id).result.status, "active");
+
+    // A pre-cancelled run stops before calling the driver at all.
+    const cancel = new AbortController(); cancel.abort();
+    let called = false;
+    const never = async () => { called = true; return { sessionId: "stop-session" }; };
+    const cancelled = await runLoop({ root, taskId: id, mode: "resume", driver: never, cancelSignal: cancel.signal });
+    assert.equal(cancelled.status, "stopped");
+    assert.equal(called, false);
+
+    const progress = async ({ onSessionId }: { onSessionId: (id: string) => void }) => {
+      onSessionId("stop-session");
+      runState(root, "task", "status", id, "--status", "blocked_on_user");
+      return { sessionId: "stop-session", resultText: "ready", diagnostics: [] };
+    };
+    // A stop requested during a turn that then ends normally without progress is
+    // a stop, not a stall pause.
+    const stopAgain = new AbortController();
+    const quietTurn = async ({ onSessionId }: { onSessionId: (id: string) => void }) => { onSessionId("stop-session"); stopAgain.abort(); return { sessionId: "stop-session", resultText: "", diagnostics: [] }; };
+    const quiet = await runLoop({ root, taskId: id, mode: "resume", driver: quietTurn, signal: stopAgain.signal, limits: { maxStallTurns: 1 } });
+    assert.equal(quiet.status, "stopped");
+    assert.equal(runState(root, "task", "show", id).result.status, "active");
+
+    const resumed = await runLoop({ root, taskId: id, mode: "resume", driver: progress });
+    assert.equal(resumed.status, "gate");
+  });
+});

@@ -16,10 +16,10 @@ const digest = (value) => createHash("sha256").update(JSON.stringify(value)).dig
 /**
  * Bind the canonical local store, distinct supervisor lease and the existing
  * leased runner. The caller owns process supervision and human gate approval.
- * Abort stops polling or the next turn; the current runLoop call is bounded by
- * its existing timeouts and is not cancelled by this wrapper.
+ * `signal` stops polling and asks runLoop to stop at its next turn boundary;
+ * `cancelSignal` also cancels the in-flight agent turn. Both end as `stopped`.
  */
-export function createLocalLoopSupervisor({ root: rootInput, taskId, agent, limits, driver = runAgentTurn, preflight = true, pollMs, signal, untilStop = false, onEvent = () => {}, runner = runLoop } = {}) {
+export function createLocalLoopSupervisor({ root: rootInput, taskId, agent, limits, driver = runAgentTurn, preflight = true, pollMs, signal, cancelSignal, untilStop = false, onEvent = () => {}, runner = runLoop } = {}) {
   requireLocalAuthority();
   const root = validateRoot(rootInput);
   if (!isLoopProvider(agent)) throw new Error(`local lead agent must be ${LOOP_PROVIDER_LIST}`);
@@ -43,7 +43,7 @@ export function createLocalLoopSupervisor({ root: rootInput, taskId, agent, limi
           if (snapshot.task.status !== "active" || snapshot.nextAction.classification !== "run_phase") return { status: "blocked", taskId, reason: "Canonical state changed before runner acquired lease" };
           expected = { taskId, phase: snapshot.task.phase, taskHash: digest(snapshot.task), evidenceHash: digest(snapshot.task.evidence), evidenceCount: snapshot.task.evidence.length };
         }
-        const result = await runner({ root, taskId, agent, mode: nextMode, limits, driver, preflight, precondition: expected, onEvent });
+        const result = await runner({ root, taskId, agent, mode: nextMode, limits, driver, preflight, precondition: expected, onEvent, signal, cancelSignal });
         nextMode = "resume";
         return result;
       }
@@ -79,7 +79,7 @@ const itemPrompt = (root, taskId, itemId) => {
 
 /** Fan dependency-ready build items out to Docker-isolated workers, then record
  * each integrated item as done. No worker ever marks canonical progress itself. */
-async function dispatchLocalBuild({ root, taskId, task, workers, images, credentials, worktreesRoot, onEvent }) {
+async function dispatchLocalBuild({ root, taskId, task, workers, images, credentials, worktreesRoot, onEvent, cancelSignal }) {
   const ready = readyTaskItems(task).ready;
   if (!ready.length) return;
   const providers = Object.entries(workers);
@@ -96,7 +96,7 @@ async function dispatchLocalBuild({ root, taskId, task, workers, images, credent
   for (const provider of new Set(jobs.map((job) => job.agent))) {
     resolvedImages[provider] = ensureWorkerImage({ root, provider, image: images[provider] ?? defaultWorkerImageTag(provider), onEvent });
   }
-  const completed = await runLocalWorkerBatch({ root, taskId, jobs, worktreesRoot, docker: { images: resolvedImages, credentials } });
+  const completed = await runLocalWorkerBatch({ root, taskId, jobs, worktreesRoot, docker: { images: resolvedImages, credentials }, signal: cancelSignal });
   const lifecycle = (args) => execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), ...args, "--root", root], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024 });
   for (const result of completed) {
     const envelope = JSON.parse(lifecycle(["task", "item", taskId, result.itemId, "--status", "done"]));
@@ -112,7 +112,7 @@ async function dispatchLocalBuild({ root, taskId, task, workers, images, credent
  * receive environment credentials; the host lead and the trusted terminal own
  * gates and lifecycle state.
  */
-export function createIsolatedLocalSupervisor({ root: rootInput, taskId, agent, workers = {}, limits, docker, worktreesRoot, workerImages = {}, pollMs, signal, untilStop = false, onEvent = () => {}, runner = runLoop, driver = runAgentTurn, preflight = true } = {}) {
+export function createIsolatedLocalSupervisor({ root: rootInput, taskId, agent, workers = {}, limits, docker, worktreesRoot, workerImages = {}, pollMs, signal, cancelSignal, untilStop = false, onEvent = () => {}, runner = runLoop, driver = runAgentTurn, preflight = true } = {}) {
   requireLocalAuthority();
   const root = validateRoot(rootInput);
   if (!isLoopProvider(agent)) throw new Error(`local lead agent must be ${LOOP_PROVIDER_LIST}`);
@@ -140,8 +140,8 @@ export function createIsolatedLocalSupervisor({ root: rootInput, taskId, agent, 
           if (snapshot.task.status !== "active" || snapshot.nextAction.classification !== "run_phase") return { status: "blocked", taskId, reason: "Canonical state changed before runner acquired lease" };
           expected = { taskId, phase: snapshot.task.phase, taskHash: digest(snapshot.task), evidenceHash: digest(snapshot.task.evidence), evidenceCount: snapshot.task.evidence.length };
         }
-        const dispatchBuild = async ({ root, taskId, task }) => dispatchLocalBuild({ root, taskId, task, workers, images, credentials, worktreesRoot: worktrees, onEvent });
-        const result = await runner({ root, taskId, agent, mode: nextMode, limits, driver, dispatchBuild, preflight, precondition: expected, onEvent });
+        const dispatchBuild = async ({ root, taskId, task }) => dispatchLocalBuild({ root, taskId, task, workers, images, credentials, worktreesRoot: worktrees, onEvent, cancelSignal });
+        const result = await runner({ root, taskId, agent, mode: nextMode, limits, driver, dispatchBuild, preflight, precondition: expected, onEvent, signal, cancelSignal });
         nextMode = "resume";
         return result;
       }

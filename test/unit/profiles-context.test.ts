@@ -24,6 +24,18 @@ test("loop provider validation uses the shared enumeration and deterministic mes
   assert.throws(() => validateLoopConfig({ mode: "local", agents: { lead: "codex", workers: { worker: "gemini" } } }), (error: unknown) => error instanceof Error && error.message === "config.loop.agents.workers must map worker IDs to codex, claude, or opencode");
 });
 
+test("loop config accepts the documented pollMs and per-run limits within runtime bounds", () => {
+  const agents = { lead: "codex" as const, workers: { worker: "codex" as const } };
+  assert.deepEqual(validateLoopConfig({ mode: "local", agents, pollMs: 5000, limits: { maxTurns: 30, turnTimeoutMs: 900000, maxStallTurns: 3 } }), { mode: "local", agents, pollMs: 5000, limits: { maxTurns: 30, turnTimeoutMs: 900000, maxStallTurns: 3 } });
+  assert.deepEqual(validateLoopConfig({ mode: "off", pollMs: 1000 }), { mode: "off", pollMs: 1000 });
+  assert.throws(() => validateLoopConfig({ mode: "local", agents, pollMs: 999 }), /config\.loop\.pollMs must be an integer from 1000 to 300000/);
+  assert.throws(() => validateLoopConfig({ mode: "local", agents, pollMs: 300001 }), /config\.loop\.pollMs/);
+  assert.throws(() => validateLoopConfig({ mode: "local", agents, limits: { maxTurns: 0 } }), /config\.loop\.limits\.maxTurns must be an integer from 1 to 1000/);
+  assert.throws(() => validateLoopConfig({ mode: "local", agents, limits: { maxStallTurns: 21 } }), /maxStallTurns must be an integer from 1 to 20/);
+  assert.throws(() => validateLoopConfig({ mode: "local", agents, limits: { turbo: 1 } }), /config\.loop\.limits supports only/);
+  assert.throws(() => validateLoopConfig({ mode: "local", agents, limits: { toString: 5 } }), /config\.loop\.limits supports only/);
+});
+
 test("config and profiles are dependency-free, composable, and traversal-safe", () => {
   const root = mkdtempSync(join(tmpdir(), "aidlc-profile-"));
   try {

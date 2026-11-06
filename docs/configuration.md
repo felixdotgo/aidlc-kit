@@ -90,19 +90,20 @@ Set the default risk level deliberately. Planning, migrations, cross-service con
 > [!WARNING]
 > The loop and the coordination service are **experimental and unfinished**: they contain known bugs and rough edges, and — because the package is still pre-1.0 (`0.x`) — the `loop.*` fields, provider mappings, and environment variables can change incompatibly in any release before `1.0.0`.
 
-`loop.mode` can be `off`, `local`, or `fleet`; an absent `loop` field means `off`. `local` mode runs the loop as a persistent multi-task daemon — `loop start` launches it and it polls canonical state, auto-picking every actionable task (those created by an agentic agent or the web dashboard) without prompting for a requirement. The optional `loop.agents` maps one lead and named workers to `codex`, `claude`, or `opencode`, independently of `mcp.providers`:
+`loop.mode` can be `off`, `local`, or `fleet`; an absent `loop` field means `off`. `local` mode runs the loop as a persistent multi-task daemon (one per project, enforced by a lock) — `loop start` launches it and it polls canonical state, auto-picking every actionable **loop-owned** task without prompting for a requirement. A task is loop-owned when it was created through loop intake (the web dashboard **New task**, or `loop-entry.mjs intake`) or already has a loop run record; tasks created by an interactive lead are never picked up. The optional `loop.agents` maps one lead and named workers to `codex`, `claude`, or `opencode`, independently of `mcp.providers`:
 
 ```json
 {
   "loop": {
     "mode": "local",
     "agents": { "lead": "codex", "workers": { "worker-a": "codex", "worker-b": "opencode" } },
-    "pollMs": 5000
+    "pollMs": 5000,
+    "limits": { "maxTurns": 12, "turnTimeoutMs": 600000, "maxStallTurns": 2 }
   }
 }
 ```
 
-The optional `loop.pollMs` (integer, `1000`–`300000`, default `5000`) sets the daemon's canonical-state poll interval.
+The optional `loop.pollMs` (integer, `1000`–`300000`, default `5000`) sets the daemon's canonical-state poll interval. The optional `loop.limits` bounds each supervised lead run: `maxTurns` (`1`–`1000`, default `12`) is the turn budget of **one run** — a resumed run starts a fresh budget, so a long multi-gate task is not permanently re-paused — `turnTimeoutMs` (`1`–`3600000`, default `600000`) caps a single agent turn, and `maxStallTurns` (`1`–`20`, default `2`) pauses after that many consecutive turns without observable progress.
 
 When any selected provider is `opencode`, set `AIDLC_OPENCODE_MODEL` to a `provider/model[#variant]` value such as `opencode-go/gpt-6-luna`. The provider turn fails closed without a valid value. Container-isolated lead turns and fleet worker containers reject OpenCode with `OpenCode workers require file-based credentials and are not available in isolated containers yet`; they do not fall back to the host. Local Docker worker batches accept OpenCode: they authenticate from `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` (the key matching the model provider) and redirect OpenCode's XDG data/config roots into the worker's ephemeral HOME.
 
