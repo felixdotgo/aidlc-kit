@@ -105,6 +105,12 @@ Starts a local web dashboard (built on `node:http`, no extra dependencies) for v
 
 The dashboard is **read-only over canonical local state**; the mutating actions (loop start/resume, gate approve) are thin facades that require a per-session token (generated at server start and printed to the terminal, entered via the Settings modal and stored in `localStorage`). Gate approval remains available on the trusted terminal (`node .agents/aidlc/scripts/loop-gate.mjs <task-id>`). The server binds `127.0.0.1` by default so canonical state is not exposed to the network; pass `--host 0.0.0.0` only as an explicit opt-in.
 
+Operational notes (local mode):
+
+- The **approve** button renders only on the full task detail page (`/tasks/:id`) while the task is `blocked_on_user`, not on the dashboard. Reach it via the task's "open in page" action or a ctrl/cmd-click on the task link.
+- The **live log** on the detail page is an SSE stream over the fixed file `.agents/data/loop/ui-events.jsonl`. The **New task → start loop** action starts the daemon with `AIDLC_LOOP_EVENT_LOG` pointed at that file automatically; a **manually started** daemon must export the same variable, or the live log stays empty (see [Loop local run](./loop-local-run.md#51-set-environment-variables)).
+- `POST /api/loop/resume` (the dashboard "resume" button) is a no-op in local mode — the one-shot `loop resume` was removed and the daemon auto-resumes actionable tasks. For a `blocked_on_user` task, approve the gate; for a `paused` task, set it back to `active` with `node .agents/aidlc/scripts/state.mjs task status <id> --status active`.
+
 ## Installed lifecycle scripts
 
 After `init`, task lifecycle commands live in the target project, not in the package CLI:

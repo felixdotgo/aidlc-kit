@@ -91,6 +91,7 @@ Set `loop.mode` to `local` with a lead and workers (see [Enable the loop from `o
 | `ANTHROPIC_API_KEY` | if a provider is `claude` | Claude Code worker credential. |
 | `OPENCODE_API_KEY` | if a provider is `opencode` | OpenCode worker credential. The key follows the model provider: `openai/` → `OPENAI_API_KEY`, `anthropic/` → `ANTHROPIC_API_KEY`, otherwise `OPENCODE_API_KEY`. |
 | `AIDLC_LOCAL_WORKTREES_ROOT` | no | Root for worker worktrees; defaults to a system temp directory. It must be outside the integration checkout. |
+| `AIDLC_LOOP_EVENT_LOG` | no (see note) | Path to a JSONL event-log sidecar that feeds the web dashboard live log. The `aidlc-kit ui` **start loop** action sets it to `.agents/data/loop/ui-events.jsonl` automatically; a **manually started** daemon must set it to the same path or the dashboard live log stays empty. |
 
 Local Docker workers authenticate OpenCode from the environment and redirect OpenCode's XDG data/config roots into the worker's ephemeral HOME. The **isolated lead** container and **fleet worker** containers do not support OpenCode yet (`OpenCode workers require file-based credentials and are not available in isolated containers yet`); use a host-executed OpenCode lead (`loop.mjs run --agent opencode`) or choose Codex/Claude Code where container isolation is required.
 

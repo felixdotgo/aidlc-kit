@@ -104,6 +104,10 @@ node dist/src/cli.js loop status --root . --task-id <task-id>
 # REQUIRED — use a model that is actually in the list:
 export AIDLC_OPENCODE_MODEL=opencode-go/deepseek-v4-pro
 
+# OPTIONAL — required ONLY for the web dashboard live log when you start the
+# daemon manually. Must point at the exact file the UI reads:
+export AIDLC_LOOP_EVENT_LOG="$PWD/.agents/data/loop/ui-events.jsonl"
+
 # No need to set AIDLC_WORKER_DOCKER_IMAGE — the loop builds the image itself (see §7).
 # Only the worker credential is needed when it reaches the build phase:
 # export OPENAI_API_KEY=...   or   export ANTHROPIC_API_KEY=...  (per model)
@@ -114,6 +118,12 @@ List available models:
 ```sh
 opencode models
 ```
+
+> [!IMPORTANT]
+> Both variables must be exported **in the same shell that starts the daemon** — the
+> daemon and every lead/worker turn it spawns inherit only that process's environment.
+> A daemon started *before* you exported `AIDLC_OPENCODE_MODEL` will keep failing with
+> `opencode provider requires AIDLC_OPENCODE_MODEL` until it is restarted.
 
 ### 5.2 Start (create a new task + run)
 
@@ -161,13 +171,26 @@ Never approve from the lead/worker, and never pipe input.
 
 ### 5.5 Resume after stopping at a gate / pause
 
-```sh
-# via npx:
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop resume --task-id <task-id> --root .
+In **local** mode there is **no one-shot `loop resume`** — the daemon is the only runner,
+and it auto-resumes every task whose derived `nextAction` is `run_phase` (an *actionable*
+task). What you do depends on why the task stopped:
 
-# or from source:
-node dist/src/cli.js loop resume --task-id <task-id> --root .
-```
+- **After approving a gate** — nothing to do. Approval moves the task back to `active`, the
+  daemon's next poll sees it as actionable, and it runs the next lead turn automatically.
+- **After a pause** (e.g. an agent transport failure) — the loop marks the task `paused`
+  (`nextAction` becomes `blocked`), which is **not** actionable, so the daemon skips it and
+  `loop status` shows `actionable: []`. Fix the root cause, then set the task back to
+  `active`:
+
+  ```sh
+  node .agents/aidlc/scripts/state.mjs task status <task-id> --status active
+  ```
+
+  The daemon picks it up on the next poll (default ~5s).
+
+> `aidlc-kit loop resume`/`loop-entry.mjs resume` in local mode fails closed with
+> `Local loop resume is removed; the daemon auto-resumes actionable tasks — run 'loop start'`.
+> Use `state.mjs task status --status active` instead of trying to "resume the loop".
 
 ### 5.6 Streaming log — see what the lead is doing
 
@@ -193,6 +216,39 @@ Streamed events: `turn_start`/`turn_end` (turn boundary + phase + agent), `agent
 (lead text, capped at 4096 chars/chunk), `agent_tool` (tool being used such as
 `grep`/`read`/`glob`/`shell`), `lifecycle_command` (shell result + exit code), and `gate`
 (gate view).
+
+### 5.7 Web dashboard (`aidlc-kit ui`)
+
+```sh
+# via npx:
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit ui --root .
+
+# or from source:
+node dist/src/cli.js ui --root .
+```
+
+Binds `127.0.0.1:4173` by default and prints a **one-time approve token** to the terminal.
+Open the dashboard and paste that token into **⚙ Settings → save** before using any
+mutating action (loop start, gate approve); it is stored in `localStorage`.
+
+Where things live (this is the #1 source of confusion):
+
+- **Gate approval button is only on the full task detail page** (`/tasks/<task-id>`), **not
+  on the dashboard**. From the dashboard, click a task to open the quick modal and press
+  **"open in page"**, or ctrl/cmd-click / middle-click the task link to jump straight to the
+  detail page. On the detail page the **Approve `<gate>`** box (note field + green
+  **approve** button) appears only while the task is `blocked_on_user`.
+- **The dashboard "resume" button does not work in local mode** — it calls the removed
+  one-shot `loop resume` (see §5.5). For a `blocked_on_user` task, approve the gate instead;
+  for a `paused` task, set it back to `active` with `state.mjs`.
+- **The live log (bottom of the detail page) reads a fixed file**
+  `.agents/data/loop/ui-events.jsonl`. The daemon only writes there when `AIDLC_LOOP_EVENT_LOG`
+  points at that exact path. Starting the loop via the dashboard's **New task → start loop**
+  sets it automatically; a **manually started** daemon needs the export from §5.1, otherwise
+  the live log stays empty even though the loop is running fine.
+
+Gate approval stays equally available on the trusted terminal (`loop-gate.mjs`, §5.4), which
+needs no token.
 
 ---
 
@@ -312,6 +368,55 @@ value.
 ### 9.5 `opencode provider requires AIDLC_OPENCODE_MODEL`
 
 `AIDLC_OPENCODE_MODEL` is unset or in the wrong `provider/model[#variant]` format. See §5.1.
+Remember the daemon must be (re)started *after* exporting the variable — a daemon started
+without it keeps failing until restarted.
+
+### 9.6 Web dashboard live log is empty / stuck on "connecting…"
+
+- The live log reads a **fixed** file `.agents/data/loop/ui-events.jsonl`; the daemon only
+  writes there when `AIDLC_LOOP_EVENT_LOG` points at that exact path. A manually started
+  daemon without that export produces no events — see §5.1. Restart the daemon after setting
+  it.
+- The live log is only on the task **detail** page (`/tasks/<id>`), not the dashboard.
+- A stopped daemon produces no events. Confirm it is alive with `ps` and `loop status`.
+- Check `tail -f .agents/data/loop/ui-events.jsonl` directly: if the file grows with
+  `daemon_poll` lines, the daemon is healthy and only the browser side is stale (hard refresh).
+
+### 9.7 Task pauses immediately after I approve a gate; daemon polls `actionable: []`
+
+Approval moved the task to `active`, the daemon picked it up and tried a lead turn, but the
+turn failed — so the loop re-paused the task (`status: paused`, `nextAction: blocked`), and a
+paused task is not actionable. Diagnose from the evidence:
+
+```sh
+node .agents/aidlc/scripts/state.mjs task show <task-id>
+```
+
+Look for a `diagnostic` with `Paused while active: agent transport failure: …`. The cause is
+almost always the missing/invalid `AIDLC_OPENCODE_MODEL` (or an unavailable model). Then:
+
+1. Fix the environment (`opencode models`, export `AIDLC_OPENCODE_MODEL`).
+2. Kill and restart the daemon with the corrected environment (§5.1).
+3. Set the task back to actionable:
+
+   ```sh
+   node .agents/aidlc/scripts/state.mjs task status <task-id> --status active
+   ```
+
+### 9.8 Clicking "approve" (or "resume") on the web UI does nothing
+
+- The **approve** button exists only on the full detail page `/tasks/<id>`, not the
+  dashboard. Click the task → **"open in page"** (or ctrl/cmd-click the link).
+- Mutating actions need the session token pasted into **Settings** first; without it they
+  return `401` (shown inline under the button).
+- The dashboard **resume** button is a no-op in local mode (the one-shot `loop resume` was
+  removed — §5.5). Approve the gate or use `state.mjs task status --status active` instead.
+- If approve does *literally nothing* (no inline result, no error, no reload) and you are on
+  an old build: open the browser DevTools console and look for
+  `SyntaxError: Identifier 'post' has already been declared`. That was a UI bug (the detail
+  page declared `const post` twice, silently disabling the approve handler) fixed in source —
+  rebuild/repack from a checkout that includes the fix, restart `ui`, and hard-refresh
+  (Ctrl+Shift+R) to drop the cached page.
 
 ---
 
