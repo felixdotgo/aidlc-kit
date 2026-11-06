@@ -1,6 +1,6 @@
 # aidlc-kit
 
-[![npm version](https://img.shields.io/npm/v/@felixdotgo/aidlc-kit)](https://www.npmjs.com/package/@felixdotgo/aidlc-kit)
+[![version](https://img.shields.io/badge/version-0.2.0-blue)](https://www.npmjs.com/package/@felixdotgo/aidlc-kit)
 [![license](https://img.shields.io/npm/l/@felixdotgo/aidlc-kit)](https://github.com/felixdotgo/aidlc-kit/blob/main/LICENSE)
 [![node](https://img.shields.io/node/v/@felixdotgo/aidlc-kit)](https://nodejs.org/)
 
