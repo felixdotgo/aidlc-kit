@@ -90,6 +90,8 @@ const loopArgs = (root: string, action: string, taskId = ""): string[] => [loopE
 
 const ARTIFACT_NAMES = ["intent", "design", "workplan"] as const;
 const PHASES = ["clarify", "plan", "build", "wrap", "done"] as const;
+/** Upper bound on dashboard cards (matches the `listTaskSummaries` page cap). */
+const DASHBOARD_LIMIT = 100;
 
 /** Vendored Bulma plus the dashboard theme layer, read once and cached. */
 const STYLESHEETS = new Map([["/assets/bulma.css", "bulma.min.css"], ["/assets/dashboard.css", "dashboard.css"]]);
@@ -1003,7 +1005,14 @@ const renderModals = (): string => `
 
 const renderDashboard = async (options: UiOptions): Promise<string> => {
   const state = await readUiState(options);
-  const { items } = listTaskSummaries(state, { limit: 100 });
+  /* Terminal tasks (done/closed/superseded) are moved to the archive catalog on
+   * save; list them too so they survive a reload. Active tasks keep priority
+   * within the display limit; archived ones fill the remaining room. */
+  const active = listTaskSummaries(state, { limit: DASHBOARD_LIMIT }).items;
+  const archived = active.length < DASHBOARD_LIMIT
+    ? listTaskSummaries({ ...state, tasks: {} }, { includeArchive: true, limit: DASHBOARD_LIMIT - active.length }).items
+    : [];
+  const items = [...active, ...archived];
   const handedOff = new Set(Object.values(state.tasks).filter((task) => task.handoff).map((task) => task.id));
 
   const kanban = PHASES.map((phase, index) => {

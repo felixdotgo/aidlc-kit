@@ -57,6 +57,27 @@ test("runUi rejects a non-integer --port", () => {
   assert.match(source("src/cli/commands.ts"), /--port must be an integer between 1 and 65535/);
 });
 
+test("dashboard keeps archived done tasks after a reload, alongside active tasks", async () => {
+  const { loadState, saveState } = await import("../../src/state.js");
+  const fixture = await startFixture(makeTask());
+  try {
+    const state = loadState(fixture.root);
+    state.tasks["task-done"] = makeTask({ id: "task-done", title: "Finished task", phase: "done", gate: "none", status: "done", artifacts: {} });
+    saveState(fixture.root, state);
+    const persisted = loadState(fixture.root);
+    assert.equal(persisted.tasks["task-done"], undefined, "terminal task is moved out of the active catalog");
+    assert.equal(persisted.archive?.["task-done"]?.status, "done", "terminal task is archived");
+
+    const html = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(html, /data-task-id="task-a"|\/tasks\/task-a/);
+    assert.match(html, /Finished task/);
+    assert.match(html, /data-status="done"/);
+    assert.match(html, /data-phase-column="done">\s*<header[^>]*>.*?data-column-count>1</s);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("ui server serves the styled dashboard, vendored CSS, and read-only JSON endpoints", async () => {
   const fixture = await startFixture(makeTask());
   try {
