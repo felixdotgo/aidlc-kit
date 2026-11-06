@@ -76,3 +76,19 @@ test("supervised run claim binds ownership and approved checkpoint", async () =>
   assert.notEqual(run.ownerToken, supervisor.ownerToken); assert.equal(run.checkpointSnapshotId, "snap");
   assert.equal(run.checkpointApprovalRevision, 4); assert.equal(run.expectedStateRevision, 4);
 });
+
+test("listTasks reads every canonical task from the workspace state", async () => {
+  const { createFleetRemoteRepository } = await load();
+  const calls: Array<{ name: string; args: any }> = [];
+  const callTool = async ({ name, args }: any) => {
+    calls.push({ name, args });
+    if (name === "state_get") return { workspace: "demo", revision: 4, state: { tasks: { "task-a": { id: "task-a" }, "task-b": { id: "task-b" } } } };
+    throw new Error(`Unexpected ${name}`);
+  };
+  const repo = createFleetRemoteRepository({ callTool, url: "http://service/mcp", token: "token", workspace: "demo", root: "/tmp/project" });
+  const tasks = await repo.listTasks();
+  assert.deepEqual(tasks.map((entry: any) => entry.id).sort(), ["task-a", "task-b"]);
+  assert.deepEqual(calls, [{ name: "state_get", args: { workspace: "demo" } }]);
+  const broken = createFleetRemoteRepository({ callTool: async () => ({ state: {} }), url: "http://service/mcp", token: "token", workspace: "demo", root: "/tmp/project" });
+  await assert.rejects(broken.listTasks(), /Invalid remote workspace state/);
+});

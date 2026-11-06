@@ -3,7 +3,7 @@
  * for multi-host AI-DLC execution.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { readyTaskItems, formatGateView } from "./store.mjs";
+import { readyTaskItems, formatGateView, pathsOverlap } from "./store.mjs";
 import { isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
 
 export const FLEET_LIMITS = Object.freeze({ maxTurns: 12, turnTimeoutMs: 600_000, maxStallTurns: 2, maxWorkers: 4, leaseMs: 300_000, heartbeatMs: 60_000 });
@@ -37,9 +37,15 @@ function readyItems(task) {
   const ready = new Set(readyTaskItems(task).ready);
   return items.filter((item) => item.status === "todo" && ready.has(item.id));
 }
-const overlaps = (left, right) => left === right || (left.endsWith("/") && right.startsWith(left)) || (right.endsWith("/") && left.startsWith(right));
-const pathsOverlap = (left = [], right = []) => left.some((a) => right.some((b) => overlaps(a, b)));
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Sleep `ms`, resolving early (never rejecting) once any given signal aborts. */
+const wait = (ms, ...signals) => new Promise((resolve) => {
+  const live = signals.filter(Boolean);
+  if (live.some((signal) => signal.aborted)) return resolve();
+  const done = () => { clearTimeout(timer); for (const signal of live) signal.removeEventListener("abort", done); resolve(); };
+  const timer = setTimeout(done, ms);
+  for (const signal of live) signal.addEventListener("abort", done, { once: true });
+});
+const anySignal = (...signals) => { const live = signals.filter(Boolean); return live.length === 1 ? live[0] : AbortSignal.any(live); };
 
 function key(...parts) { return digest(parts); }
 
@@ -113,8 +119,13 @@ async function withHeartbeat(renew, intervalMs, work) {
 /**
  * One fenced coordinator invocation. The repository is the remote authority;
  * no local lifecycle file or PID lease is consulted in fleet mode.
+ *
+ * `supervisorSignal` reports a lost supervisor lease (aborts the turn and
+ * fails). `stopSignal` requests a graceful stop at the next turn boundary;
+ * `cancelSignal` additionally aborts the in-flight lead turn. Both end as
+ * `{ status: "stopped" }` without changing canonical task state.
  */
-export async function runFleetCoordinator({ repository, taskId, ownerId = randomUUID(), workerIds = [], workerProviders, reservedJobs = [], allowCodeOnlyRetry = false, limits: inputLimits, pollMs = 5000, pickupTimeoutMs: inputPickupTimeout, packet, driver, gateView, handoff, completeItem, claimedLead, supervisorSignal, onEvent = () => {} }) {
+export async function runFleetCoordinator({ repository, taskId, ownerId = randomUUID(), workerIds = [], workerProviders, reservedJobs = [], allowCodeOnlyRetry = false, limits: inputLimits, pollMs = 5000, pickupTimeoutMs: inputPickupTimeout, packet, driver, gateView, handoff, completeItem, claimedLead, supervisorSignal, stopSignal, cancelSignal, onEvent = () => {} }) {
   assertId(taskId, "task ID"); assertId(ownerId, "owner ID");
   if (!Array.isArray(workerIds) || new Set(workerIds).size !== workerIds.length) throw new Error("workerIds must be distinct IDs");
   for (const workerId of workerIds) assertId(workerId, "worker ID");
@@ -139,15 +150,19 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
   const readySeen = new Map();
   try {
     return await withHeartbeat(() => renewLead({ taskId, ownerId, epoch, leaseMs: limits.leaseMs }), limits.heartbeatMs, async (leaseSignal) => {
-      const signal = supervisorSignal ? AbortSignal.any([leaseSignal, supervisorSignal]) : leaseSignal;
+      const leaseLost = anySignal(leaseSignal, supervisorSignal);
+      const signal = anySignal(leaseLost, cancelSignal);
+      const stopping = () => Boolean(stopSignal?.aborted || cancelSignal?.aborted);
+      const stopped = (reason) => ({ status: "stopped", taskId, reason, revision: snapshot.revision });
       for (;;) {
-        if (signal.aborted) throw new Error("Lead lease renewal failed");
+        if (leaseLost.aborted) throw new Error("Lead lease renewal failed");
+        if (stopping()) return stopped(cancelSignal?.aborted ? "cancel requested" : "stop requested");
         if (Date.now() - startedAt >= limits.maxTurns * limits.turnTimeoutMs) return { status: "paused", taskId, reason: "coordinator wall-time limit reached" };
         snapshot = validateSnapshot(await readTask({ taskId }), taskId);
         const kind = actionKind(snapshot.nextAction);
         if (kind === "await_user") {
           const reconciled = await reconcileFleetJobs({ repository, taskId, leadEpoch: epoch, snapshot, handoff, allowCodeOnlyRetry, quiesceMs: limits.turnTimeoutMs + limits.heartbeatMs + 1000 });
-          if (reconciled.pending.length && reconciled.pending.every((entry) => entry.waitUntil)) { await wait(pollMs); continue; }
+          if (reconciled.pending.length && reconciled.pending.every((entry) => entry.waitUntil)) { await wait(pollMs, signal, stopSignal); continue; }
           if (reconciled.pending.length) return { status: "reconcile", taskId, revision: snapshot.revision, pending: reconciled.pending };
           const gate = snapshot.nextAction.gate;
           const baseReview = await (gateView ?? ((value) => formatGateView(value.task, [], "markdown")))(snapshot);
@@ -163,7 +178,7 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
         const before = digest({ revision: snapshot.revision, action: snapshot.nextAction });
         if (kind === "dispatch" || (kind === "run_phase" && snapshot.task.phase === "build")) {
           const reconciled = await reconcileFleetJobs({ repository, taskId, leadEpoch: epoch, snapshot, handoff, allowCodeOnlyRetry, quiesceMs: limits.turnTimeoutMs + limits.heartbeatMs + 1000 });
-          if (reconciled.pending.length && reconciled.pending.every((entry) => entry.waitUntil)) { await wait(pollMs); continue; }
+          if (reconciled.pending.length && reconciled.pending.every((entry) => entry.waitUntil)) { await wait(pollMs, signal, stopSignal); continue; }
           if (reconciled.pending.length) {
             const verified = reconciled.pending.filter((entry) => entry.artifact?.valid);
             if (verified.length && typeof handoff?.integrate === "function" && typeof completeItem === "function") {
@@ -212,7 +227,7 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
               }
             }
             onEvent({ type: "jobs_active", taskId, assignments: active.map((job) => job.assignmentId) });
-            await wait(pollMs);
+            await wait(pollMs, signal, stopSignal);
             continue;
           }
         }
@@ -220,7 +235,11 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
         if (typeof packet !== "function" || typeof driver !== "function") throw new Error("Fleet lead requires packet and driver adapters");
         const prompt = await packet(snapshot, epoch);
         if (typeof prompt !== "string" || !prompt) throw new Error("Empty fleet lead packet");
-        await driver({ taskId, snapshot, leadEpoch: epoch, prompt, timeoutMs: limits.turnTimeoutMs, signal });
+        try { await driver({ taskId, snapshot, leadEpoch: epoch, prompt, timeoutMs: limits.turnTimeoutMs, signal }); }
+        catch (error) {
+          if (!leaseLost.aborted && cancelSignal?.aborted) return stopped("cancelled the in-flight lead turn");
+          throw error;
+        }
         turns++;
         const after = validateSnapshot(await readTask({ taskId }), taskId);
         const nextSignal = digest({ revision: after.revision, action: after.nextAction });
@@ -234,8 +253,10 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
   }
 }
 
-/** A worker claims one attempt, persists its exact CLI session, and reports a Git artifact. */
-export async function runFleetWorker({ repository, workerId = randomUUID(), workerAgent, preflight, limits: inputLimits, driver, packet, handoff, onEvent = () => {} }) {
+/** A worker claims one attempt, persists its exact CLI session, and reports a Git artifact.
+ * `cancelSignal` aborts the in-flight worker turn; the attempt is then abandoned
+ * (service state `uncertain`, recoverable by the lead) and the result is `stopped`. */
+export async function runFleetWorker({ repository, workerId = randomUUID(), workerAgent, preflight, limits: inputLimits, driver, packet, handoff, cancelSignal, onEvent = () => {} }) {
   assertId(workerId, "worker ID");
   if (workerAgent !== undefined && !isLoopProvider(workerAgent)) throw new Error(`workerAgent must be ${LOOP_PROVIDER_LIST}`);
   const limits = validateFleetLimits(inputLimits);
@@ -259,12 +280,14 @@ export async function runFleetWorker({ repository, workerId = randomUUID(), work
   let turns = 0, stalls = 0;
   const report = async (outcome) => reportJob({ ...identity, report: outcome, idempotencyKey: key("job-report", job.assignmentId, job.attempt, job.epoch, outcome.status, outcome.commitSha ?? "") });
   return withHeartbeat(() => renewJob({ ...identity, leaseMs: limits.leaseMs }), limits.heartbeatMs, async (signal) => {
+    const cancelled = async () => { await report({ status: "uncertain", reason: "worker turn cancelled", sessionId }); return { status: "stopped", assignmentId: job.assignmentId }; };
     if (typeof driver !== "function" || typeof packet !== "function" || typeof handoff?.prepare !== "function" || typeof handoff?.observe !== "function" || typeof handoff?.finish !== "function") throw new Error("Worker requires driver, packet, and Git handoff adapters");
     const workspace = await handoff.prepare(job);
     if (!workspace?.root) throw new Error("Git handoff did not supply a worker root");
     let lastObservation = null;
     for (;;) {
       if (signal.aborted) throw new Error("Job lease renewal failed");
+      if (cancelSignal?.aborted) return cancelled();
       const snapshot = validateSnapshot(await readTask({ taskId: job.taskId }), job.taskId);
       const item = snapshot.task.tasks?.find((candidate) => candidate.id === job.itemId);
       if (!item || item.status === "done") {
@@ -282,11 +305,13 @@ export async function runFleetWorker({ repository, workerId = randomUUID(), work
       }
       const prompt = await packet({ job, snapshot, workspace, turns });
       if (typeof prompt !== "string" || !prompt) throw new Error("Empty worker packet");
-      const result = await driver({ agent: job.agent, root: workspace.root, sessionId: sessionId ?? undefined, prompt: `${prompt}\n\nWorker scope: modify only assigned paths. Do not mutate AI-DLC lifecycle state or approve any gate. When the scoped implementation is ready for commit, end the final answer with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs: limits.turnTimeoutMs, signal, onSessionId: async (id) => {
+      let result;
+      try { result = await driver({ agent: job.agent, root: workspace.root, sessionId: sessionId ?? undefined, prompt: `${prompt}\n\nWorker scope: modify only assigned paths. Do not mutate AI-DLC lifecycle state or approve any gate. When the scoped implementation is ready for commit, end the final answer with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs: limits.turnTimeoutMs, signal: anySignal(signal, cancelSignal), onSessionId: async (id) => {
         if (typeof id !== "string" || !id) throw new Error("Invalid worker session ID");
         if (sessionId && sessionId !== id) throw new Error("Worker session changed during the same assignment");
         sessionId = id;
-      }, onEvent });
+      }, onEvent }); }
+      catch (error) { if (!signal.aborted && cancelSignal?.aborted) return cancelled(); throw error; }
       if (result?.sessionId && sessionId && result.sessionId !== sessionId) throw new Error("Worker session changed during the same assignment");
       if (result?.sessionId && !sessionId) {
         sessionId = result.sessionId;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -67,5 +67,89 @@ test("isolated local facade requires workers and wires a build dispatcher into t
     });
     const result = await instance.start();
     assert.equal(result.status, "blocked"); assert.equal(sawDispatcher, true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+type Item = { id: string; ownedPaths?: string[]; dependsOn?: string[]; status?: string };
+const buildTask = (items: Item[]) => ({ id: "build-task", title: "Build", type: "infra", phase: "build", gate: "G2_codereview", status: "active", language: "en", risk: "normal", areas: ["root"], branch: "—", artifacts: { intent: ".agents/data/tasks/build-task/intent.md", design: ".agents/data/tasks/build-task/design.md", workplan: ".agents/data/tasks/build-task/workplan.md" }, decisions: [], tasks: items.map((item) => ({ label: item.id, area: "root", status: "todo", ...item })), evidence: [], createdAt: "2026-10-22T00:00:00.000Z", updatedAt: "2026-10-22T00:00:00.000Z" });
+const buildFixture = (items: Item[]) => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-local-dispatch-"));
+  cpSync(resolve("dist/assets/.agents/aidlc"), join(root, ".agents/aidlc"), { recursive: true });
+  mkdirSync(join(root, ".agents/data/state"), { recursive: true });
+  const statePath = join(root, ".agents/data/state/aidlc-state.json");
+  const writeTask = (task: any) => writeFileSync(statePath, JSON.stringify({ schemaVersion: 4, tasks: { [task.id]: task }, archive: {} }));
+  writeTask(buildTask(items));
+  const readTask = () => JSON.parse(readFileSync(statePath, "utf8")).tasks["build-task"];
+  return { root, taskId: "build-task", writeTask, readTask };
+};
+const loadAssignments = async (): Promise<any> => import(resolve("dist/assets/.agents/aidlc/scripts/lib/assignment-store.mjs"));
+const dispatchHooks = (batches: any[][]) => ({
+  worktreesRoot: join(tmpdir(), "aidlc-unused-worktrees"), credentials: {},
+  prompt: (_root: string, _taskId: string, itemId: string) => `Implement ${itemId}`,
+  ensureImage: ({ provider }: any) => `image-${provider}`,
+  runBatch: async ({ jobs }: any) => { batches.push(jobs); return []; },
+  markDone: () => { throw new Error("no item completes in these tests"); }
+});
+
+test("batch planner defers overlapping and excess ready items instead of throwing", async () => {
+  const { planLocalBuildBatch } = await load();
+  const overlapping = planLocalBuildBatch({ taskId: "build-task", task: buildTask([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src/a.ts"] }]), workers: { w1: "codex", w2: "claude" } });
+  assert.deepEqual(overlapping.jobs.map((job: any) => [job.itemId, job.workerId]), [["a", "w1"]]);
+  assert.deepEqual(overlapping.deferred, [{ id: "b", reason: "overlaps a" }]);
+  const excess = planLocalBuildBatch({ taskId: "build-task", task: buildTask([{ id: "a", ownedPaths: ["src/a"] }, { id: "b", ownedPaths: ["src/b"] }, { id: "c", ownedPaths: ["docs"] }]), workers: { w1: "codex", w2: "claude" } });
+  assert.deepEqual(excess.jobs.map((job: any) => [job.itemId, job.workerId, job.agent]), [["a", "w1", "codex"], ["b", "w2", "claude"]]);
+  assert.deepEqual(excess.deferred, [{ id: "c", reason: "capacity" }]);
+  assert.throws(() => planLocalBuildBatch({ taskId: "build-task", task: buildTask([{ id: "a" }]), workers: { w1: "codex" } }), /Build item a requires an owned path scope/);
+  assert.deepEqual(planLocalBuildBatch({ taskId: "build-task", task: buildTask([{ id: "a", ownedPaths: ["src"], status: "done" }]), workers: { w1: "codex" } }), { jobs: [], deferred: [] });
+});
+
+test("batch planner keeps unresolved assignment paths busy and names the blocking assignment", async () => {
+  const { planLocalBuildBatch } = await load();
+  const task = buildTask([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src/b.ts"] }, { id: "c", ownedPaths: ["docs"] }]);
+  const assignments = [{ id: "asg-a", itemId: "a", ownedPaths: ["src"], state: "uncertain" }, { id: "asg-old", itemId: "c", ownedPaths: ["docs"], state: "released" }];
+  const plan = planLocalBuildBatch({ taskId: "build-task", task, workers: { w1: "codex", w2: "codex" }, assignments });
+  assert.deepEqual(plan.jobs.map((job: any) => job.itemId), ["c"]);
+  assert.deepEqual(plan.deferred, [{ id: "a", reason: "unresolved assignment" }, { id: "b", reason: "busy path held by an active assignment" }]);
+  const blocked = buildTask([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src/b.ts"] }]);
+  assert.throws(() => planLocalBuildBatch({ taskId: "build-task", task: blocked, workers: { w1: "codex" }, assignments }), (error: any) => /Unresolved assignment asg-a \(uncertain\) for a holds src/.test(error.message) && /assignment\.mjs reconcile build-task/.test(error.message) && /assignment\.mjs release build-task/.test(error.message));
+});
+
+test("local dispatch runs only the non-overlapping first item and emits build_deferred", async () => {
+  const { root, taskId, readTask } = buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src/a.ts"] }]);
+  try {
+    const { dispatchLocalBuild } = await load();
+    const batches: any[][] = [], events: any[] = [];
+    await dispatchLocalBuild({ root, taskId, task: readTask(), workers: { w1: "codex", w2: "codex" }, onEvent: (event: any) => { events.push(event); }, ...dispatchHooks(batches) });
+    assert.equal(batches.length, 1);
+    assert.deepEqual(batches[0]!.map((job: any) => [job.itemId, job.workerId, job.prompt]), [["a", "w1", "Implement a"]]);
+    assert.deepEqual(events.filter((event) => event.type === "build_deferred"), [{ type: "build_deferred", taskId, itemId: "b", reason: "overlaps a" }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("local dispatch reconciles a done item's reported assignment so its dependent can claim the same path", async () => {
+  const { root, taskId, readTask, writeTask } = buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src"], dependsOn: ["a"] }]);
+  try {
+    const { dispatchLocalBuild } = await load(), assignmentStore = await loadAssignments();
+    const claim = assignmentStore.claimLocalAssignment(root, { taskId, itemId: "a", workerId: "w1", ownedPaths: ["src"] });
+    assignmentStore.reportLocalAssignment(root, taskId, claim.id, { changedPaths: ["src/a.ts"] });
+    const task = readTask(); task.tasks[0].status = "done"; writeTask(task);
+    const batches: any[][] = [];
+    await dispatchLocalBuild({ root, taskId, task: readTask(), workers: { w1: "codex" }, ...dispatchHooks(batches) });
+    assert.deepEqual(batches.map((jobs) => jobs.map((job: any) => job.itemId)), [["b"]]);
+    assert.equal(assignmentStore.showLocalAssignments(root, taskId).assignments[0].state, "integrated");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("local dispatch refuses to auto-release an uncertain assignment of an unfinished item", async () => {
+  const { root, taskId, readTask } = buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src/b.ts"] }]);
+  try {
+    const { dispatchLocalBuild } = await load(), assignmentStore = await loadAssignments();
+    const claim = assignmentStore.claimLocalAssignment(root, { taskId, itemId: "a", workerId: "w1", ownedPaths: ["src"] });
+    const path = assignmentStore.assignmentPath(root, taskId), record = JSON.parse(readFileSync(path, "utf8"));
+    record.assignments[0].leaseExpiresAt = "2020-01-01T00:00:00.000Z"; writeFileSync(path, JSON.stringify(record));
+    const batches: any[][] = [];
+    await assert.rejects(dispatchLocalBuild({ root, taskId, task: readTask(), workers: { w1: "codex", w2: "codex" }, ...dispatchHooks(batches) }), new RegExp(`Unresolved assignment ${claim.id} \\(uncertain\\) for a holds src;.*assignment\\.mjs reconcile`));
+    assert.equal(batches.length, 0);
+    assert.equal(assignmentStore.showLocalAssignments(root, taskId).assignments[0].state, "uncertain");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Phase, TaskState, WorkflowState } from "../../src/model.js";
-import { hasAreaVerification, nextAction, transitionDiagnostics, transitionTask, validateState } from "../../src/state.js";
+import { concurrentItemPairs, hasAreaVerification, nextAction, partitionDiagnostics, pathOverlaps, renderWorkplan, transitionDiagnostics, transitionTask, validateState } from "../../src/state.js";
 
 // @ts-ignore -- runtime conformance against the dependency-free ESM core.
 import * as mjs from "../../services/aidlc-coordination/src/lifecycle-core.mjs";
@@ -182,5 +182,28 @@ test("TS and mjs lifecycle cores agree across seeded random transition sequences
     if (vTsThrew && vMsThrew) {
       assert.equal(messageOf(vErrTS), messageOf(vErrMS), `Sequence ${seq}: validateState message mismatch`);
     }
+  }
+});
+
+test("TS and mjs cores agree on parallel work partition checks and workplan rendering", () => {
+  const rng = mulberry32(0x5EED0BAD);
+  const pick = <T>(values: readonly T[]): T => values[Math.floor(rng() * values.length)]!;
+  const paths = ["src", "src/", "src/a.ts", "src/a.ts/", "src/b", "src/b/c.ts", "srcx", "docs", "docs/x.md", "test/a.test.ts"];
+  const statuses = ["todo", "in_progress", "done", "deferred"] as const;
+  for (let round = 0; round < 300; round += 1) {
+    const count = 1 + Math.floor(rng() * 6);
+    const items: TaskState["tasks"] = [];
+    for (let index = 0; index < count; index += 1) {
+      const owned = [...new Set(Array.from({ length: Math.floor(rng() * 3) }, () => pick(paths)))];
+      // Dependencies only point backwards, so the graph stays acyclic like canonical state.
+      const deps = [...new Set(Array.from({ length: index ? Math.floor(rng() * 2) : 0 }, () => `i${Math.floor(rng() * index)}`))];
+      items.push({ id: `i${index}`, label: `item ${index}`, status: pick(statuses), ...(owned.length ? { ownedPaths: owned } : {}), ...(deps.length ? { dependsOn: deps } : {}) });
+    }
+    const task = { ...baseTask(), phase: "plan" as const, gate: "G1_review" as const, tasks: items };
+    const a = pick(paths); const b = pick(paths);
+    assert.equal(pathOverlaps(a, b), mjs.pathOverlaps(a, b), `${a} vs ${b}`);
+    assert.deepEqual(concurrentItemPairs(task).map(([x, y]) => `${x.id}|${y.id}`), mjs.concurrentItemPairs(task).map(([x, y]: Array<{ id: string }>) => `${x!.id}|${y!.id}`));
+    for (const strict of [true, false]) assert.deepEqual(partitionDiagnostics(task, { strict }), mjs.partitionDiagnostics(task, { strict }), `round ${round} strict=${strict}`);
+    assert.equal(renderWorkplan(task), mjs.renderWorkplan(task));
   }
 });

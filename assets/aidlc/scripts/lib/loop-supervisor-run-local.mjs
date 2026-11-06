@@ -7,10 +7,11 @@ import { runAgentTurn, isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers
 import { readLoopRecord, runLoop, validateRoot } from "./loop-runtime.mjs";
 import { runSupervisor } from "./loop-supervisor.mjs";
 import { createLocalSupervisorAdapter } from "./loop-supervisor-local.mjs";
-import { readyTaskItems } from "./store.mjs";
+import { pathsOverlap, readyTaskItems, selectBuildBatch } from "./store.mjs";
 import { runLocalWorkerBatch } from "./loop-local-workers.mjs";
 import { reconcileLocalAssignments } from "./assignment-store.mjs";
 import { ensureWorkerImage, defaultWorkerImageTag } from "./loop-worker-image.mjs";
+import { workerCredentialKeys } from "./loop-worker-docker.mjs";
 
 const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
@@ -61,16 +62,6 @@ export function createLocalLoopSupervisor({ root: rootInput, taskId, agent, limi
   };
 }
 
-const workerCredentialKeys = (agent, env = process.env) => {
-  if (agent === "codex") return ["OPENAI_API_KEY"];
-  if (agent === "claude") return ["ANTHROPIC_API_KEY"];
-  // OpenCode authenticates from the environment like codex/claude; the key
-  // follows the configured model's provider (opencode-go → OPENCODE_API_KEY).
-  const model = env.AIDLC_OPENCODE_MODEL ?? "";
-  if (model.startsWith("openai/")) return ["OPENAI_API_KEY"];
-  if (model.startsWith("anthropic/")) return ["ANTHROPIC_API_KEY"];
-  return ["OPENCODE_API_KEY"];
-};
 
 const itemPrompt = (root, taskId, itemId) => {
   const packet = JSON.parse(execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/context.mjs"), taskId, "--phase", "build", "--item", itemId, "--format", "json", "--root", root], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024 }));
@@ -78,36 +69,72 @@ const itemPrompt = (root, taskId, itemId) => {
   return `${packet.content}\n\nOnly modify the assigned owned paths. Do not modify AI-DLC lifecycle state or approve gates. End with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.`;
 };
 
+const ACTIVE_ASSIGNMENT_STATES = new Set(["leased", "reported", "uncertain"]);
+const UNRESOLVED_ASSIGNMENT_STATES = new Set(["reported", "uncertain"]);
+
+/**
+ * Pure batch planner for local build dispatch. Selects at most one item per
+ * worker from the dependency-ready items, skipping (deferring) items whose
+ * owned paths overlap each other or an active assignment, and items whose own
+ * prior assignment is unresolved. Overlap never throws: an overlapping item
+ * simply waits for a later batch. Throws only for a plan error (ready item
+ * without owned paths) or when every ready item is blocked by an active
+ * assignment, naming those assignments so a human can inspect them.
+ */
+export function planLocalBuildBatch({ taskId, task, workers, assignments = [] }) {
+  const ready = readyTaskItems(task).ready;
+  if (!ready.length) return { jobs: [], deferred: [] };
+  const providers = Object.entries(workers ?? {});
+  if (!providers.length) throw new Error("Loop requires a configured lead and worker providers");
+  const byId = new Map(task.tasks.map((item) => [item.id, item]));
+  for (const itemId of ready) {
+    const item = byId.get(itemId);
+    if (!item || !Array.isArray(item.ownedPaths) || !item.ownedPaths.length) throw new Error(`Build item ${itemId} requires an owned path scope for Docker dispatch`);
+  }
+  const active = assignments.filter((entry) => ACTIVE_ASSIGNMENT_STATES.has(entry.state));
+  const busyPaths = active.flatMap((entry) => entry.ownedPaths ?? []);
+  const unresolvedItems = [...new Set(active.filter((entry) => UNRESOLVED_ASSIGNMENT_STATES.has(entry.state) && byId.get(entry.itemId)?.status !== "done").map((entry) => entry.itemId))];
+  const { selected, deferred } = selectBuildBatch(task, { capacity: providers.length, busyPaths, exclude: unresolvedItems });
+  if (!selected.length) {
+    // Every ready item is held back by an assignment; never auto-release it.
+    const blocking = active.filter((entry) => ready.some((itemId) => entry.itemId === itemId || pathsOverlap(byId.get(itemId).ownedPaths, entry.ownedPaths ?? [])));
+    const details = blocking.map((entry) => `${entry.state === "leased" ? "Active" : "Unresolved"} assignment ${entry.id} (${entry.state}) for ${entry.itemId} holds ${(entry.ownedPaths ?? []).join(", ")}`).join("; ");
+    throw new Error(`${details || `No ready build item of ${taskId} could be dispatched`}; inspect it, then run node .agents/aidlc/scripts/assignment.mjs reconcile ${taskId} or node .agents/aidlc/scripts/assignment.mjs release ${taskId} <assignment-id>`);
+  }
+  const jobs = selected.map((itemId, index) => {
+    const [workerId, agent] = providers[index];
+    return { itemId, workerId, agent, ownedPaths: [...byId.get(itemId).ownedPaths] };
+  });
+  return { jobs, deferred };
+}
+
+const markItemDone = (root, taskId, itemId) => {
+  const envelope = JSON.parse(execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), "task", "item", taskId, itemId, "--status", "done", "--root", root], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024 }));
+  if (envelope?.ok !== true) throw new Error(`Failed to mark item ${itemId} done`);
+};
+
 /** Fan dependency-ready build items out to Docker-isolated workers, then record
- * each integrated item as done. No worker ever marks canonical progress itself. */
-async function dispatchLocalBuild({ root, taskId, task, workers, images, credentials, worktreesRoot, onEvent, cancelSignal }) {
+ * each integrated item as done. No worker ever marks canonical progress itself.
+ * Overlapping or excess ready items are deferred to a later batch, not failed.
+ * The trailing hooks exist for tests; production uses the defaults. */
+export async function dispatchLocalBuild({ root, taskId, task, workers, images = {}, credentials, worktreesRoot, onEvent = () => {}, cancelSignal, runBatch = runLocalWorkerBatch, ensureImage = ensureWorkerImage, prompt = itemPrompt, markDone = markItemDone }) {
   // Reconcile completed items first so their owned paths are released for the
   // next batch: an integrated item's assignment stays `reported` (still active)
   // until reconciled, and overlapping owned paths would otherwise block the next
   // claim even though the item is already done.
-  reconcileLocalAssignments(root, taskId);
-  const ready = readyTaskItems(task).ready;
-  if (!ready.length) return;
-  const providers = Object.entries(workers);
-  if (!providers.length) throw new Error("Loop requires a configured lead and worker providers");
-  const jobs = ready.map((itemId, index) => {
-    const item = task.tasks.find((entry) => entry.id === itemId);
-    if (!item || !Array.isArray(item.ownedPaths) || !item.ownedPaths.length) throw new Error(`Build item ${itemId} requires an owned path scope for Docker dispatch`);
-    const [workerId, provider] = providers[index % providers.length];
-    return { itemId, workerId, agent: provider, prompt: itemPrompt(root, taskId, itemId), ownedPaths: item.ownedPaths };
-  });
+  const { assignments } = reconcileLocalAssignments(root, taskId);
+  const { jobs: planned, deferred } = planLocalBuildBatch({ taskId, task, workers, assignments });
+  if (!planned.length) return;
+  for (const { id, reason } of deferred) await onEvent({ type: "build_deferred", taskId, itemId: id, reason });
+  const jobs = planned.map((job) => ({ ...job, prompt: prompt(root, taskId, job.itemId) }));
   // Auto-build any missing per-provider image before dispatch so the user never
   // has to build the worker image by hand.
   const resolvedImages = {};
   for (const provider of new Set(jobs.map((job) => job.agent))) {
-    resolvedImages[provider] = ensureWorkerImage({ root, provider, image: images[provider] ?? defaultWorkerImageTag(provider), onEvent });
+    resolvedImages[provider] = ensureImage({ root, provider, image: images[provider] ?? defaultWorkerImageTag(provider), onEvent });
   }
-  const completed = await runLocalWorkerBatch({ root, taskId, jobs, worktreesRoot, docker: { images: resolvedImages, credentials }, signal: cancelSignal });
-  const lifecycle = (args) => execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), ...args, "--root", root], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024 });
-  for (const result of completed) {
-    const envelope = JSON.parse(lifecycle(["task", "item", taskId, result.itemId, "--status", "done"]));
-    if (envelope?.ok !== true) throw new Error(`Failed to mark item ${result.itemId} done`);
-  }
+  const completed = await runBatch({ root, taskId, jobs, worktreesRoot, docker: { images: resolvedImages, credentials }, signal: cancelSignal });
+  for (const result of completed) markDone(root, taskId, result.itemId);
 }
 
 /**

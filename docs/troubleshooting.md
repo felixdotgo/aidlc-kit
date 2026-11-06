@@ -51,7 +51,29 @@ Symptom- and error-code-oriented recovery guide for the AI-DLC workflow. Read [O
 - `TASK_HANDOFF` — task has an unresolved handoff.
 - `TASK_ID` — task key and id differ.
 - `TASK_FIELDS` — task title or affected areas missing.
-- `GATE_OK` — informational; all checks passed.
+- `PARTITION_SCOPE` / `PARTITION_OVERLAP` — Approve plan parallel work partition; see [below](#parallel-work-partition-partition_overlap--partition_scope).
+- `GATE_OK` — informational; no `ERROR` diagnostics (warnings may still be listed).
+
+## Parallel work partition (`PARTITION_OVERLAP` / `PARTITION_SCOPE`)
+
+The Approve plan check (`gate-check.mjs <task-id>`) inspects build items so parallel workers never edit the same files:
+
+- `PARTITION_SCOPE` — an open item has no owned paths. Give it a scope: `node .agents/aidlc/scripts/state.mjs task item <task-id> <item-id> --status todo --label "<label>" --owns src/a,docs/b`.
+- `PARTITION_OVERLAP` — two items that can run concurrently (no direct or transitive `dependsOn` between them) own overlapping paths. Overlap is per path segment: `src` overlaps `src/a.ts`, but not `srcx`. Split the paths, merge the items, or order them with `--depends-on <item-id>`.
+- Severity follows the loop: `ERROR` when `loop.mode` is `local` or `fleet` (or inside a fleet-enabled coordination service), so the gate cannot be presented; `WARN` when the loop is `off`, and the gate still passes with `GATE_OK`.
+- The rendered workplan shows each item's scope as `owns: … · after: …`; the intent and design templates carry **Work boundaries** / **Parallel work partition** sections to plan it.
+
+## Build items deferred or `build dispatch failure: Unresolved assignment`
+
+- A `build_deferred` event (with `itemId` and `reason`) is not an error. The local scheduler dispatches a batch of non-overlapping ready items, at most one per configured worker, and defers the rest (`overlaps <item>`, `busy path held by an active assignment`, `unresolved assignment`, `capacity`) to a later batch. The fleet coordinator applies the same overlap rule.
+- The task pauses with `build dispatch failure: Unresolved assignment <id> (<state>) for <item> holds <paths>; inspect it, then run node .agents/aidlc/scripts/assignment.mjs reconcile <task-id> or … release <task-id> <assignment-id>` when a `reported` or `uncertain` assignment of an unfinished item (or a still-`leased` one, reported as `Active assignment`) blocks every ready item. The loop never releases it automatically.
+- Inspect it with `node .agents/aidlc/scripts/assignment.mjs show <task-id>` and the worker's branch or worktree. Run `assignment.mjs reconcile <task-id>` when the outcome is recorded, or `assignment.mjs release <task-id> <assignment-id>` only after confirming the work is abandoned. Then re-activate the task (dashboard **resume** or `state.mjs task status <task-id> --status active`).
+- `Build item <item> requires an owned path scope for Docker dispatch` means an item reached build without `--owns`; fix the plan (see `PARTITION_SCOPE`).
+
+## `Git worktree must be clean before handoff or integration`
+
+- The lead checkout must have no uncommitted or untracked changes before a worker handoff or integration. Commit, stash, or remove them, then re-activate the task.
+- Host-local loop files under `.agents/data/loop/` (daemon lock, `daemon.log`, `ui-events.jsonl`) are ignored by this check, so a running daemon or dashboard does not trigger it.
 
 ## `Task already exists` / actionable-task guard
 
@@ -73,12 +95,27 @@ Symptom- and error-code-oriented recovery guide for the AI-DLC workflow. Read [O
 
 - Local build dispatch auto-builds the per-provider image (`aidlc-worker-<provider>:local`) from the packaged Dockerfile when it is missing, so this error usually does not surface.
 - If the build cannot complete (no Docker daemon, no network to fetch the CLI, or a removed Dockerfile), the worker batch fails with `Docker engine, image, or provider CLI preflight failed`. Run `aidlc-kit loop worker-image --provider <provider>` directly to see the build output, or set `AIDLC_WORKER_DOCKER_IMAGE` to an image you built yourself.
-- Fleet workers run on a separate machine and still require `AIDLC_WORKER_DOCKER_IMAGE` (or a pre-built image) there; build it on that machine with `aidlc-kit loop worker-image --provider codex` (or `claude`).
+- Fleet workers resolve the image on their own machine: `AIDLC_WORKER_DOCKER_IMAGE`, else `loop.workerImage[provider]` from the project config, else `aidlc-worker-<provider>:local` (auto-built when missing). The provider comes from `AIDLC_FLEET_WORKER_AGENT`, else the worker's entry in `AIDLC_FLEET_WORKER_PROVIDERS`, else `AIDLC_FLEET_AGENT` (a copied lead env never overrides the worker's own mapping); without one, `AIDLC_WORKER_DOCKER_IMAGE is required when the worker provider is unknown`. To build ahead of time, run `aidlc-kit loop worker-image --provider codex|claude|opencode` on that machine.
+
+## Loop daemon diagnostics
+
+- `Loop daemon already running (pid N)` — one daemon per project (`.agents/data/loop/daemon.lock`); stop the running one first. A lock owned by a dead pid is reclaimed automatically.
+- `daemon_poll_error` — the daemon could not list tasks (for example the fleet service is unreachable). It keeps polling and does not stop; fix connectivity or credentials and it recovers on the next poll.
+- `daemon_turn_error`, or a `daemon_turn` with status `blocked`/`reconcile` — that task is retried with exponential backoff (capped at 10 minutes) while other tasks keep running. Inspect it with `task show` (local) or `remote-state.mjs task next` (fleet).
+- `loop resume is removed …` — use `loop start`; re-activate a paused task with the dashboard **resume** or the task status command.
+
+## Dashboard `401` / `403`
+
+- `401 Invalid or missing approve token` — the browser has no current token. Open the login URL printed by `aidlc-kit ui` (the token changes on every restart unless you pass `--token-file`), or paste the token into **Settings**. The token is accepted only in the `x-aidlc-token` or `Authorization: Bearer` header, never as a form or body field.
+- `403 Host header does not match this dashboard; open it at its bound address` — the page was opened under a host name other than the bound address (for example a LAN name while bound to `127.0.0.1`). Use the printed URL; any loopback name works when bound to loopback.
+- `403 Cross-origin request rejected` — a state-changing request came from another origin. Use the dashboard page itself.
+- `403 Fleet approval needs the reviewer credential …` — a fleet dashboard without a reviewer credential cannot approve. Restart `aidlc-kit ui` with `AIDLC_FLEET_REVIEWER_TOKEN` or `--reviewer-token-file <file>` (outside the project, mode `600`), or approve from a reviewer terminal with `remote-state.mjs gate approve <task-id> --snapshot <id> --source "<approval>"`.
+- `Token file must …` — `--token-file`/`--reviewer-token-file` must live outside the project, be a regular non-symlink file with mode `600`/`400`, and contain one 16–256 character token.
 
 ## Loop / fleet experimental status
 
 - The end-to-end loop and coordination service are experimental and unfinished; pre-1.0 breaking changes are possible.
-- Selecting a mode during `init` or `upgrade` never starts or approves anything. Only `aidlc-kit loop start` runs the loop.
+- Selecting a mode during `init` or `upgrade` never starts or approves anything. Only `aidlc-kit loop start` runs the loop daemon, in either mode.
 - See the warning in [README](../README.md) and [Coordination service](./coordination-service.md).
 
 ## When to escalate

@@ -602,3 +602,124 @@ test("task detail renders a horizontal progress stepper before artifacts, no loo
     await broken.close();
   }
 });
+
+/* ---- Authority-neutral dashboard and token hardening ---- */
+
+const rawRequest = async (base: string, path: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<{ status: number; body: string }> => {
+  const { request } = await import("node:http");
+  const url = new URL(path, base);
+  return new Promise((resolveRequest, reject) => {
+    const req = request({ hostname: url.hostname, port: url.port, path: url.pathname, method: options.method ?? "GET", headers: options.headers ?? {} }, (res) => {
+      let body = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { body += chunk; }); res.on("end", () => resolveRequest({ status: res.statusCode ?? 0, body }));
+    });
+    req.on("error", reject); req.end(options.body ?? "");
+  });
+};
+
+test("dashboard rejects foreign Host headers, cross-origin posts, and body-only tokens", async () => {
+  const fixture = await startFixture(makeTask({ status: "paused" }));
+  try {
+    const port = new URL(fixture.base).port;
+    assert.equal((await rawRequest(fixture.base, "/", { headers: { Host: "evil.example" } })).status, 403, "DNS-rebinding host");
+    assert.equal((await rawRequest(fixture.base, "/", { headers: { Host: `localhost:${port}` } })).status, 200, "any loopback name works when bound to loopback");
+    const json = { "content-type": "application/json", Host: `127.0.0.1:${port}` };
+    const crossSite = await rawRequest(fixture.base, "/api/loop/resume", { method: "POST", headers: { ...json, Origin: "https://evil.example", "x-aidlc-token": fixture.token }, body: JSON.stringify({ taskId: "task-a" }) });
+    assert.equal(crossSite.status, 403);
+    const bodyToken = await rawRequest(fixture.base, "/api/loop/resume", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", Host: `127.0.0.1:${port}` }, body: `taskId=task-a&token=${fixture.token}` });
+    assert.equal(bodyToken.status, 401, "a token in a form body (CSRF-able) is not accepted");
+    const html = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(html, /token=\(\[\^&\]\+\)/, "the page adopts the #token= login link");
+    assert.match(html, /history\.replaceState\(history\.state, "", location\.pathname \+ location\.search\)/);
+  } finally { await fixture.close(); }
+});
+
+test("token files must live outside the project, be private regular files, and can be created", async () => {
+  const { readUiTokenFile } = await import("../../src/task-ui.js");
+  const { chmodSync, symlinkSync, statSync } = await import("node:fs");
+  const project = mkdtempSync(join(tmpdir(), "aidlc-ui-project-"));
+  const outside = mkdtempSync(join(tmpdir(), "aidlc-ui-secrets-"));
+  try {
+    assert.throws(() => readUiTokenFile(project, join(project, "ui.token"), { create: true }), /outside the project/);
+    const created = join(outside, "ui.token");
+    const token = readUiTokenFile(project, created, { create: true });
+    assert.ok(token.length >= 32);
+    if (process.platform !== "win32") assert.equal(statSync(created).mode & 0o777, 0o600);
+    assert.equal(readUiTokenFile(project, created, { create: false }), token, "the same token survives a restart");
+    assert.throws(() => readUiTokenFile(project, join(outside, "missing.token"), { create: false }), /not found/);
+    if (process.platform !== "win32") {
+      chmodSync(created, 0o644);
+      assert.throws(() => readUiTokenFile(project, created, { create: false }), /private/);
+      chmodSync(created, 0o600);
+      symlinkSync(created, join(outside, "link.token"));
+      assert.throws(() => readUiTokenFile(project, join(outside, "link.token"), { create: false }), /symlink/);
+    }
+    writeFileSync(join(outside, "short.token"), "abc\n", { mode: 0o600 });
+    assert.throws(() => readUiTokenFile(project, join(outside, "short.token"), { create: false }), /16–256/);
+  } finally { rmSync(project, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+});
+
+test("child processes and the daemon never inherit UI or reviewer credentials", async () => {
+  const { scrubbedEnv } = await import("../../src/task-ui.js");
+  const previous = { ...process.env };
+  process.env.AIDLC_FLEET_REVIEWER_TOKEN = "r".repeat(32); process.env.AIDLC_UI_TOKEN = "u".repeat(32);
+  try {
+    const env = scrubbedEnv({ AIDLC_LOOP_EVENT_LOG: "/tmp/x" });
+    assert.equal(env.AIDLC_FLEET_REVIEWER_TOKEN, undefined);
+    assert.equal(env.AIDLC_UI_TOKEN, undefined);
+    assert.equal(env.AIDLC_LOOP_EVENT_LOG, "/tmp/x");
+    assert.equal(scrubbedEnv({ AIDLC_FLEET_REVIEWER_TOKEN: "explicit" }).AIDLC_FLEET_REVIEWER_TOKEN, "explicit", "only an explicit per-call grant (approve) passes it");
+  } finally { process.env = previous; }
+});
+
+test("fleet dashboard reads tasks, gate snapshots, resume and approve through loop-entry with a scoped reviewer credential", { skip: process.platform === "win32" }, async () => {
+  const { startUiServer } = await import("../../src/task-ui.js");
+  const root = mkdtempSync(join(tmpdir(), "aidlc-ui-fleet-"));
+  const calls = join(root, "calls.jsonl");
+  const fleetTask = { ...makeTask({ status: "blocked_on_user" }), id: "fleet-a", title: "Fleet task A" };
+  const pausedTask = { ...makeTask({ status: "paused" }), id: "fleet-b", title: "Fleet task B" };
+  mkdirSync(join(root, ".agents/aidlc/scripts"), { recursive: true });
+  writeFileSync(join(root, ".agents/config.json"), JSON.stringify({ loop: { mode: "fleet", agents: { lead: "codex", workers: { w: "codex" } } } }));
+  // A fake installed loop-entry.mjs that records each dashboard action, its stdin, and whether it got the reviewer credential.
+  writeFileSync(join(root, ".agents/aidlc/scripts/loop-entry.mjs"), `import { appendFileSync, readFileSync } from "node:fs";
+let input = ""; try { input = readFileSync(0, "utf8"); } catch { /* no stdin */ }
+const [action, taskId] = process.argv.slice(2);
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ action, taskId, input, reviewer: process.env.AIDLC_FLEET_REVIEWER_TOKEN ?? null }) + "\\n");
+const tasks = ${JSON.stringify([fleetTask, pausedTask])};
+if (action === "tasks") console.log(JSON.stringify({ ok: true, authority: "fleet", tasks }));
+else if (action === "gate") console.log(JSON.stringify({ ok: true, gate: "G0_confirm", status: "blocked_on_user", snapshot: { id: "snap-1", reviewText: "## Remote review\\nSnapshot body" } }));
+else if (action === "approve" || action === "resume-task") console.log(JSON.stringify({ ok: true, result: { action } }));
+else { console.error("unexpected " + action); process.exit(1); }
+`);
+  const read = () => readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const run = async (reviewerToken?: string) => {
+    const { server, port, token } = await startUiServer({ root, host: "127.0.0.1", port: 0, ...(reviewerToken ? { reviewerToken } : {}) });
+    return { base: `http://127.0.0.1:${port}`, token, close: () => new Promise<void>((done) => server.close(() => done())) };
+  };
+  const plain = await run();
+  try {
+    const home = await (await fetch(`${plain.base}/`)).text();
+    assert.match(home, /data-authority="fleet"/);
+    assert.match(home, /Fleet task A/);
+    assert.match(home, /Fleet task B/);
+    const detail = await (await fetch(`${plain.base}/tasks/fleet-a`)).text();
+    assert.match(detail, /review snapshot/);
+    assert.match(detail, /Snapshot body/);
+    assert.match(detail, /remote-state\.mjs gate approve fleet-a/, "without a reviewer credential the page shows the reviewer command");
+    const denied = await fetch(`${plain.base}/api/gate/approve`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": plain.token }, body: JSON.stringify({ taskId: "fleet-a", source: "ok" }) });
+    assert.equal(denied.status, 403);
+    const resumed = await fetch(`${plain.base}/api/loop/resume`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": plain.token }, body: JSON.stringify({ taskId: "fleet-b" }) });
+    assert.equal(resumed.status, 200);
+    assert.ok(read().some((call) => call.action === "resume-task" && call.taskId === "fleet-b"));
+  } finally { await plain.close(); }
+  const reviewer = await run("r".repeat(32));
+  try {
+    const detail = await (await fetch(`${reviewer.base}/tasks/fleet-a`)).text();
+    assert.match(detail, /approve-button/);
+    const approved = await fetch(`${reviewer.base}/api/gate/approve`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": reviewer.token }, body: JSON.stringify({ taskId: "fleet-a", source: "looks good" }) });
+    assert.equal(approved.status, 200);
+    const all = read();
+    const approve = all.find((call) => call.action === "approve");
+    assert.deepEqual({ taskId: approve.taskId, input: approve.input, reviewer: approve.reviewer }, { taskId: "fleet-a", input: "looks good", reviewer: "r".repeat(32) });
+    assert.ok(all.filter((call) => call.action !== "approve").every((call) => call.reviewer === null), "read and resume children never receive the reviewer credential");
+  } finally { await reviewer.close(); rmSync(root, { recursive: true, force: true }); }
+});

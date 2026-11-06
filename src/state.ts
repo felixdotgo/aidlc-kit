@@ -14,6 +14,7 @@ export { type StateLockOptions, acquireStateLock } from "./state/lock.js";
 export { emptyMemoryRegistry, validateMemoryRegistry, loadMemoryRegistry, saveMemoryRegistry, selectAgenticMemory, promoteAgenticMemory, retireAgenticMemory } from "./state/memory.js";
 export { statePath, lessonIndexPath, memoryRegistryPath, stateLockPath, stateLockGuardPath, archiveRecordPath } from "./state/paths.js";
 export { type TaskSummary, listTaskSummaries, renderWorkplan, renderViews } from "./state/render.js";
+export { pathOverlaps, pathsOverlap, concurrentItemPairs, partitionDiagnostics, loopPartitionStrict, workplanScope } from "./state/partition.js";
 export { loadState, loadTask, saveState } from "./state/store.js";
 export { latestApproval, buildBoundary, hasApproval, hasCurrentBuildApproval, hasAreaVerification, hasVerification, hasReview, type RepairBounds, repairBounds, isLegacyG2Wait, transitionDiagnostics, transitionTask } from "./state/transitions.js";
 export { validateLesson, validateTask, validateState } from "./state/validate.js";

@@ -44,6 +44,13 @@ export function createFleetRemoteRepository({ callTool, url, token, workspace, r
     getFeature: async ({ featureId }) => (await fleet()).fleet.features[featureId] ?? null,
     featureReady: async ({ featureId }) => call("feature_ready", { featureId }),
     listAllJobs: async () => Object.values((await fleet()).fleet.jobs).map(normalizeJob),
+    /** Every canonical task in the workspace (unordered), for daemon task discovery. */
+    listTasks: async () => {
+      const value = await call("state_get", {});
+      const tasks = value?.state?.tasks;
+      if (!tasks || typeof tasks !== "object" || Array.isArray(tasks)) throw new Error("Invalid remote workspace state");
+      return Object.values(tasks);
+    },
     readTask: async ({ taskId }) => {
       const value = await call("task_get", { taskId, clientProjectRoot: root });
       return { task: value.task, nextAction: value.nextAction, revision: value.revision };

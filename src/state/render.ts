@@ -2,6 +2,7 @@ import type { Phase, Gate, TaskState, WorkflowState } from "../model.js";
 import { tokens } from "./guards.js";
 import { safeResolvedPath, writeAtomic } from "./io.js";
 import { loadState } from "./store.js";
+import { workplanScope } from "./partition.js";
 
 export interface TaskSummary { id: string; title: string; phase: Phase; gate: Gate; status: TaskState["status"]; risk: TaskState["risk"]; areas: string[]; updatedAt: string; source: "active" | "archive" }
 
@@ -25,7 +26,7 @@ export const listTaskSummaries = (state: WorkflowState, options: { includeArchiv
 /** Renders the markdown workplan for a task. */
 export const renderWorkplan = (task: TaskState): string => {
   const decisions = task.decisions.length ? task.decisions.map((item) => `- [${item.status === "approved" ? "x" : " "}] ${item.id} — ${item.label}${item.resolution ? ` — ${item.resolution}` : ""}`).join("\n") : "- None";
-  const tasks = task.tasks.length ? task.tasks.map((item) => `- [${item.status === "done" ? "x" : item.status === "in_progress" ? "~" : " "}] ${item.id} — ${item.label}`).join("\n") : "- None";
+  const tasks = task.tasks.length ? task.tasks.map((item) => `- [${item.status === "done" ? "x" : item.status === "in_progress" ? "~" : " "}] ${item.id} — ${item.label}${workplanScope(item)}`).join("\n") : "- None";
   const lifecycle = [`- Status: \`${task.status}\``, task.handoff ? `- Handoff: \`${task.handoff.kind}\` — ${task.handoff.reason}` : "", task.closure ? `- Closure: ${task.closure.reason}` : "", task.predecessorTaskId ? `- Predecessor: \`${task.predecessorTaskId}\`` : "", task.successorTaskId ? `- Successor: \`${task.successorTaskId}\`` : "", task.lessonDisposition ? `- Lessons: \`${task.lessonDisposition.status}\`` : ""].filter(Boolean).join("\n");
   return `# Workplan — ${task.title} (\`${task.id}\`)\n\n> Generated from canonical JSON state.\n\n## Lifecycle\n${lifecycle}\n\n## 🧩 Decisions (Approve plan — before implementation)\n${decisions}\n\n## 🧩 Tasks (Review implementation — work items)\n${tasks}\n`;
 };

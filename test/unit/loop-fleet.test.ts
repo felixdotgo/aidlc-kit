@@ -153,6 +153,51 @@ test("coordinator leaves overlapping owned paths for a later assignment", async 
   assert.match(String(result), /no phase progress/);
 });
 
+test("coordinator treats a file under an active directory claim as overlapping", async () => {
+  const { runFleetCoordinator } = await load();
+  let scheduled = false, prepared = false, reads = 0;
+  const repository = {
+    readTask: async () => ({ task: task(), nextAction: reads++ >= 2 ? { classification: "await_user", gate: "G1_review" } : action, revision: 3 }),
+    claimLead: async () => ({ epoch: 7 }), renewLead: async () => {}, releaseLead: async () => {},
+    listJobs: async () => [], scheduleJob: async () => { scheduled = true; }, saveGateSnapshot: async () => ({ snapshotId: "snap" })
+  };
+  // A trailing-slash-free directory claim (as `scopes()` normalizes it) must still block `src/a.ts`.
+  const result = await runFleetCoordinator({ repository, taskId: "task-a", workerIds: ["worker-a"], reservedJobs: [{ state: "leased", ownedPaths: ["src"] }], handoff: { prepare: async () => { prepared = true; return { baseCommit: "abc", branch: "worker/T1", ownedPaths: ["src/a.ts"], agent: "codex" }; } }, packet: async () => "phase", driver: async () => {}, gateView: async () => "Review", pollMs: 1 });
+  assert.equal(prepared, true);
+  assert.equal(scheduled, false);
+  assert.equal(result.status, "gate");
+});
+
+test("coordinator cancel aborts the in-flight lead turn and stops; stop waits for the turn", async () => {
+  const { runFleetCoordinator } = await load();
+  const runPhase = { classification: "run_phase", phase: "clarify" };
+  const repository = (released: string[]) => ({
+    readTask: async () => ({ task: { id: "task-a", phase: "clarify", tasks: [] }, nextAction: runPhase, revision: 1 }),
+    claimLead: async () => ({ epoch: 1 }), renewLead: async () => {}, releaseLead: async () => { released.push("lead"); }, listJobs: async () => [], scheduleJob: async () => {}, saveGateSnapshot: async () => {}
+  });
+  const cancel = new AbortController(); const released: string[] = []; let turnSignal: AbortSignal | undefined;
+  const cancelled = await runFleetCoordinator({ repository: repository(released), taskId: "task-a", cancelSignal: cancel.signal, packet: async () => "phase", driver: ({ signal }: any) => new Promise((_, reject) => { turnSignal = signal; setTimeout(() => cancel.abort(), 5); signal.addEventListener("abort", () => reject(new Error("aborted"))); }) });
+  assert.equal(cancelled.status, "stopped"); assert.equal(turnSignal?.aborted, true); assert.deepEqual(released, ["lead"]);
+
+  const stop = new AbortController(); let turns = 0; let stopTurnSignal: AbortSignal | undefined;
+  const stopped = await runFleetCoordinator({ repository: repository([]), taskId: "task-a", stopSignal: stop.signal, packet: async () => "phase", driver: async ({ signal }: any) => { turns++; stopTurnSignal = signal; stop.abort(); } });
+  assert.equal(stopped.status, "stopped"); assert.equal(turns, 1); assert.equal(stopTurnSignal?.aborted, false);
+});
+
+test("worker cancel aborts the in-flight turn and abandons the attempt for lead recovery", async () => {
+  const { runFleetWorker } = await load();
+  const reports: any[] = []; const cancel = new AbortController();
+  const repository = {
+    claimJob: async () => ({ taskId: "task-a", itemId: "T1", assignmentId: "job-a", attempt: 1, epoch: 1, agent: "codex" }),
+    renewJob: async () => {}, checkpointJob: async () => {}, reportJob: async (input: any) => { reports.push(input.report); },
+    readTask: async () => ({ task: task(), nextAction: action, revision: 1 })
+  };
+  const handoff = { prepare: async () => ({ root: "/tmp/worker-a" }), observe: async () => ({ done: false }), finish: async () => ({}) };
+  const result = await runFleetWorker({ repository, workerId: "worker-a", cancelSignal: cancel.signal, handoff, packet: async () => "task", driver: ({ signal }: any) => new Promise((_, reject) => { setTimeout(() => cancel.abort(), 5); signal.addEventListener("abort", () => reject(new Error("aborted"))); }) });
+  assert.deepEqual(result, { status: "stopped", assignmentId: "job-a" });
+  assert.equal(reports.length, 1); assert.equal(reports[0].status, "uncertain"); assert.match(reports[0].reason, /cancelled/);
+});
+
 test("expired worker lease becomes uncertain before any redispatch", async () => {
   const { runFleetCoordinator } = await load();
   let scheduled = false;

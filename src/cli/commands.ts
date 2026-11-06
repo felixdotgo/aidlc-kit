@@ -9,13 +9,13 @@ import { fileURLToPath } from "node:url";
 import { doctor, doctorData, status, statusData } from "../installer.js";
 import { applyMcpSetup, planMcpSetup, type McpSetupOptions } from "../mcp-setup.js";
 import { loadProjectConfig, resolveProfiles } from "../profiles.js";
-import { startUiServer } from "../task-ui.js";
+import { openBrowser, readUiTokenFile, startUiServer } from "../task-ui.js";
 import { assertKnownOptions, DOCTOR_FLAGS, flags, MCP_FLAGS, rootArg, STATUS_FLAGS, UI_FLAGS, value } from "./argv.js";
 import { confirmGeneral, mcpSetupSelections } from "./prompt.js";
 
 export const runLoopCommand = async (args: string[]): Promise<void> => {
   const action = args[0] ?? "";
-  if (!["start", "status", "resume", "worker-image"].includes(action)) throw new Error("Expected loop start, status, resume, or worker-image");
+  if (!["start", "status", "resume", "intake", "worker-image"].includes(action)) throw new Error("Expected loop start, status, intake, or worker-image");
   const parsed = new Map<string, string>();
   for (let index = 1; index < args.length; index += 2) {
     const key = args[index];
@@ -53,9 +53,16 @@ export const runUi = async (args: string[]): Promise<void> => {
   const port = Number(value(args, "--port") ?? 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be an integer between 1 and 65535");
   const host = value(args, "--host") ?? "127.0.0.1";
-  const { server, port: boundPort, token } = await startUiServer({ root, host, port });
-  console.log(`Loop (AI-DLC UI) listening on http://${host}:${boundPort} (Ctrl-C to stop)`);
-  console.log(`Approve token (paste into the dashboard for loop actions and gate approval): ${token}`);
+  const tokenFile = value(args, "--token-file");
+  const reviewerFile = value(args, "--reviewer-token-file");
+  const token = tokenFile ? readUiTokenFile(root, tokenFile, { create: true }) : undefined;
+  const reviewerToken = reviewerFile ? readUiTokenFile(root, reviewerFile, { create: false }) : undefined;
+  const { server, port: boundPort, token: sessionToken } = await startUiServer({ root, host, port, ...(token ? { token } : {}), ...(reviewerToken ? { reviewerToken } : {}) });
+  const base = `http://${host.includes(":") ? `[${host}]` : host}:${boundPort}`;
+  const loginUrl = `${base}/#token=${encodeURIComponent(sessionToken)}`;
+  console.log(`Loop (AI-DLC UI) listening on ${base} (Ctrl-C to stop)`);
+  console.log(`Open (signs this browser in for loop actions and gate approval): ${loginUrl}`);
+  if (flags(args).has("--open")) openBrowser(loginUrl);
   await new Promise<void>((resolve) => {
     const close = (): void => { server.close(() => resolve()); };
     process.once("SIGINT", close);

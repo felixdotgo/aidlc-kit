@@ -6,4 +6,4 @@
 - <generated decision state>
 
 ## 🧩 Tasks (Review implementation — work items)
-- <generated task state>
+- <generated task state — each line shows `owns: <paths> · after: <item-ids>`>

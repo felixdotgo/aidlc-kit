@@ -70,3 +70,13 @@ test("isolated lead rejects OpenCode while the Docker worker path accepts it wit
   const { runIsolatedLeadTurn } = await import(resolve("dist/assets/.agents/aidlc/scripts/lib/loop-lead-sandbox.mjs"));
   await assert.rejects(runIsolatedLeadTurn({ root: source, snapshotsRoot: parent, image: "trusted:tag", agent: "opencode", prompt: "propose", assertOwned: async () => {} }), (error: unknown) => error instanceof Error && error.message === message);
 });
+
+test("worker credential keys follow the provider and the OpenCode model prefix", async () => {
+  const { workerCredentialKeys } = await import(resolve("dist/assets/.agents/aidlc/scripts/lib/loop-worker-docker.mjs"));
+  assert.deepEqual(workerCredentialKeys("codex", {}), ["OPENAI_API_KEY"]);
+  assert.deepEqual(workerCredentialKeys("claude", {}), ["ANTHROPIC_API_KEY"]);
+  assert.deepEqual(workerCredentialKeys("opencode", { AIDLC_OPENCODE_MODEL: "openai/gpt-5" }), ["OPENAI_API_KEY"]);
+  assert.deepEqual(workerCredentialKeys("opencode", { AIDLC_OPENCODE_MODEL: "anthropic/claude-sonnet" }), ["ANTHROPIC_API_KEY"]);
+  assert.deepEqual(workerCredentialKeys("opencode", { AIDLC_OPENCODE_MODEL: "opencode-go/kimi" }), ["OPENCODE_API_KEY"]);
+  assert.deepEqual(workerCredentialKeys("opencode", {}), ["OPENCODE_API_KEY"]);
+});

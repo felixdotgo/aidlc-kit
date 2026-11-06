@@ -152,9 +152,12 @@ Add a loop-owned task in either way:
 - **Web dashboard** → **New task** (§5.7): creates the task and starts the daemon if none is
   running.
 - **Terminal** — the requirement is read from stdin (never an argument), max 8192 bytes; the
-  task id/title are derived from its first line:
+  task id/title are derived from its first line (override with `--task-id`/`--title`):
 
   ```sh
+  echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit loop intake --root .
+  echo "Add PDF report export" | node dist/src/cli.js loop intake --root .
+  # or the installed entry point directly:
   echo "Add PDF report export" | node .agents/aidlc/scripts/loop-entry.mjs intake "" .
   ```
 
@@ -183,18 +186,19 @@ node dist/src/cli.js loop status --task-id <task-id> --root .
 Prints `authority`, `record` (run record), and `nextAction`
 (`classification` = `run_phase` / `await_user` / `blocked` / `complete`...).
 
-### 5.4 Approve a gate (ONLY from the trusted terminal)
+### 5.4 Approve a gate (trusted terminal or dashboard — never the agent)
 
 ```sh
 node .agents/aidlc/scripts/loop-gate.mjs <task-id>
 # type: approve
 ```
 
-Never approve from the lead/worker, and never pipe input.
+Never approve from the lead/worker, and never pipe input. The signed-in dashboard (§5.7)
+offers the same approval on the task detail page.
 
 ### 5.5 Resume after stopping at a gate / pause
 
-In **local** mode there is **no one-shot `loop resume`** — the daemon is the only runner,
+There is **no `loop resume`** (in either mode) — the daemon is the only runner,
 and it auto-resumes every task whose derived `nextAction` is `run_phase` (an *actionable*
 task). What you do depends on why the task stopped:
 
@@ -211,9 +215,10 @@ task). What you do depends on why the task stopped:
 
   The daemon picks it up on the next poll (default ~5s).
 
-> `aidlc-kit loop resume`/`loop-entry.mjs resume` in local mode fails closed with
-> `Local loop resume is removed; the daemon auto-resumes actionable tasks — run 'loop start'`.
-> Use `state.mjs task status --status active` instead of trying to "resume the loop".
+> `aidlc-kit loop resume`/`loop-entry.mjs resume` fails closed with
+> `loop resume is removed; the daemon auto-resumes actionable tasks — run 'loop start', and re-activate a paused task from the dashboard (resume) or with the task status command`.
+> Use `state.mjs task status --status active` (or `loop-entry.mjs resume-task <task-id> .`)
+> instead of trying to "resume the loop".
 
 ### 5.6 Streaming log — see what the lead is doing
 
@@ -237,9 +242,14 @@ The loop never self-approves.
 Streamed events: `turn_start`/`turn_end` (turn boundary + phase + agent), `agent_text`
 (lead text, capped at 4096 chars/chunk), `agent_tool` (tool being used such as
 `grep`/`read`/`glob`/`shell`), `lifecycle_command` (shell result + exit code), and `gate`
-(gate view), plus daemon events `daemon_poll`, `daemon_turn`, `daemon_turn_error` (a task
-whose run throws is retried with exponential backoff: poll interval doubled per failure,
-capped at 10 minutes) and `loop_stopped`. Every event of a run carries its `taskId`.
+(gate view), plus daemon events `daemon_start`, `daemon_poll`, `daemon_poll_error` (the task
+list could not be read; the daemon keeps polling), `daemon_turn`, `daemon_turn_error`, and
+`loop_stopped`. A task whose run throws, or ends `blocked`/`reconcile`, is retried with
+exponential backoff (poll interval doubled per failure, capped at 10 minutes). In the build
+phase, `build_deferred` names a ready item held back for a later batch (`reason`: overlaps
+another item, a busy path held by an active assignment, an unresolved assignment, or
+`capacity` — at most one item per configured worker per batch). Every event of a run
+carries its `taskId`.
 
 ### 5.7 Web dashboard (`aidlc-kit ui`)
 
@@ -251,10 +261,15 @@ npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit ui .
 node dist/src/cli.js ui .
 ```
 
-The dashboard is branded **Loop**. It binds `127.0.0.1:4173` by default and prints a **one-time approve token** to the terminal.
-Open the dashboard and paste that token into **⚙ Settings → Save** before using any
-mutating action (new task, resume, gate approve); it is stored in `localStorage`. The header
-shows whether the daemon is running. The page follows the system light/dark preference
+The dashboard is branded **Loop**. It binds `127.0.0.1:4173` by default and prints a **login
+URL** (`http://127.0.0.1:4173/#token=…`). Open it (or pass `--open` to launch the browser):
+the page stores the token in `localStorage` and strips it from the address bar, so mutating
+actions (new task, resume, gate approve) work without pasting anything. The token is new on
+every start; use `--token-file ~/.aidlc-ui-token` (outside the project, mode `600`, created
+if missing) to keep the browser signed in across restarts. **⚙ Settings** still
+accepts a pasted token. Requests from another origin or with a foreign `Host` header are
+rejected `403` (see [Command reference](./command-reference.md#dashboard-authentication)).
+The header shows the authority (`authority · local`) and whether the daemon is running. The page follows the system light/dark preference
 automatically (Bulma plus the flat `assets/ui/dashboard.css` theme layer) and uses the full
 window width; results of actions appear as toasts in the bottom-right corner. Shortcuts:
 <kbd>N</kbd> new task, <kbd>/</kbd> search, <kbd>Esc</kbd> close the side panel or a dialog.
@@ -374,8 +389,8 @@ In the streaming build (after sync), the error appears directly in `stopReason` 
 "agent transport failure: opencode reported an error: Model unavailable: opencode-go/flint-40b-free"
 ```
 
-→ Wrong/unavailable model. Check `opencode models`, set `AIDLC_OPENCODE_MODEL` again, then
-`loop resume`.
+→ Wrong/unavailable model. Check `opencode models`, set `AIDLC_OPENCODE_MODEL` again, restart
+the daemon, then re-activate the task (§5.5).
 
 Raw OpenCode log (full stacktrace) if needed:
 
@@ -448,8 +463,12 @@ gate; raise `loop.limits.maxTurns` if the phase legitimately needs more turns. T
 
 - The gate **approve** form exists only on the full detail page `/tasks/<id>`; the
   dashboard's **approve** button on a `blocked_on_user` card just opens that page.
-- Mutating actions need the session token pasted into **Settings** first; without it they
-  return `401` (shown inline under the button).
+- Mutating actions need the session token; without it they return `401` (shown inline under
+  the button). Open the login URL printed by `aidlc-kit ui` (the token changes on every
+  restart unless you use `--token-file`), or paste the token into **Settings**.
+- A `403` means the request was refused before the token check: the page was opened under a
+  different host name than the one the server is bound to (use the printed URL; any loopback
+  name works when bound to loopback), or the request came from another origin.
 - **resume** only applies to a `paused` task; on any other status it returns `409` with the
   reason (a gate wait must be approved instead). A resumed task runs only if it is
   loop-owned and a daemon is running (§5.2).
@@ -459,6 +478,13 @@ gate; raise `loop.limits.maxTurns` if the phase legitimately needs more turns. T
   page declared `const post` twice, silently disabling the approve handler) fixed in source —
   rebuild/repack from a checkout that includes the fix, restart `ui`, and hard-refresh
   (Ctrl+Shift+R) to drop the cached page.
+
+### 9.9 Build items wait (`build_deferred`) or the task pauses with `build dispatch failure`
+
+`build_deferred` is normal: ready items whose owned paths overlap, or that exceed the number
+of workers, run in a later batch. A pause with `build dispatch failure: Unresolved assignment …`
+means an earlier assignment still holds the paths every ready item needs; the loop never
+releases it on its own. See [Troubleshooting](./troubleshooting.md#build-items-deferred-or-build-dispatch-failure-unresolved-assignment).
 
 ---
 

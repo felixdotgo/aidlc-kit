@@ -169,3 +169,106 @@ test("daemonLoop backs off a failing task, stamps task ids on run events, and fo
     assert.ok(events.some((event) => event.type === "daemon_turn" && event.status === "gate" && event.taskId === "t1"));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+const loadAuthority = async (): Promise<any> => import(resolve("dist/assets/.agents/aidlc/scripts/lib/loop-authority.mjs"));
+
+test("runLoopDaemon drives any loop authority: shared lock, gate-event dedupe, backoff on blocked runs, and poll errors", async () => {
+  const { runLoopDaemon, daemonLockPath } = await load();
+  const { existsSync } = await import("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "aidlc-daemon-shared-"));
+  try {
+    applyPlan(root, planInit({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false }));
+    const stop = new AbortController();
+    const events: any[] = []; const runs: string[] = [];
+    let polls = 0;
+    const authority = {
+      mode: "fleet",
+      async listActionable() {
+        polls += 1;
+        if (polls === 1) throw new Error("service unreachable");
+        if (polls >= 4) stop.abort();
+        return [{ id: "parked", updatedAt: "1" }, { id: "stuck", updatedAt: "2" }];
+      },
+      async runTask({ taskId, onEvent }: any) {
+        runs.push(taskId);
+        assert.ok(existsSync(daemonLockPath(root)), "the singleton lock is held while runs execute");
+        if (taskId === "parked") { onEvent({ type: "gate", gate: "G0_confirm" }); return { status: "gate", gate: "G0_confirm", gateEmitted: true }; }
+        return { status: "blocked", reason: "Pending checkpoint does not match canonical gate" };
+      }
+    };
+    const result = await runLoopDaemon({ root, authority, pollMs: 1000, signal: stop.signal, onEvent: (event: any) => events.push(event), now: () => 0 });
+    assert.equal(result.status, "stopped");
+    assert.equal(existsSync(daemonLockPath(root)), false, "the lock is released on stop");
+    assert.equal(events[0].type, "daemon_start");
+    assert.equal(events[0].authority, "fleet");
+    assert.ok(events.some((event) => event.type === "daemon_poll_error" && /unreachable/.test(event.message)));
+    assert.equal(events.filter((event) => event.type === "gate").length, 2, "one gate event per parked run; the daemon does not duplicate an emitted gate");
+    assert.ok(events.filter((event) => event.type === "gate").every((event) => event.taskId === "parked"));
+    // `stuck` returns blocked once, then backs off (the clock never advances) instead of re-running every poll.
+    assert.deepEqual(runs.filter((id) => id === "stuck").length, 1);
+    assert.ok(events.some((event) => event.type === "daemon_turn" && event.taskId === "stuck" && event.status === "blocked" && /checkpoint/.test(event.reason)));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("fleet lead env validates the remote authority, maps loop limits, and strips reviewer credentials", async () => {
+  const { fleetLeadEnv } = await loadAuthority();
+  const base = { AIDLC_FLEET_URL: "https://fleet.example/mcp", AIDLC_FLEET_WORKSPACE: "ws", AIDLC_FLEET_TOKEN: "lead", AIDLC_FLEET_INTEGRATION_BRANCH: "main", AIDLC_FLEET_REVIEWER_TOKEN: "r".repeat(32), AIDLC_UI_TOKEN: "ui", AIDLC_FLEET_MAX_TURNS: "7" };
+  const env = fleetLeadEnv({ root: "/repo", agent: "codex", workers: { w1: "codex", w2: "opencode" }, limits: { maxTurns: 30, turnTimeoutMs: 900000, maxStallTurns: 3 }, pollMs: 2000, env: base });
+  assert.equal(env.AIDLC_FLEET_REVIEWER_TOKEN, undefined);
+  assert.equal(env.AIDLC_UI_TOKEN, undefined);
+  assert.equal(env.AIDLC_FLEET_MAX_TURNS, "7", "explicit env wins over loop.limits");
+  assert.equal(env.AIDLC_FLEET_TURN_TIMEOUT_MS, "900000");
+  assert.equal(env.AIDLC_FLEET_MAX_STALL_TURNS, "3");
+  assert.equal(env.AIDLC_FLEET_POLL_MS, "2000");
+  assert.equal(env.AIDLC_FLEET_PROJECT_ROOT, "/repo");
+  assert.equal(env.AIDLC_FLEET_WORKER_IDS, "w1,w2");
+  assert.equal(env.AIDLC_FLEET_WORKER_PROVIDERS, JSON.stringify({ w1: "codex", w2: "opencode" }));
+  assert.throws(() => fleetLeadEnv({ root: "/repo", agent: "codex", workers: { w1: "codex" }, env: { ...base, AIDLC_FLEET_URL: "" } }), /AIDLC_FLEET_URL/);
+  assert.doesNotThrow(() => fleetLeadEnv({ root: "/repo", agent: "codex", workers: { w1: "codex", w2: "opencode" }, env: { ...base, AIDLC_FLEET_WORKER_PROVIDERS: '{ "w2": "opencode", "w1": "codex" }' } }), "key order and spacing do not matter");
+  assert.throws(() => fleetLeadEnv({ root: "/repo", agent: "codex", workers: { w1: "codex" }, env: { ...base, AIDLC_FLEET_WORKER_PROVIDERS: '{"w1":"claude"}' } }), /does not match/);
+  assert.throws(() => fleetLeadEnv({ root: "/repo", agent: "codex", workers: { w1: "codex" }, env: { ...base, AIDLC_FLEET_PROJECT_ROOT: "/other" } }), /does not match the loop root/);
+});
+
+test("fleet authority lists only actionable fleet-owned tasks and runs bounded supervisors", async () => {
+  const { createFleetAuthority } = await loadAuthority();
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "aidlc-fleet-authority-"));
+  try {
+    applyPlan(root, planInit({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false }));
+    const own = (id: string, authority: string) => { mkdirSync(join(root, ".agents/data/tasks", id), { recursive: true }); writeFileSync(join(root, ".agents/data/tasks", id, "loop-intake.json"), JSON.stringify({ schemaVersion: 1, taskId: id, authority, requirementHash: "x" })); };
+    own("fleet-a", "fleet"); own("fleet-b", "fleet"); own("local-c", "local"); own("fleet-paused", "fleet");
+    const mk = (id: string, status: string, updatedAt: string) => ({ id, title: id, type: "infra", phase: "clarify", gate: "G0_confirm", status, language: "en", risk: "normal", areas: ["root"], branch: "—", artifacts: {}, decisions: [], tasks: [], evidence: [], createdAt: "2026-01-01T00:00:00.000Z", updatedAt });
+    const tasks = { "fleet-a": mk("fleet-a", "active", "2026-01-02T00:00:00.000Z"), "fleet-b": mk("fleet-b", "active", "2026-01-01T00:00:00.000Z"), "local-c": mk("local-c", "active", "2026-01-01T00:00:00.000Z"), "fleet-paused": mk("fleet-paused", "paused", "2026-01-01T00:00:00.000Z"), foreign: mk("foreign", "active", "2026-01-01T00:00:00.000Z") };
+    const calls: any[] = [];
+    const callTool = async ({ name, args }: any) => { calls.push({ name, args }); if (name === "state_get") return { revision: 1, state: { tasks } }; throw new Error(`unexpected ${name}`); };
+    const cli: any[] = [];
+    const runCli = async (argv: string[], options: any) => { cli.push({ argv, options }); return { status: "gate", gate: "G0_confirm", snapshotId: "s1" }; };
+    const env = { AIDLC_FLEET_URL: "https://fleet.example/mcp", AIDLC_FLEET_WORKSPACE: "ws", AIDLC_FLEET_TOKEN: "lead", AIDLC_FLEET_INTEGRATION_BRANCH: "main", AIDLC_FLEET_REVIEWER_TOKEN: "r".repeat(32) };
+    const authority = await createFleetAuthority({ root, agent: "codex", workers: { w1: "codex" }, env, callTool, runCli });
+    assert.equal(authority.mode, "fleet");
+    assert.deepEqual((await authority.listActionable()).map((task: any) => task.id), ["fleet-b", "fleet-a"]);
+    const stop = new AbortController(), cancel = new AbortController();
+    const result = await authority.runTask({ taskId: "fleet-a", signal: stop.signal, cancelSignal: cancel.signal, onEvent: () => {} });
+    assert.deepEqual(result, { status: "gate", gate: "G0_confirm", snapshotId: "s1", gateEmitted: true });
+    assert.deepEqual(cli[0].argv, ["supervisor", "fleet-a"]);
+    assert.equal(cli[0].options.untilStop, true);
+    assert.equal(cli[0].options.signal, stop.signal);
+    assert.equal(cli[0].options.cancelSignal, cancel.signal);
+    assert.equal(cli[0].options.env.AIDLC_FLEET_REVIEWER_TOKEN, undefined, "the lead never receives the reviewer credential");
+    await assert.rejects(() => authority.approve({ taskId: "fleet-a", source: "ok", reviewerToken: undefined }), /reviewer credential/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("createLoopAuthority fails fast on a bad roster or limits and never falls back between modes", async () => {
+  const { createLoopAuthority } = await loadAuthority();
+  const root = mkdtempSync(join(tmpdir(), "aidlc-authority-config-"));
+  try {
+    applyPlan(root, planInit({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false }));
+    const agents = { lead: "codex", workers: { w: "codex" } };
+    await assert.rejects(() => createLoopAuthority({ root, config: { loop: { mode: "off", agents } } }), /Loop mode is off/);
+    await assert.rejects(() => createLoopAuthority({ root, config: { loop: { mode: "local", agents: { lead: "codex", workers: {} } } } }), /lead and worker providers/);
+    await assert.rejects(() => createLoopAuthority({ root, config: { loop: { mode: "local", agents, limits: { maxTurns: 0 } } } }), /maxTurns/);
+    await assert.rejects(() => createLoopAuthority({ root, config: { loop: { mode: "fleet", agents } }, env: {} }), /AIDLC_FLEET_URL/, "fleet without its remote authority fails closed instead of running locally");
+    assert.equal((await createLoopAuthority({ root, config: { loop: { mode: "local", agents } } })).mode, "local");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

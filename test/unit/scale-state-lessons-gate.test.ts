@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, s
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { formatGateView } from "../../src/gate.js";
+import { checkGate, formatGateView } from "../../src/gate.js";
 import type { LessonRecord, TaskState, WorkflowState } from "../../src/model.js";
 import { lessonStateDigest, listTaskSummaries, loadTask, rebuildLessonIndex, renderViews, renderWorkplan, saveState, searchLessons } from "../../src/state.js";
 
@@ -173,4 +173,29 @@ test("review names stay English across gates, formats, and packaged runtime", as
     assert.match(workplan, /## 🧩 Tasks \(Review implementation/);
     assert.doesNotMatch(workplan, /Gate G[012]/);
   }
+});
+
+test("TS Approve plan gate enforces the work partition only when the loop is enabled", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-ts-partition-"));
+  try {
+    const id = "partition-ts";
+    const current: TaskState = {
+      id, title: "Partition", type: "infra", phase: "plan", gate: "G1_review", status: "blocked_on_user", language: "en", risk: "normal", areas: ["root"], branch: "—",
+      artifacts: { intent: `.agents/data/tasks/${id}/intent.md`, design: `.agents/data/tasks/${id}/design.md`, workplan: `.agents/data/tasks/${id}/workplan.md` },
+      decisions: [], evidence: [], createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      tasks: [{ id: "a", label: "a", status: "todo", ownedPaths: ["src"] }, { id: "b", label: "b", status: "todo", ownedPaths: ["src/x.ts"] }, { id: "c", label: "c", status: "todo" }]
+    };
+    const dir = join(root, ".agents/data/tasks", id); mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "intent.md"), "# intent\n");
+    writeFileSync(join(dir, "design.md"), "## 🧩 Solution per affected area\n## 📌 Spec traceability\n## 🔗 Cross-service contracts\n## ⚠️ Risks / edge cases\n");
+    writeFileSync(join(dir, "workplan.md"), renderWorkplan(current));
+    const state: WorkflowState = { schemaVersion: 4, tasks: { [id]: current }, archive: {} };
+    const codes = (): string[] => checkGate(root, state, id, "G1_review").map((item) => `${item.level}:${item.code}`);
+    assert.deepEqual(codes(), ["WARN:PARTITION_SCOPE", "WARN:PARTITION_OVERLAP", "INFO:GATE_OK"]);
+    writeFileSync(join(root, ".agents/config.json"), JSON.stringify({ loop: { mode: "fleet" } }));
+    assert.deepEqual(codes(), ["ERROR:PARTITION_SCOPE", "ERROR:PARTITION_OVERLAP"]);
+    current.tasks[1]!.dependsOn = ["a"]; current.tasks[2]!.ownedPaths = ["docs"];
+    assert.deepEqual(codes(), ["INFO:GATE_OK"]);
+    assert.match(renderWorkplan(current), /- \[ \] b — b — owns: src\/x\.ts · after: a\n/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

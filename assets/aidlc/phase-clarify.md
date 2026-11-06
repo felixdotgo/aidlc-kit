@@ -7,7 +7,7 @@ When independent, read-only index or ambiguity checks exist, use the shared orch
 1. Read the compact repository/spec indexes if available; do not scan implementation code.
 2. Read `templates/model-contract.md` and apply its COSTARS clarify emphasis to the intent brief. Use CRITICS only for elevated risk, ambiguity, or model disagreement.
 3. Canonical task state already exists from turn routing (`task create` runs there, before this packet). Never create it a second time; a repeated create fails with `Task already exists`.
-4. Fill the intent template: problem, affected areas, assumptions, open questions with safe defaults, and decidable in/out scope.
+4. Fill the intent template: problem, affected areas, work boundaries (independent streams and the paths each touches, or `single stream` with the reason), assumptions, open questions with safe defaults, and decidable in/out scope.
 5. Run `node .agents/aidlc/scripts/gate-check.mjs <task-id> --gate G0_confirm` and fix every structural error. Only after it passes, set the gate wait with `node .agents/aidlc/scripts/state.mjs task status <task-id> --status blocked_on_user`, then render only this task with `node .agents/aidlc/scripts/render.mjs <task-id>`.
 6. Run `node .agents/aidlc/scripts/gate-view.mjs <task-id>`, relay the output verbatim, and stop. Presenting the gate ends this turn.
 

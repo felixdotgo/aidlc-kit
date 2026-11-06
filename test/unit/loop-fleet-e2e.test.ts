@@ -78,7 +78,7 @@ test("real fleet CLI schedules a worker, integrates Git, records canonical compl
   } finally { service?.kill("SIGTERM"); rmSync(temp, { recursive: true, force: true }); }
 });
 
-test("loop start drives the supervised fleet loop from a requirement through all gates to completion", { skip: process.platform === "win32", timeout: 90000 }, async () => {
+test("fleet intake plus the shared loop daemon drive a task through all gates to completion", { skip: process.platform === "win32", timeout: 90000 }, async () => {
   const temp = mkdtempSync(join(tmpdir(), "aidlc-fleet-facade-"));
   const leadRoot = join(temp, "lead"), workerRoot = join(temp, "worker"), bare = join(temp, "remote.git"), bin = join(temp, "bin"), db = join(temp, "fleet.db");
   let service: ReturnType<typeof spawn> | undefined;
@@ -108,14 +108,22 @@ test("loop start drives the supervised fleet loop from a requirement through all
     await waitFor(async () => { if (service?.exitCode !== null) throw new Error(serviceError); return Boolean((await callTool({ url, token: leadToken, name: "fleet_get", args: { workspace } })).fleet); }).catch((error) => { throw new Error(`${error.message}: ${serviceError}`); });
     const loopEntry = resolve("dist/assets/.agents/aidlc/scripts/loop-entry.mjs");
     const facadeEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, AIDLC_FLEET_URL: url, AIDLC_FLEET_WORKSPACE: workspace, AIDLC_FLEET_TOKEN: leadToken, AIDLC_FLEET_INTEGRATION_BRANCH: "feature/test", AIDLC_FLEET_POLL_MS: "1000" };
-    facade = spawn(process.execPath, [loopEntry, "start", taskId, leadRoot, "fleet"], { cwd: leadRoot, env: facadeEnv, stdio: ["pipe", "pipe", "pipe"] });
+    // Intake creates the loop-owned fleet task without running it; `start` is the shared daemon.
+    const intakeRun = spawn(process.execPath, [loopEntry, "intake", taskId, leadRoot, "fleet"], { cwd: leadRoot, env: facadeEnv, stdio: ["pipe", "pipe", "pipe"] });
+    let intakeOutput = "";
+    intakeRun.stdout!.on("data", (chunk: Buffer) => { intakeOutput += chunk; }); intakeRun.stderr!.on("data", (chunk: Buffer) => { intakeOutput += chunk; });
+    intakeRun.stdin!.end("Change src/a.txt to done through the supervised fleet loop.\n");
+    const intakeCode = await new Promise<number | null>((resolveExit) => intakeRun.once("close", resolveExit));
+    assert.equal(intakeCode, 0, intakeOutput);
+    assert.match(intakeOutput, /"authority": "fleet"/);
+    facade = spawn(process.execPath, [loopEntry, "start", "", leadRoot, "fleet"], { cwd: leadRoot, env: { ...facadeEnv, AIDLC_FLEET_REVIEWER_TOKEN: reviewerToken }, stdio: ["ignore", "pipe", "pipe"] });
     facade.stdout!.on("data", (chunk: Buffer) => { facadeOutput += chunk; });
     facade.stderr!.on("data", (chunk: Buffer) => { facadeOutput += chunk; });
-    facade.stdin!.end("Change src/a.txt to done through the supervised fleet loop.\n");
     const approved = new Set<string>();
     const deadline = Date.now() + 75000;
     let workerBusy = false;
-    while (facade.exitCode === null && Date.now() < deadline) {
+    let done = false;
+    while (facade.exitCode === null && !done && Date.now() < deadline) {
       await new Promise((resolveWait) => setTimeout(resolveWait, 500));
       const fleetState = await callTool({ url, token: leadToken, name: "fleet_get", args: { workspace } });
       const readyJob = Object.values(fleetState.fleet.jobs).find((job: any) => job.workerId === "worker1" && job.state === "ready");
@@ -128,6 +136,7 @@ test("loop start drives the supervised fleet loop from a requirement through all
       }
       let snapshot: any = null;
       try { snapshot = await callTool({ url, token: leadToken, name: "task_get", args: { workspace, taskId, clientProjectRoot: leadRoot } }); } catch { /* intake still bootstrapping */ }
+      if (snapshot?.task.status === "done") { done = true; break; }
       if (snapshot?.task.status === "blocked_on_user" && !approved.has(snapshot.task.gate)) {
         const inbox = await callTool({ url, token: reviewerToken, name: "gate_inbox_get", args: { workspace } });
         const entry = inbox.find((item: any) => item.taskId === taskId && item.gate === snapshot.task.gate && item.taskDigest);
@@ -137,9 +146,12 @@ test("loop start drives the supervised fleet loop from a requirement through all
         }
       }
     }
-    const exit = await new Promise<{ code: number | null }>((resolveExit) => { if (facade!.exitCode !== null) resolveExit({ code: facade!.exitCode }); else facade!.once("close", (code) => resolveExit({ code })); });
+    assert.equal(done, true, facadeOutput);
+    assert.equal(facade.exitCode, null, "the daemon keeps running after the task completes");
+    const exit = await new Promise<{ code: number | null }>((resolveExit) => { facade!.once("close", (code) => resolveExit({ code })); facade!.kill("SIGTERM"); });
     assert.equal(exit.code, 0, facadeOutput);
-    assert.match(facadeOutput, /"status":"complete"/);
+    assert.match(facadeOutput, /"status": "stopped"/);
+    assert.doesNotMatch(facadeOutput, new RegExp(reviewerToken), "the reviewer credential never reaches daemon output");
     assert.equal(approved.size, 3);
     const canonical = await callTool({ url, token: leadToken, name: "task_get", args: { workspace, taskId, clientProjectRoot: leadRoot } });
     assert.equal(canonical.task.status, "done");

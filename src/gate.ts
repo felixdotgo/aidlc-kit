@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { Diagnostic, Gate, TaskState, WorkflowState } from "./model.js";
 import { resolveProjectPathWithoutSymlinks } from "./project-path.js";
-import { hasAreaVerification, hasReview, isLegacyG2Wait, nextAction, repairBounds, transitionDiagnostics, transitionTask } from "./state.js";
+import { hasAreaVerification, hasReview, isLegacyG2Wait, loopPartitionStrict, nextAction, partitionDiagnostics, repairBounds, transitionDiagnostics, transitionTask } from "./state.js";
 
 const safeArtifactTarget = (root: string, path: string): string => resolveProjectPathWithoutSymlinks(root, path, "Unsafe artifact path", "Artifact path crosses a symlink");
 
@@ -37,6 +37,7 @@ const reviewGateDiagnostics = (root: string, task: TaskState): Diagnostic[] => {
   diagnostics.push(...transitionDiagnostics(task, "build").filter((item) => item.code === "UNRESOLVED_DECISION"));
   const content = artifactContent(root, task.artifacts.design);
   if (content !== undefined) for (const heading of missingHeadings(content, ["## 🧩 Solution per affected area", "## 📌 Spec traceability", "## 🔗 Cross-service contracts", "## ⚠️ Risks / edge cases"])) diagnostics.push({ level: "ERROR", code: "DESIGN_HEADING", message: `Design is missing ${heading}` });
+  diagnostics.push(...partitionDiagnostics(task, { strict: loopPartitionStrict(root) }));
   return diagnostics;
 };
 
@@ -68,7 +69,7 @@ export const checkGate = (root: string, state: WorkflowState, taskId: string, ga
   if (gate === "G0_confirm") diagnostics.push(...confirmGateDiagnostics(root, task));
   if (gate === "G1_review") diagnostics.push(...reviewGateDiagnostics(root, task));
   if (gate === "G2_codereview") diagnostics.push(...codeReviewGateDiagnostics(root, task));
-  if (!diagnostics.length) diagnostics.push({ level: "INFO", code: "GATE_OK", message: `${gate} checks passed for ${taskId}` });
+  if (!diagnostics.some((item) => item.level === "ERROR")) diagnostics.push({ level: "INFO", code: "GATE_OK", message: `${gate} checks passed for ${taskId}` });
   return diagnostics;
 };
 

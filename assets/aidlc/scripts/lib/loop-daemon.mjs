@@ -152,6 +152,23 @@ async function runTaskTurn({ root, taskId, agent, workers, workerImages, limits,
  * exponential backoff. Gate approval stays human-only. `signal` stops after the
  * current turn; `cancelSignal` also cancels the in-flight agent turn.
  */
+/**
+ * Shared loop daemon (local and fleet): the same singleton lock, round-robin,
+ * backoff, two-stage shutdown, and taskId-stamped events over a loop authority
+ * from `loop-authority.mjs` (`listActionable` + `runTask`). The authority alone
+ * decides which tasks are loop-owned and how one bounded run executes.
+ */
+export async function runLoopDaemon({ root: rootInput, authority, pollMs = DEFAULT_DAEMON_POLL_MS, signal, cancelSignal, onEvent = () => {}, now = Date.now } = {}) {
+  const root = validateRoot(rootInput);
+  if (!authority || typeof authority.listActionable !== "function" || typeof authority.runTask !== "function") throw new Error("Loop daemon requires a loop authority");
+  const poll = validateDaemonPollMs(pollMs);
+  const releaseLock = acquireDaemonLock(root);
+  try {
+    onEvent({ type: "daemon_start", authority: authority.mode ?? "unknown", pid: process.pid });
+    return await daemonLoop({ root, poll, signal, cancelSignal, onEvent, now, listActionable: () => authority.listActionable(), turn: ({ taskId, signal: runSignal, cancelSignal: runCancel, onEvent: runEvent }) => authority.runTask({ taskId, signal: runSignal, cancelSignal: runCancel, onEvent: runEvent }) });
+  } finally { releaseLock(); }
+}
+
 export async function runLocalDaemon({ root: rootInput, agent, workers = {}, workerImages = {}, limits, pollMs = DEFAULT_DAEMON_POLL_MS, signal, cancelSignal, onEvent = () => {}, now = Date.now } = {}) {
   requireLocalAuthority();
   const root = validateRoot(rootInput);
@@ -167,13 +184,22 @@ export async function runLocalDaemon({ root: rootInput, agent, workers = {}, wor
   } finally { releaseLock(); }
 }
 
-/** Poll/run loop. Exported for tests (inject `turn` and `now`). */
-export async function daemonLoop({ root, agent, workers, workerImages, limits, poll, signal, cancelSignal, onEvent, now = Date.now, turn = runTaskTurn, isOwned }) {
+/** Run results that leave the task actionable without progress; retried with backoff like errors. */
+const RETRY_STATUSES = new Set(["blocked", "reconcile"]);
+
+/** Poll/run loop. Exported for tests (inject `turn`, `now`, and optionally `listActionable`). */
+export async function daemonLoop({ root, agent, workers, workerImages, limits, poll, signal, cancelSignal, onEvent, now = Date.now, turn = runTaskTurn, isOwned, listActionable }) {
   const backoff = new Map();
   for (;;) {
     if (signal?.aborted) return { status: "stopped" };
-    const state = loadState(root);
-    const actionable = actionableTasks(state, root, isOwned ? { isOwned } : {});
+    let actionable;
+    try { actionable = listActionable ? await listActionable() : actionableTasks(loadState(root), root, isOwned ? { isOwned } : {}); }
+    catch (error) {
+      // An unreachable authority (e.g. the fleet service) must not stop the daemon.
+      onEvent({ type: "daemon_poll_error", message: error instanceof Error ? error.message : String(error) });
+      try { await sleep(poll, undefined, { signal }); } catch (sleepError) { if (sleepError?.name === "AbortError") return { status: "stopped" }; throw sleepError; }
+      continue;
+    }
     // Forget backoff for tasks that are no longer actionable (e.g. a human
     // paused or approved them), so they start fresh when they come back.
     for (const id of [...backoff.keys()]) if (!actionable.some((task) => task.id === id)) backoff.delete(id);
@@ -186,9 +212,12 @@ export async function daemonLoop({ root, agent, workers, workerImages, limits, p
       const taskEvent = (event) => onEvent(event && typeof event === "object" && !event.taskId ? { ...event, taskId: task.id } : event);
       try {
         const result = await turn({ root, taskId: task.id, agent, workers, workerImages, limits, pollMs: poll, signal, cancelSignal, onEvent: taskEvent });
-        backoff.delete(task.id);
-        if (result?.status === "gate") onEvent({ type: "gate", taskId: task.id, gate: result.gate, gateView: result.gateView });
-        onEvent({ type: "daemon_turn", taskId: task.id, status: result?.status ?? "unknown", ...(result?.gate ? { gate: result.gate } : {}) });
+        if (result?.status === "gate" && !result.gateEmitted) onEvent({ type: "gate", taskId: task.id, gate: result.gate, gateView: result.gateView });
+        onEvent({ type: "daemon_turn", taskId: task.id, status: result?.status ?? "unknown", ...(result?.gate ? { gate: result.gate } : {}), ...(result?.reason ? { reason: result.reason } : {}) });
+        if (RETRY_STATUSES.has(result?.status)) {
+          const failures = (backoff.get(task.id)?.failures ?? 0) + 1;
+          backoff.set(task.id, { failures, nextAt: now() + backoffDelay(poll, failures) });
+        } else backoff.delete(task.id);
       } catch (error) {
         // A failing task must not take the daemon down; surface it, back off, move on.
         const failures = (backoff.get(task.id)?.failures ?? 0) + 1;

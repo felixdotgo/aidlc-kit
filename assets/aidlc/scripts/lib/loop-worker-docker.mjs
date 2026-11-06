@@ -20,6 +20,18 @@ const OPENCODE_XDG_ENV = [
   'OPENCODE_DB=/home/worker/.local/share/opencode/opencode.db'
 ];
 
+/** Environment credential keys a containerized worker of `agent` receives.
+ * OpenCode authenticates from the environment like codex/claude; its key
+ * follows the configured model's provider (opencode-go → OPENCODE_API_KEY). */
+export function workerCredentialKeys(agent, env = process.env) {
+  if (agent === 'codex') return ['OPENAI_API_KEY'];
+  if (agent === 'claude') return ['ANTHROPIC_API_KEY'];
+  const model = env?.AIDLC_OPENCODE_MODEL ?? '';
+  if (model.startsWith('openai/')) return ['OPENAI_API_KEY'];
+  if (model.startsWith('anthropic/')) return ['ANTHROPIC_API_KEY'];
+  return ['OPENCODE_API_KEY'];
+}
+
 /** Build a Docker invocation. This function never accepts a shell command or credentials in arguments. */
 export function workerDockerInvocation({ workspace, image, command, args, credentialEnv, hostEnv, uid, gid, containerName, sessionHome }) {
   const root = realpathSync(workspace);

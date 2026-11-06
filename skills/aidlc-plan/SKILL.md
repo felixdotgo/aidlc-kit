@@ -1,6 +1,6 @@
 ---
 name: aidlc-plan
-description: "AI-DLC phase 2 (Approve plan): after intent is confirmed, run bounded discovery, then produce a detailed design, canonical decisions, and a per-submodule workplan. Triggers when the AI-DLC Orchestrator routes a task after requirements confirmation to planning. Ends at the executable Approve plan review for explicit user approval."
+description: "AI-DLC phase 2 (Approve plan): after intent is confirmed, run bounded discovery, then produce a detailed design, canonical decisions, and a per-submodule workplan whose items own non-overlapping paths so parallel workers do not collide. Triggers when the AI-DLC Orchestrator routes a task after requirements confirmation to planning. Ends at the executable Approve plan review for explicit user approval."
 ---
 
 # AI-DLC · Plan (Approve plan) — adapter

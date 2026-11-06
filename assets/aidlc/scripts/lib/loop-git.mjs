@@ -79,8 +79,14 @@ function fetchBranch(root, remote, branch) {
 function ancestor(root, base, head) {
   try { git(root, "merge-base", "--is-ancestor", base, head); return true; } catch { return false; } /* intentional: non-git/non-worktree is treated as not clean */
 }
+// Host-local loop operational files (daemon lock/log, UI event sidecar) live in
+// the lead checkout but are never part of a handoff or integration.
+const LOOP_OPERATIONAL_PREFIX = ".agents/data/loop/";
 function assertClean(root) {
-  if (git(root, "status", "--porcelain=v1", "--untracked-files=all")) throw new Error("Git worktree must be clean before handoff or integration");
+  // Not via git(): its trim() would eat the leading status column of the first row.
+  const status = execFileSync("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd: root, encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const dirty = status.split("\0").filter(Boolean).map((row) => row.slice(3)).filter((path) => !path.startsWith(LOOP_OPERATIONAL_PREFIX));
+  if (dirty.length) throw new Error("Git worktree must be clean before handoff or integration");
 }
 function normaliseReport(job) {
   const report = job.report ?? job;

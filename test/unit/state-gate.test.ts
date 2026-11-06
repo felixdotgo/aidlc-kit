@@ -338,3 +338,97 @@ test("paused and handed-off tasks expose structured recovery actions", () => {
   const handedOff = nextAction(current);
   assert.deepEqual(handedOff.actions?.map((item) => item.id), ["reopen_g1", "create_successor", "supersede", "close"]);
 });
+
+/* Parallel work partition (shared JS lifecycle core: store.mjs → lifecycle-core.mjs). */
+const loadCore = async (): Promise<any> => import(join(process.cwd(), "dist/assets/.agents/aidlc/scripts/lib/store.mjs"));
+const partitionTask = (items: TaskState["tasks"]): TaskState => ({ ...task(), phase: "plan", gate: "G1_review", status: "blocked_on_user", decisions: [], tasks: items });
+
+test("owned paths overlap by path segment, not by string prefix", async () => {
+  const core = await loadCore();
+  assert.equal(core.pathOverlaps("src", "src/a.ts"), true);
+  assert.equal(core.pathOverlaps("src/", "src/a.ts"), true);
+  assert.equal(core.pathOverlaps("src/a.ts", "src/a.ts"), true);
+  assert.equal(core.pathOverlaps("src", "srcx/a.ts"), false);
+  assert.equal(core.pathOverlaps("docs/a.md", "docs/b.md"), false);
+  assert.equal(core.pathsOverlap(["a", "b/c"], ["b"]), true);
+  assert.equal(core.pathsOverlap([], ["b"]), false);
+});
+
+test("partition diagnostics flag concurrent overlap and missing scopes, but not dependency-ordered overlap", async () => {
+  const core = await loadCore();
+  const current = partitionTask([
+    { id: "core", label: "core", status: "todo", ownedPaths: ["src/state"] },
+    { id: "ui", label: "ui", status: "todo", ownedPaths: ["src/ui.ts"] },
+    { id: "state-test", label: "after core", status: "todo", ownedPaths: ["src/state/items.ts"], dependsOn: ["mid"] },
+    { id: "mid", label: "mid", status: "todo", ownedPaths: ["docs"], dependsOn: ["core"] },
+    { id: "clash", label: "clash", status: "todo", ownedPaths: ["src/ui.ts/"] },
+    { id: "loose", label: "no scope", status: "todo" },
+    { id: "old", label: "done", status: "done", ownedPaths: ["src/ui.ts"] }
+  ]);
+  assert.deepEqual(core.concurrentItemPairs(current).some(([a, b]: any[]) => [a.id, b.id].sort().join() === "core,state-test"), false, "transitive dependency orders core before state-test");
+  const strict = core.partitionDiagnostics(current, { strict: true });
+  assert.deepEqual(strict.map((item: any) => `${item.level}:${item.code}`).sort(), ["ERROR:PARTITION_OVERLAP", "ERROR:PARTITION_SCOPE"]);
+  assert.match(strict.find((item: any) => item.code === "PARTITION_OVERLAP").message, /ui and clash .*src\/ui\.ts/);
+  assert.match(strict.find((item: any) => item.code === "PARTITION_SCOPE").message, /loose/);
+  assert.ok(core.partitionDiagnostics(current, { strict: false }).every((item: any) => item.level === "WARN"));
+});
+
+test("selectBuildBatch picks a non-overlapping batch within capacity and defers the rest", async () => {
+  const core = await loadCore();
+  const current = { ...partitionTask([
+    { id: "a", label: "a", status: "todo", ownedPaths: ["src/a.ts"] },
+    { id: "b", label: "b", status: "todo", ownedPaths: ["src"] },
+    { id: "c", label: "c", status: "todo", ownedPaths: ["docs"] },
+    { id: "d", label: "d", status: "todo", ownedPaths: ["test"] },
+    { id: "e", label: "e", status: "todo", ownedPaths: ["lib"] },
+    { id: "f", label: "f", status: "todo" },
+    { id: "g", label: "g", status: "todo", ownedPaths: ["assets"] }
+  ]), phase: "build" as const, gate: "G2_codereview" as const, status: "active" as const };
+  const batch = core.selectBuildBatch(current, { capacity: 3, busyPaths: ["lib/x.mjs"], exclude: ["g"] });
+  assert.deepEqual(batch.selected, ["a", "c", "d"]);
+  assert.deepEqual(batch.deferred, [
+    { id: "b", reason: "overlaps a" },
+    { id: "e", reason: "busy path held by an active assignment" },
+    { id: "f", reason: "no owned paths" },
+    { id: "g", reason: "unresolved assignment" }
+  ]);
+  assert.deepEqual(core.selectBuildBatch(current, { capacity: 1 }).deferred.find((item: any) => item.id === "c"), { id: "c", reason: "capacity" });
+});
+
+test("Approve plan gate enforces the partition only when the loop is enabled and still reports GATE_OK for warnings", async () => {
+  const core = await loadCore();
+  const root = mkdtempSync(join(tmpdir(), "aidlc-partition-"));
+  const previous = process.env.MCP_FLEET_ENABLED;
+  delete process.env.MCP_FLEET_ENABLED;
+  try {
+    const current = partitionTask([{ id: "a", label: "a", status: "todo", ownedPaths: ["src"] }, { id: "b", label: "b", status: "todo", ownedPaths: ["src/x.ts"] }]);
+    const dir = join(root, ".agents/data/tasks", current.id); mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "intent.md"), "# intent\n");
+    writeFileSync(join(dir, "design.md"), "## 🧩 Solution per affected area\n## 📌 Spec traceability\n## 🔗 Cross-service contracts\n## ⚠️ Risks / edge cases\n");
+    writeFileSync(join(dir, "workplan.md"), core.renderWorkplan(current));
+    const state = { schemaVersion: 1, tasks: { [current.id]: current } };
+    const codes = () => core.checkGate(root, state, current.id, "G1_review").map((item: any) => `${item.level}:${item.code}`);
+    assert.deepEqual(codes(), ["WARN:PARTITION_OVERLAP", "INFO:GATE_OK"], "no config means loop off");
+    writeFileSync(join(root, ".agents/config.json"), JSON.stringify({ loop: { mode: "local" } }));
+    assert.deepEqual(codes(), ["ERROR:PARTITION_OVERLAP"]);
+    writeFileSync(join(root, ".agents/config.json"), JSON.stringify({ loop: { mode: "off" } }));
+    process.env.MCP_FLEET_ENABLED = "1";
+    assert.deepEqual(codes(), ["ERROR:PARTITION_OVERLAP"], "a fleet-enabled coordination service is always strict");
+    delete process.env.MCP_FLEET_ENABLED;
+    writeFileSync(join(root, ".agents/config.json"), "{not json");
+    assert.deepEqual(codes(), ["ERROR:PARTITION_OVERLAP"], "an unreadable config fails closed");
+    current.tasks[1]!.dependsOn = ["a"];
+    assert.deepEqual(codes(), ["INFO:GATE_OK"], "dependency-ordered overlap is allowed");
+  } finally {
+    if (previous === undefined) delete process.env.MCP_FLEET_ENABLED; else process.env.MCP_FLEET_ENABLED = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rendered workplan lines show owned paths and dependencies", async () => {
+  const core = await loadCore();
+  const markdown = core.renderWorkplan(partitionTask([{ id: "a", label: "Core", status: "todo", ownedPaths: ["src/a.ts", "test/a.test.ts"] }, { id: "b", label: "Docs", status: "done", ownedPaths: ["docs"], dependsOn: ["a"] }, { id: "c", label: "Plain", status: "todo" }]));
+  assert.match(markdown, /- \[ \] a — Core — owns: src\/a\.ts, test\/a\.test\.ts\n/);
+  assert.match(markdown, /- \[x\] b — Docs — owns: docs · after: a\n/);
+  assert.match(markdown, /- \[ \] c — Plain\n/);
+});

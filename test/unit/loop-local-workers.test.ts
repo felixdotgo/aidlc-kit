@@ -30,6 +30,16 @@ test("local workers reject overlapping scopes before Docker dispatch", async (t)
   await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: [...jobs, second], ...hooks }), /Overlapping/);
 });
 
+test("local workers keep last-resort guards for path-segment overlap and duplicate workers", async (t) => {
+  const { root, worktreesRoot } = fixture(t), { runLocalWorkerBatch } = await load();
+  const nested = [{ ...jobs[0], ownedPaths: ["src/"] }, { ...jobs[0], itemId: "two", workerId: "second", ownedPaths: ["src/a.ts"] }];
+  await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: nested, ...hooks }), /Overlapping assignment scope: src\/a\.ts/);
+  const sibling = [{ ...jobs[0], ownedPaths: ["src"] }, { ...jobs[0], itemId: "two", workerId: "second", ownedPaths: ["srcx"] }];
+  await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: sibling, ...hooks }), /Docker worker isolation/);
+  const sameWorker = [jobs[0], { ...jobs[0], itemId: "two", ownedPaths: ["b.txt"] }];
+  await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: sameWorker, ...hooks }), /distinct within a batch/);
+});
+
 test("local workers accept OpenCode and still require Docker isolation", async (t) => {
   const { root, worktreesRoot } = fixture(t), { runLocalWorkerBatch } = await load();
   const opencodeJobs = [{ ...jobs[0], agent: "opencode" }];

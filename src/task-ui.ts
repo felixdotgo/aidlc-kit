@@ -13,20 +13,72 @@
  * once to the terminal.
  */
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import type { TaskState, WorkflowState } from "./model.js";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkGate, gateView } from "./gate.js";
 import { assertTaskArtifactPath, listTaskSummaries, loadState, loadTask } from "./state.js";
+
+export type UiAuthorityMode = "local" | "fleet";
 
 export interface UiOptions {
   root: string;
   host: string;
   port: number;
   token?: string;
+  /** Loop authority the dashboard reads and acts on; defaults to `.agents/config.json` `loop.mode` (local unless fleet). */
+  mode?: UiAuthorityMode;
+  /** Fleet reviewer credential held server-side; passed only to the approve child process. */
+  reviewerToken?: string;
 }
+
+/** Credentials that never reach the daemon or read-only child processes. */
+const SCRUBBED_ENV = ["AIDLC_FLEET_REVIEWER_TOKEN", "AIDLC_UI_TOKEN", "AIDLC_UI_TOKEN_FILE", "AIDLC_UI_REVIEWER_TOKEN_FILE"];
+export const scrubbedEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const name of SCRUBBED_ENV) delete env[name];
+  return { ...env, ...extra };
+};
+
+/**
+ * Fixed token from a file (`--token-file`, `--reviewer-token-file`) so the browser stays signed in across
+ * UI restarts. The file must live outside the project (agents work inside it), be a regular non-symlink
+ * file, and be private to the owner (mode 600/400). With `create`, a missing file is created with a
+ * random token. The token is never passed to the daemon, lead, or workers.
+ */
+export const readUiTokenFile = (root: string, path: string, { create }: { create: boolean }): string => {
+  const target = resolve(path); const project = resolve(root);
+  if (target === project || target.startsWith(`${project}${sep}`)) throw new Error("Token file must live outside the project directory");
+  if (!existsSync(target)) {
+    if (!create) throw new Error(`Token file not found: ${target}`);
+    const token = randomBytes(32).toString("base64url");
+    writeFileSync(target, `${token}\n`, { flag: "wx", mode: 0o600 });
+    return token;
+  }
+  const stat = lstatSync(target);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("Token file must be a regular file, not a symlink");
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error(`Token file must be private to its owner (chmod 600 ${target})`);
+  const token = readFileSync(target, "utf8").trim();
+  if (token.length < 16 || token.length > 256 || /\s/.test(token)) throw new Error("Token file must contain one token of 16–256 non-whitespace characters");
+  return token;
+};
+
+/** Best-effort browser launch for `aidlc-kit ui --open`; failures are ignored (the URL is printed anyway). */
+export const openBrowser = (url: string): void => {
+  const [command, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
+  try { const child = spawn(command as string, args as string[], { detached: true, stdio: "ignore" }); child.on("error", () => { /* no browser launcher */ }); child.unref(); }
+  catch { /* no browser launcher */ }
+};
+
+/** The configured loop authority: `fleet` only when `loop.mode` says so; everything else reads local state. */
+export const resolveUiMode = (root: string): UiAuthorityMode => {
+  try { return (JSON.parse(readFileSync(join(root, ".agents", "config.json"), "utf8")) as { loop?: { mode?: unknown } })?.loop?.mode === "fleet" ? "fleet" : "local"; }
+  catch { return "local"; }
+};
+const uiMode = (options: UiOptions): UiAuthorityMode => options.mode ?? "local";
 
 const loopEntryPath = (root: string): string => join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs");
 const stateScriptPath = (root: string): string => join(root, ".agents", "aidlc", "scripts", "state.mjs");
@@ -122,12 +174,35 @@ const readFields = (body: string, contentType: string | undefined): Record<strin
   return parseForm(body);
 };
 
-const suppliedToken = (req: IncomingMessage, fields: Record<string, string>): string => {
+/** The approve token travels only in a header (`Authorization: Bearer` or `x-aidlc-token`). A custom
+ * header forces a CORS preflight, so a cross-site form or `no-cors` request can never carry it; a body
+ * field would (classic CSRF), so it is not accepted. */
+const suppliedToken = (req: IncomingMessage): string => {
   const authorization = req.headers["authorization"];
   if (typeof authorization === "string" && authorization.startsWith("Bearer ")) return authorization.slice(7).trim();
   const header = req.headers["x-aidlc-token"];
-  if (typeof header === "string" && header.trim()) return header.trim();
-  return fields["token"] ?? "";
+  return typeof header === "string" ? header.trim() : "";
+};
+
+const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]"];
+/** DNS-rebinding and CSRF guard: the Host header must name the bound address (any loopback name when
+ * bound to loopback; a wildcard bind cannot be pinned and relies on the token and Origin check), and a
+ * state-changing request that carries an Origin must be same-origin. */
+export const requestAllowed = (options: Pick<UiOptions, "host">, req: IncomingMessage): { ok: true } | { ok: false; error: string } => {
+  const host = String(req.headers.host ?? "").toLowerCase();
+  const port = req.socket?.localPort;
+  const bind = (options.host || "127.0.0.1").toLowerCase();
+  const wildcard = bind === "0.0.0.0" || bind === "::" || bind === "[::]";
+  if (!wildcard) {
+    const named = bind.includes(":") && !bind.startsWith("[") ? `[${bind}]` : bind;
+    const loopback = LOOPBACK_HOSTS.includes(named) || named === "::1";
+    const allowed = new Set([named, ...(loopback ? LOOPBACK_HOSTS : [])].map((name) => `${name}:${port}`));
+    if (!allowed.has(host)) return { ok: false, error: "Host header does not match this dashboard; open it at its bound address" };
+  }
+  const method = req.method ?? "GET";
+  const origin = req.headers.origin;
+  if (method !== "GET" && method !== "HEAD" && origin !== undefined && origin !== `http://${host}`) return { ok: false, error: "Cross-origin request rejected" };
+  return { ok: true };
 };
 
 const tokenMatches = (token: string, supplied: string): boolean => {
@@ -139,9 +214,9 @@ const tokenMatches = (token: string, supplied: string): boolean => {
 
 /** Runs an installed workflow script with the current Node binary without
  * blocking the event loop; rejects with the child's stderr attached. */
-const runNode = (root: string, args: string[], options: { input?: string; timeout: number }): Promise<string> =>
+const runNode = (root: string, args: string[], options: { input?: string; timeout: number; env?: Record<string, string> }): Promise<string> =>
   new Promise((resolveRun, rejectRun) => {
-    const child = execFile(process.execPath, args, { cwd: root, encoding: "utf8", maxBuffer: 1024 * 1024, timeout: options.timeout }, (error, stdout, stderr) => {
+    const child = execFile(process.execPath, args, { cwd: root, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, timeout: options.timeout, env: scrubbedEnv(options.env) }, (error, stdout, stderr) => {
       if (error) { rejectRun(Object.assign(error, { stderr })); return; }
       resolveRun(stdout);
     });
@@ -178,7 +253,8 @@ const ensureDaemon = (root: string): { pid: number | null; started: boolean } =>
       cwd: root,
       detached: true,
       stdio: ["ignore", log, log],
-      env: { ...process.env, AIDLC_LOOP_EVENT_LOG: eventsLogPath(root) },
+      // The daemon (and every lead/worker it spawns) never sees UI or reviewer credentials.
+      env: scrubbedEnv({ AIDLC_LOOP_EVENT_LOG: eventsLogPath(root) }),
     });
     // Without a listener a spawn failure would be an unhandled 'error' event and
     // crash the UI server; the daemon's own start-up errors go to daemon.log.
@@ -204,6 +280,21 @@ const loopStatusJson = async (root: string, taskId: string): Promise<unknown> =>
 const approveGate = async (root: string, taskId: string, gate: string, source: string): Promise<unknown> =>
   JSON.parse(await runNode(root, [stateScriptPath(root), "gate", "approve", taskId, "--gate", gate, "--source", source, "--root", root], { timeout: 30000 })) as unknown;
 
+/* Authority-neutral read model: local reads canonical state in-process; fleet asks
+ * `loop-entry.mjs` (the only place that speaks to the coordination service). */
+const readUiState = async (options: UiOptions): Promise<WorkflowState> => {
+  if (uiMode(options) === "local") return loadState(options.root);
+  const parsed = JSON.parse(await runNode(options.root, loopArgs(options.root, "tasks"), { timeout: 15000 })) as { tasks?: TaskState[] };
+  if (!Array.isArray(parsed.tasks)) throw new Error("Fleet task list is unavailable");
+  return { schemaVersion: 4, tasks: Object.fromEntries(parsed.tasks.map((task) => [task.id, task])), archive: {} } as WorkflowState;
+};
+const readUiTask = (options: UiOptions, id: string, state: WorkflowState): TaskState | undefined =>
+  uiMode(options) === "local" ? loadTask(options.root, id, state) : state.tasks[id];
+
+interface FleetGate { ok?: boolean; gate?: string; status?: string; checkpoint?: { snapshotId?: string; status?: string } | null; snapshot?: { id?: string; reviewText?: string; integrationCommit?: string | null } | null }
+const fleetGate = async (options: UiOptions, id: string): Promise<FleetGate> =>
+  JSON.parse(await runNode(options.root, loopArgs(options.root, "gate", id), { timeout: 15000 })) as FleetGate;
+
 const childError = (error: unknown): string => {
   if (error && typeof error === "object" && "stderr" in error) {
     const stderr = String((error as { stderr?: unknown }).stderr ?? "").trim();
@@ -213,18 +304,21 @@ const childError = (error: unknown): string => {
   return error instanceof Error ? error.message : String(error);
 };
 
-const taskGatePayload = (root: string, id: string): { ok: boolean; error?: string; gate?: string; view?: unknown } => {
-  const state = loadState(root);
-  const task = loadTask(root, id, state);
+const taskGatePayload = async (options: UiOptions, id: string): Promise<{ ok: boolean; error?: string; gate?: string; view?: unknown; snapshot?: FleetGate["snapshot"] }> => {
+  const state = await readUiState(options);
+  const task = readUiTask(options, id, state);
   if (!task) return { ok: false, error: `Task not found: ${id}` };
   if (task.status !== "blocked_on_user" || task.gate === "none") return { ok: false, error: "Task is not waiting at a human gate" };
-  const diagnostics = checkGate(root, state, id, task.gate);
+  if (uiMode(options) === "fleet") {
+    const gate = await fleetGate(options, id);
+    return gate.snapshot ? { ok: true, gate: task.gate, snapshot: gate.snapshot } : { ok: false, error: "No current review snapshot for this gate yet" };
+  }
+  const diagnostics = checkGate(options.root, state, id, task.gate);
   return { ok: true, gate: task.gate, view: gateView(task, diagnostics) };
 };
 
-const artifactPayload = (root: string, id: string, name: string): { ok: boolean; error?: string; name?: string; content?: string } => {
+const artifactPayload = (root: string, id: string, name: string, task: TaskState | undefined = loadTask(root, id)): { ok: boolean; error?: string; name?: string; content?: string } => {
   if (!(ARTIFACT_NAMES as readonly string[]).includes(name)) return { ok: false, error: `Unknown artifact: ${name}` };
-  const task = loadTask(root, id);
   if (!task) return { ok: false, error: `Task not found: ${id}` };
   const artifactPath = task.artifacts?.[name as (typeof ARTIFACT_NAMES)[number]];
   if (!artifactPath) return { ok: false, error: `Artifact ${name} not recorded for ${id}` };
@@ -519,7 +613,7 @@ const toast = (message, kind = "info", detail = "") => {
 };
 const failureToast = (res, fallback) => {
   const message = (res.body && res.body.error) || fallback;
-  toast(message, "danger", res.status === 401 ? "Paste the session token in Settings (top right) and retry." : "HTTP " + res.status);
+  toast(message, "danger", res.status === 401 ? "Open the login link printed by aidlc-kit ui (or paste the token in Settings) and retry." : "HTTP " + res.status);
 };
 const withLoading = async (button, work) => {
   if (button) { button.classList.add("is-loading"); button.disabled = true; }
@@ -595,6 +689,14 @@ window.addEventListener("popstate", () => {
 });
 const isTyping = (target) => !!target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 const REQUIREMENT_LIMIT = 8192;
+// Login link: \`aidlc-kit ui\` prints /#token=<token>. Store it and drop it from the address bar
+// (a fragment is never sent to the server or in Referer).
+(() => {
+  const match = /(?:^#|&)token=([^&]+)/.exec(location.hash);
+  if (!match) return;
+  try { setStoredToken(decodeURIComponent(match[1])); } catch (error) { /* malformed link */ }
+  history.replaceState(history.state, "", location.pathname + location.search);
+})();
 document.addEventListener("DOMContentLoaded", () => {
   const tokenInput = document.getElementById("settings-token-input");
   if (tokenInput) tokenInput.value = storedToken();
@@ -749,9 +851,10 @@ const renderDaemonPill = (root: string): string => {
     : `<span class="ad-pill is-ghost" title="start it with: aidlc-kit loop start (or New task)"><span class="ad-dot"></span>daemon stopped</span>`;
 };
 
-const renderHeader = (root: string): string => `<header class="ad-header">
+const renderHeader = (root: string, mode: UiAuthorityMode = "local"): string => `<header class="ad-header">
   <div class="container is-fluid ad-header-inner">
     <a class="ad-brand" href="/" title="Loop · AI-DLC dashboard"><span class="ad-logo" aria-hidden="true">L</span>Loop</a>
+    <span class="ad-pill ${mode === "fleet" ? "is-link" : "is-ghost"}" data-authority="${mode}" title="${mode === "fleet" ? "Canonical state lives in the coordination service" : "Canonical state lives in this checkout"}">authority · ${mode}</span>
     ${renderDaemonPill(root)}
     <div class="ad-header-actions">
       <button class="button is-small" data-open="settings-modal" title="Settings">⚙<span class="ad-hide-mobile ml-1">Settings</span></button>
@@ -898,8 +1001,8 @@ const renderModals = (): string => `
 </div>
 <div id="toasts" class="ad-toasts" aria-live="polite"></div>`;
 
-const renderDashboard = (options: UiOptions): string => {
-  const state = loadState(options.root);
+const renderDashboard = async (options: UiOptions): Promise<string> => {
+  const state = await readUiState(options);
   const { items } = listTaskSummaries(state, { limit: 100 });
   const handedOff = new Set(Object.values(state.tasks).filter((task) => task.handoff).map((task) => task.id));
 
@@ -932,7 +1035,7 @@ const renderDashboard = (options: UiOptions): string => {
     </div>`;
 
   return `${pageHead("Loop")}
-${renderHeader(options.root)}
+${renderHeader(options.root, uiMode(options))}
 <main class="section ad-main">
   <div class="container is-fluid">
     ${renderStats(items, handedOff)}
@@ -958,11 +1061,12 @@ const panel = (title: string, body: string, extra = "", flush = false): string =
   `<section class="ad-panel"><header class="ad-panel-head"><h2>${escapeHtml(title)}</h2>${extra}</header><div class="ad-panel-body${flush ? " is-flush" : ""}">${body}</div></section>`;
 
 const renderTaskDetail = async (options: UiOptions, id: string, fragment = false): Promise<string> => {
-  const state = loadState(options.root);
-  const task = loadTask(options.root, id, state);
+  const state = await readUiState(options);
+  const task = readUiTask(options, id, state);
+  const fleet = uiMode(options) === "fleet";
   if (!task) {
     const body = `<p class="has-text-danger">Task not found: ${escapeHtml(id)}</p>`;
-    return fragment ? body : `${pageHead("Task not found · Loop")}${renderHeader(options.root)}<main class="section ad-main"><div class="container is-fluid"><div class="ad-empty"><div class="ad-empty-icon" aria-hidden="true">🔍</div><h2>Task not found</h2><p><code>${escapeHtml(id)}</code> is not in the local canonical state.</p><a class="button" href="/">← Back to dashboard</a></div></div></main>${renderModals()}${sharedScript}</body></html>`;
+    return fragment ? body : `${pageHead("Task not found · Loop")}${renderHeader(options.root, uiMode(options))}<main class="section ad-main"><div class="container is-fluid"><div class="ad-empty"><div class="ad-empty-icon" aria-hidden="true">🔍</div><h2>Task not found</h2><p><code>${escapeHtml(id)}</code> is not in the ${uiMode(options) === "fleet" ? "fleet" : "local"} canonical state.</p><a class="button" href="/">← Back to dashboard</a></div></div></main>${renderModals()}${sharedScript}</body></html>`;
   }
 
   const waiting = task.status === "blocked_on_user" && task.gate !== "none";
@@ -971,8 +1075,10 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
   let gateBlock = "";
   if (waiting) {
     try {
-      const gate = taskGatePayload(options.root, id);
+      const gate = await taskGatePayload(options, id);
       if (gate.ok && gate.view) gateBlock = renderGateViewHtml(gate.view);
+      else if (gate.ok && gate.snapshot) gateBlock = `<section class="ad-panel is-warning"><header class="ad-panel-head"><h2>${escapeHtml(gateLabel(task.gate))} · review snapshot</h2><span class="ad-pill is-ghost ad-panel-tools">${escapeHtml(gate.snapshot.id ?? "")}</span></header><div class="ad-panel-body"><div class="content artifact">${markdownToHtml(gate.snapshot.reviewText ?? "")}</div></div></section>`;
+      else if (fleet) gateBlock = `<section class="ad-panel is-warning"><header class="ad-panel-head"><h2>${escapeHtml(gateLabel(task.gate))}</h2></header><div class="ad-panel-body"><p>${escapeHtml(gate.error ?? "No review snapshot yet")}</p></div></section>`;
     } catch (error) {
       const problems = (error instanceof Error ? error.message : String(error)).split("; ").filter(Boolean);
       gateBlock = `<section class="ad-panel is-danger">
@@ -986,7 +1092,16 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
     }
   }
 
-  const approveBlock = !fragment && waiting
+  const approveBlock = !fragment && waiting && fleet && !options.reviewerToken
+    ? `<section class="ad-panel" id="approve-panel">
+        <header class="ad-panel-head"><h2>Approve · ${escapeHtml(gateLabel(task.gate))}</h2><span class="ad-pill is-ghost ad-panel-tools">${escapeHtml(task.gate)}</span></header>
+        <div class="ad-panel-body">
+          <p class="mb-2">This dashboard has no fleet reviewer credential. Approve from a reviewer terminal, or restart <code>aidlc-kit ui</code> with <code>AIDLC_FLEET_REVIEWER_TOKEN</code> or <code>--reviewer-token-file</code>.</p>
+          <pre class="is-size-7">node .agents/aidlc/scripts/remote-state.mjs gate inbox
+node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} --snapshot &lt;snapshot-id&gt; --source "&lt;explicit approval&gt;"</pre>
+        </div>
+      </section>`
+    : !fragment && waiting
     ? `<section class="ad-panel is-success" id="approve-panel">
         <header class="ad-panel-head"><h2>Approve · ${escapeHtml(gateLabel(task.gate))}</h2><span class="ad-pill is-ghost ad-panel-tools">${escapeHtml(task.gate)}</span></header>
         <div class="ad-panel-body">
@@ -1006,7 +1121,7 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
   const artifacts = ARTIFACT_NAMES.map((name) => {
     const artifactPath = task.artifacts?.[name];
     if (!artifactPath) return "";
-    const payload = artifactPayload(options.root, id, name);
+    const payload = artifactPayload(options.root, id, name, task);
     const content = payload.ok && payload.content !== undefined
       ? `<div class="content artifact">${markdownToHtml(payload.content)}</div>`
       : `<p class="help is-danger px-5 pb-4">${escapeHtml(payload.error ?? "unavailable")}</p>`;
@@ -1154,7 +1269,7 @@ document.getElementById("approve-button")?.addEventListener("click", (event) => 
 </script>`;
 
   return `${pageHead(`${task.title} · Loop`)}
-${renderHeader(options.root)}
+${renderHeader(options.root, uiMode(options))}
 <main class="section ad-main">
   <div class="container is-fluid">
     <a class="ad-breadcrumb" href="/">← Dashboard</a>
@@ -1276,6 +1391,8 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
     const url = new URL(req.url ?? "/", `http://${options.host || "localhost"}`);
     const method = req.method ?? "GET";
     const path = url.pathname;
+    const guard = requestAllowed(options, req);
+    if (!guard.ok) return sendJson(res, 403, { ok: false, error: guard.error });
 
     if (method === "GET" && path === "/api/events") return streamEvents(options, res, req, url);
 
@@ -1285,7 +1402,7 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           const css = stylesheet(path);
           if (css !== undefined) return sendCss(res, css);
         }
-        if (method === "GET" && path === "/") return sendHtml(res, renderDashboard(options));
+        if (method === "GET" && path === "/") return sendHtml(res, await renderDashboard(options));
         if (method === "GET" && path.startsWith("/partial/tasks/")) {
           const id = decodeURIComponent(path.slice("/partial/tasks/".length));
           if (!id) return sendJson(res, 404, { ok: false, error: "Not found" });
@@ -1298,7 +1415,7 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
         }
         if (method === "GET" && path === "/api/tasks") {
           const query = url.searchParams;
-          const summary = listTaskSummaries(loadState(options.root), {
+          const summary = listTaskSummaries(await readUiState(options), {
             includeArchive: query.get("archive") === "1",
             statuses: query.get("statuses") ? query.get("statuses")!.split(",").filter(Boolean) : undefined,
             query: query.get("query") ?? undefined,
@@ -1311,16 +1428,16 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           const id = decodeURIComponent(path.slice("/api/tasks/".length));
           if (path.endsWith("/gate")) {
             const taskId = id.slice(0, -"/gate".length);
-            const payload = taskGatePayload(options.root, taskId);
+            const payload = await taskGatePayload(options, taskId);
             return sendJson(res, payload.ok ? 200 : 409, payload);
           }
           const artifactMatch = /^(.+)\/artifact\/(intent|design|workplan)$/.exec(id);
           if (artifactMatch) {
             const taskId = artifactMatch[1] ?? "";
-            const payload = artifactPayload(options.root, taskId, artifactMatch[2] ?? "");
+            const payload = artifactPayload(options.root, taskId, artifactMatch[2] ?? "", readUiTask(options, taskId, await readUiState(options)));
             return sendJson(res, payload.ok ? 200 : 404, payload);
           }
-          const task = loadTask(options.root, id);
+          const task = readUiTask(options, id, await readUiState(options));
           if (!task) return sendJson(res, 404, { ok: false, error: `Task not found: ${id}` });
           return sendJson(res, 200, { ok: true, task });
         }
@@ -1331,9 +1448,9 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           catch (error) { return sendJson(res, 502, { ok: false, error: childError(error) }); }
         }
         if (method === "POST" && path === "/api/loop/start") {
+          if (!tokenMatches(options.token ?? "", suppliedToken(req))) return sendJson(res, 401, { ok: false, error: "Invalid or missing approve token" });
           const body = await readBody(req);
           const fields = readFields(body, req.headers["content-type"]);
-          if (!tokenMatches(options.token ?? "", suppliedToken(req, fields))) return sendJson(res, 401, { ok: false, error: "Invalid or missing approve token" });
           const requirement = fields["requirement"] ?? "";
           if (!requirement.trim()) return sendJson(res, 400, { ok: false, error: "requirement is required" });
           if (Buffer.byteLength(requirement) > 8192) return sendJson(res, 400, { ok: false, error: "requirement exceeds 8192 bytes" });
@@ -1343,35 +1460,41 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           return sendJson(res, 201, { ok: true, ...created, daemon: ensureDaemon(options.root) });
         }
         if (method === "POST" && path === "/api/loop/resume") {
+          if (!tokenMatches(options.token ?? "", suppliedToken(req))) return sendJson(res, 401, { ok: false, error: "Invalid or missing approve token" });
           const body = await readBody(req);
           const fields = readFields(body, req.headers["content-type"]);
-          if (!tokenMatches(options.token ?? "", suppliedToken(req, fields))) return sendJson(res, 401, { ok: false, error: "Invalid or missing approve token" });
           const taskId = fields["taskId"] ?? "";
           if (!taskId.trim()) return sendJson(res, 400, { ok: false, error: "taskId is required" });
-          const task = loadTask(options.root, taskId);
+          const task = readUiTask(options, taskId, await readUiState(options));
           if (!task) return sendJson(res, 404, { ok: false, error: `Task not found: ${taskId}` });
           if (task.handoff) return sendJson(res, 409, { ok: false, error: "Task is handed off; follow its handoff actions (state.mjs task next) instead of resuming" });
           if (task.status === "blocked_on_user") return sendJson(res, 409, { ok: false, error: "Task is waiting at a human gate; approve it on the task detail page" });
           if (task.status !== "paused") return sendJson(res, 409, { ok: false, error: `Only a paused task can be resumed (status: ${task.status})` });
           try {
-            return sendJson(res, 200, { ok: true, result: await activateTask(options.root, taskId), daemon: daemonStatus(options.root) });
+            const result = uiMode(options) === "fleet" ? JSON.parse(await runNode(options.root, loopArgs(options.root, "resume-task", taskId), { timeout: 30000 })) as unknown : await activateTask(options.root, taskId);
+            return sendJson(res, 200, { ok: true, result, daemon: daemonStatus(options.root) });
           } catch (error) {
             return sendJson(res, 502, { ok: false, error: childError(error) });
           }
         }
         if (method === "POST" && path === "/api/gate/approve") {
+          if (!tokenMatches(options.token ?? "", suppliedToken(req))) return sendJson(res, 401, { ok: false, error: "Invalid or missing approve token" });
           const body = await readBody(req);
           const fields = readFields(body, req.headers["content-type"]);
-          if (!tokenMatches(options.token ?? "", suppliedToken(req, fields))) return sendJson(res, 401, { ok: false, error: "Invalid or missing approve token" });
           const taskId = fields["taskId"] ?? "";
           const source = fields["source"] ?? "";
           if (!taskId.trim()) return sendJson(res, 400, { ok: false, error: "taskId is required" });
           if (!source.trim()) return sendJson(res, 400, { ok: false, error: "source (approval note) is required" });
-          const task = loadTask(options.root, taskId);
+          const task = readUiTask(options, taskId, await readUiState(options));
           if (!task) return sendJson(res, 404, { ok: false, error: `Task not found: ${taskId}` });
           if (task.status !== "blocked_on_user" || task.gate === "none") return sendJson(res, 409, { ok: false, error: "Task is not waiting at a human gate" });
+          if (uiMode(options) === "fleet" && !options.reviewerToken) return sendJson(res, 403, { ok: false, error: "Fleet approval needs the reviewer credential; restart aidlc-kit ui with AIDLC_FLEET_REVIEWER_TOKEN or --reviewer-token-file, or approve from a reviewer terminal" });
           try {
-            return sendJson(res, 200, { ok: true, result: await approveGate(options.root, taskId, task.gate, source) });
+            // Fleet: the reviewer credential reaches only this single approve child process.
+            const result = uiMode(options) === "fleet"
+              ? JSON.parse(await runNode(options.root, loopArgs(options.root, "approve", taskId), { input: source, timeout: 30000, env: { AIDLC_FLEET_REVIEWER_TOKEN: options.reviewerToken ?? "" } })) as unknown
+              : await approveGate(options.root, taskId, task.gate, source);
+            return sendJson(res, 200, { ok: true, result });
           } catch (error) {
             return sendJson(res, 502, { ok: false, error: childError(error) });
           }
@@ -1390,7 +1513,9 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
 export const startUiServer = (options: UiOptions): Promise<{ server: Server; port: number; token: string }> =>
   new Promise((resolveServer, reject) => {
     const token = options.token ?? randomUUID();
-    const server = createServer(createUiHandler({ ...options, token }));
+    const mode = options.mode ?? resolveUiMode(options.root);
+    const reviewerToken = options.reviewerToken ?? (mode === "fleet" ? process.env["AIDLC_FLEET_REVIEWER_TOKEN"] || undefined : undefined);
+    const server = createServer(createUiHandler({ ...options, token, mode, ...(reviewerToken ? { reviewerToken } : {}) }));
     server.once("error", reject);
     server.listen(options.port, options.host, () => {
       const address = server.address();

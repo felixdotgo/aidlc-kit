@@ -266,3 +266,17 @@ test("fleet worker executes isolated Docker image and pushes a scoped commit", {
   assert.equal(result.status,"reported"); assert.deepEqual(reported.changedPaths,["a.txt"]);
   assert.equal((await leadHandoff.verify({job:{...job,report:{commitSha:reported.commitSha,changedPaths:reported.changedPaths}}})).valid,true);
 });
+
+test("lead handoff ignores host-local loop operational files but still rejects other dirt", async (t) => {
+  const { lead } = fixture(t);
+  const { createLeadGitHandoff } = await load();
+  const leadHandoff = createLeadGitHandoff({ root: lead, integrationBranch: "feature" });
+  // The shared loop daemon writes its lock/log/event sidecar into the lead checkout.
+  mkdirSync(join(lead, ".agents/data/loop"), { recursive: true });
+  writeFileSync(join(lead, ".agents/data/loop/daemon.lock"), "{}\n");
+  writeFileSync(join(lead, ".agents/data/loop/ui-events.jsonl"), "{}\n");
+  const artifact = await leadHandoff.prepare({ taskId: "task-a", item: { id: "T1", ownedPaths: ["a.txt"], agent: "codex" } });
+  assert.match(artifact.baseCommit, /^[a-f0-9]{40}$/);
+  writeFileSync(join(lead, "b.txt"), "dirty\n");
+  await assert.rejects(() => leadHandoff.prepare({ taskId: "task-a", item: { id: "T2", ownedPaths: ["a.txt"], agent: "codex" } }), /must be clean/);
+});

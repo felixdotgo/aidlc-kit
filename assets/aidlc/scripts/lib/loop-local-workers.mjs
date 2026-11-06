@@ -7,13 +7,13 @@ import { createWorkerSnapshot, inspectWorkerSnapshot } from "./loop-worker-snaps
 import { workerDockerInvocation } from "./loop-worker-docker.mjs";
 import { isLoopProvider, runAgentTurn } from "./loop-drivers.mjs";
 import { extractCommitMessage } from "./loop-commit-message.mjs";
+import { pathOverlaps } from "./store.mjs";
 import { claimLocalAssignment, heartbeatLocalAssignment, reportLocalAssignment, releaseLocalAssignment } from "./assignment-store.mjs";
 
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000 });
 const lines = (value) => value.split("\0").filter(Boolean);
 const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const safePath = (path) => typeof path === "string" && path.length > 0 && !isAbsolute(path) && !path.includes("\\") && !path.split("/").some((part) => !part || part === "." || part === ".." || part === ".git" || part === ".agents") && !/[\x00-\x1f]/.test(path);
-const overlaps = (a, b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 const scoped = (paths, scopes) => paths.every((path) => safePath(path) && scopes.some((scope) => path === scope || path.startsWith(`${scope}/`)));
 const statusPaths = (root) => {
   // --no-renames yields one entry per path, including both sides of a rename.
@@ -40,9 +40,11 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
   for (const job of jobs) {
     if (Array.isArray(job.ownedPaths)) job.ownedPaths = [...new Set(job.ownedPaths.map((path) => (typeof path === "string" ? path.replace(/\/+$/, "") : path)).filter((path) => path))];
     if (!identifier(job.itemId) || !identifier(job.workerId) || !isLoopProvider(job.agent) || typeof job.prompt !== "string" || !job.prompt.trim() || !Array.isArray(job.ownedPaths) || !job.ownedPaths.length || job.ownedPaths.length > 64 || !job.ownedPaths.every(safePath)) throw new Error("Invalid local job");
+    // Last-resort guards: the dispatcher partitions batches (selectBuildBatch),
+    // so plan data should never reach these.
     if (ids.has(job.itemId) || workers.has(job.workerId)) throw new Error("Items and workers must be distinct within a batch");
     ids.add(job.itemId); workers.add(job.workerId);
-    for (const path of job.ownedPaths) { if (scopes.some((prior) => overlaps(path, prior))) throw new Error(`Overlapping assignment scope: ${path}`); scopes.push(path); }
+    for (const path of job.ownedPaths) { if (scopes.some((prior) => pathOverlaps(path, prior))) throw new Error(`Overlapping assignment scope: ${path}`); scopes.push(path); }
   }
   const hasImages = docker && typeof docker.images === "object" && !Array.isArray(docker.images);
   if (process.platform !== "linux" || !docker || (typeof docker.image !== "string" && !hasImages) || !docker.credentials || typeof docker.credentials !== "object") throw new Error("Linux Docker worker isolation and explicit image and provider credentials are required");
