@@ -252,20 +252,27 @@ node dist/src/cli.js ui --root .
 ```
 
 Binds `127.0.0.1:4173` by default and prints a **one-time approve token** to the terminal.
-Open the dashboard and paste that token into **⚙ Settings → save** before using any
+Open the dashboard and paste that token into **⚙ Settings → Save** before using any
 mutating action (new task, resume, gate approve); it is stored in `localStorage`. The header
-shows whether the daemon is running.
+shows whether the daemon is running. The page follows the system light/dark preference
+automatically (Bulma plus the `assets/ui/dashboard.css` theme layer); results of actions
+appear as toasts in the bottom-right corner. Shortcuts: <kbd>N</kbd> new task, <kbd>/</kbd>
+search, <kbd>Esc</kbd> close a dialog.
 
 Where things live (this is the #1 source of confusion):
 
 - **Gate approval button is only on the full task detail page** (`/tasks/<task-id>`), **not
-  on the dashboard**. From the dashboard, click a task to open the quick modal and press
-  **"open in page"**, or ctrl/cmd-click / middle-click the task link to jump straight to the
-  detail page. On the detail page the **Approve `<gate>`** box (note field + green
-  **approve** button) appears only while the task is `blocked_on_user`.
-- **New task → create task** runs loop intake (§5.2) and starts the daemon only if none is
-  running (its stderr goes to `.agents/data/loop/daemon.log`). The response shows the new
-  task id, or the real intake error (for example an actionable interactive task).
+  on the dashboard**. Tasks waiting at a gate are listed under **Needs your review** at the
+  top of the dashboard; **Open review →** jumps to their detail page. Otherwise click a task to
+  open the quick view and press **Open full page ↗**, or ctrl/cmd-click / middle-click the task
+  link. On the detail page the **Approve · `<review step>`** panel (approval note + green
+  **✓ Approve** button) appears only while the task is `blocked_on_user`. If the gate's
+  structural checks no longer pass, the page lists the failing checks instead of the gate view.
+- **New task → Create task** runs loop intake (§5.2) and starts the daemon only if none is
+  running (its stderr goes to `.agents/data/loop/daemon.log`). A toast shows the new task id,
+  or the real intake error (for example an actionable interactive task).
+- **Stat cards, search, and the status/risk filters** narrow the Kanban and List views in the
+  browser only; they never call the API or change state.
 - **Task buttons follow the status:** a `paused` task shows **resume** (sets it back to
   `active`); a `blocked_on_user` task shows **approve**, which opens the detail page.
 - **The live log (bottom of the detail page)** shows only that task's events (on connect, the

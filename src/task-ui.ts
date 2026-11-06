@@ -7,8 +7,8 @@
  * the same atomic `state.mjs gate approve` command. This module never mutates
  * lifecycle state itself and never bypasses the fail-closed gate channel.
  *
- * Built on `node:http` only; Bulma CSS is vendored as a static asset (no CDN,
- * no runtime npm dependency). Mutating actions (loop start/resume, gate
+ * Built on `node:http` only; Bulma CSS and the dashboard theme layer are
+ * vendored static assets (no CDN, no runtime npm dependency). Mutating actions (loop start/resume, gate
  * approve) require a per-session token generated at server start and printed
  * once to the terminal.
  */
@@ -39,13 +39,19 @@ const loopArgs = (root: string, action: string, taskId = ""): string[] => [loopE
 const ARTIFACT_NAMES = ["intent", "design", "workplan"] as const;
 const PHASES = ["clarify", "plan", "build", "wrap", "done"] as const;
 
-const bulmaCssPath = fileURLToPath(new URL("../assets/ui/bulma.min.css", import.meta.url));
-let bulmaCssCache: string | undefined;
-const bulmaCss = (): string => {
-  if (bulmaCssCache !== undefined) return bulmaCssCache;
-  try { bulmaCssCache = readFileSync(bulmaCssPath, "utf8"); }
-  catch { bulmaCssCache = ""; }
-  return bulmaCssCache;
+/** Vendored Bulma plus the dashboard theme layer, read once and cached. */
+const STYLESHEETS = new Map([["/assets/bulma.css", "bulma.min.css"], ["/assets/dashboard.css", "dashboard.css"]]);
+const stylesheetCache = new Map<string, string>();
+const stylesheet = (route: string): string | undefined => {
+  const file = STYLESHEETS.get(route);
+  if (!file) return undefined;
+  const cached = stylesheetCache.get(route);
+  if (cached !== undefined) return cached;
+  let css = "";
+  try { css = readFileSync(fileURLToPath(new URL(`../assets/ui/${file}`, import.meta.url)), "utf8"); }
+  catch { /* serve an empty stylesheet rather than failing the page */ }
+  stylesheetCache.set(route, css);
+  return css;
 };
 
 const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
@@ -236,15 +242,9 @@ const pageHead = (title: string): string => `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
+<meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="/assets/bulma.css">
-<style>
-.log-panel { background: #1a1a1a; color: #e0e0e0; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.8rem; padding: 0.75rem; border-radius: 0.25rem; height: 24rem; overflow: auto; white-space: pre-wrap; }
-.kanban-column { min-height: 12rem; }
-.artifact { max-height: 32rem; overflow: auto; }
-.artifact table { font-size: 0.85rem; }
-.artifact pre { background: #f5f5f5; padding: 0.75rem; border-radius: 0.25rem; overflow: auto; }
-.modal-card { max-width: 60rem; width: auto; }
-</style>
+<link rel="stylesheet" href="/assets/dashboard.css">
 </head>
 <body>`;
 
@@ -356,6 +356,83 @@ export const markdownToHtml = (markdown: string): string => {
   return html.join("\n");
 };
 
+const summarize = (counts: Record<string, number> | undefined): string => Object.entries(counts ?? {}).map(([k, n]) => `${n} ${k}`).join(" · ") || "none";
+
+/* ---------------------------------------------------------------------------
+ * Presentation helpers: labels, pills, phase stepper, relative time.
+ * Colour is never the only signal; every pill carries a text label.
+ * ------------------------------------------------------------------------- */
+
+const GATE_LABELS: Record<string, string> = {
+  G0_confirm: "Confirm requirements",
+  G1_review: "Approve plan",
+  G2_codereview: "Review implementation",
+};
+const PHASE_GATE: Record<string, string> = { clarify: "G0_confirm", plan: "G1_review", build: "G2_codereview" };
+const STATUS_META: Record<string, { label: string; tone: string }> = {
+  active: { label: "Active", tone: "is-info" },
+  blocked_on_user: { label: "Needs review", tone: "is-warning" },
+  paused: { label: "Paused", tone: "" },
+  done: { label: "Done", tone: "is-success" },
+  closed: { label: "Closed", tone: "is-danger" },
+  superseded: { label: "Superseded", tone: "is-danger" },
+};
+const RISK_TONE: Record<string, string> = { low: "is-success", normal: "", high: "is-warning", regulated: "is-danger" };
+const RESULT_TONE: Record<string, string> = { pass: "is-success", fail: "is-danger", skip: "is-warning" };
+const DECISION_TONE: Record<string, string> = { approved: "is-success", changed: "is-info", dropped: "is-ghost", unresolved: "is-warning" };
+const ITEM_TONE: Record<string, string> = { done: "is-success", in_progress: "is-info", todo: "", deferred: "is-warning" };
+
+const gateLabel = (gate: string): string => GATE_LABELS[gate] ?? gate;
+
+const pill = (label: string, tone = "", title = "", dot = true): string =>
+  `<span class="ad-pill ${tone}"${title ? ` title="${escapeHtml(title)}"` : ""}>${dot ? '<span class="ad-dot"></span>' : ""}${escapeHtml(label)}</span>`;
+
+const statusPill = (status: string, handedOff = false): string => {
+  if (handedOff) return pill("Handed off", "is-danger", `status: ${status} · handed off`);
+  const meta = STATUS_META[status] ?? { label: status, tone: "" };
+  return pill(meta.label, meta.tone, `status: ${status}`);
+};
+
+const gatePill = (gate: string): string => gate && gate !== "none" ? pill(gateLabel(gate), "is-ghost", `gate: ${gate}`, false) : "";
+
+const riskPill = (risk: string): string => pill(`${risk} risk`, RISK_TONE[risk] ?? "", `risk: ${risk}`);
+
+const phaseSteps = (phase: string): string => {
+  const current = (PHASES as readonly string[]).indexOf(phase);
+  const done = phase === "done";
+  const bars = PHASES.map((name, index) => {
+    const state = done || index < current ? "is-complete" : index === current ? "is-current" : "";
+    return `<span class="${state}" title="${escapeHtml(name)}"></span>`;
+  }).join("");
+  return `<div class="ad-steps${done ? " is-done" : ""}" role="img" aria-label="Phase ${current + 1} of ${PHASES.length}: ${escapeHtml(phase)}">${bars}</div>`;
+};
+
+const phaseTimeline = (phase: string, gate: string, status: string): string => {
+  const current = (PHASES as readonly string[]).indexOf(phase);
+  return `<ol class="ad-timeline">${PHASES.map((name, index) => {
+    const complete = phase === "done" || index < current;
+    const isCurrent = !complete && index === current;
+    const phaseGate = PHASE_GATE[name];
+    const note = isCurrent && status === "blocked_on_user" && gate !== "none"
+      ? `waiting at ${gateLabel(gate)}`
+      : phaseGate ? `gate · ${gateLabel(phaseGate)}` : name === "done" ? "complete" : "no gate";
+    return `<li class="${complete ? "is-complete" : isCurrent ? "is-current" : ""}"><span class="ad-timeline-marker">${complete ? "✓" : index + 1}</span><span class="ad-timeline-text"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(note)}</small></span></li>`;
+  }).join("")}</ol>`;
+};
+
+/** Server-rendered relative time; the absolute ISO value stays in the title. */
+const relativeTime = (iso: string | undefined): string => {
+  if (!iso) return "";
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return escapeHtml(iso);
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  const text = seconds < 60 ? "just now"
+    : seconds < 3600 ? `${Math.floor(seconds / 60)}m ago`
+      : seconds < 86400 ? `${Math.floor(seconds / 3600)}h ago`
+        : `${Math.floor(seconds / 86400)}d ago`;
+  return `<time datetime="${escapeHtml(iso)}" title="${escapeHtml(iso)}">${text}</time>`;
+};
+
 /* ---------------------------------------------------------------------------
  * Gate view and JSON tree renderers (structured HTML, not raw JSON dumps).
  * ------------------------------------------------------------------------- */
@@ -373,29 +450,32 @@ interface GateViewData {
   diagnostics?: Array<{ level?: string; code?: string; message?: string }>;
 }
 
-const summarize = (counts: Record<string, number> | undefined): string => Object.entries(counts ?? {}).map(([k, n]) => `${n} ${k}`).join(" · ") || "none";
-
 const renderGateViewHtml = (view: unknown): string => {
   const v = view as GateViewData;
   const task = v.task ?? {};
   const artifacts = v.artifacts ?? [];
   const evidence = v.evidence ?? [];
   const diagnostics = v.diagnostics ?? [];
-  const levelClass = (level?: string): string => level === "ERROR" ? "is-danger" : level === "WARN" ? "is-warning" : "is-info";
-  return `<div class="box">
-    <h3 class="subtitle">${escapeHtml(String(v.icon ?? ""))} ${escapeHtml(String(v.title ?? ""))}</h3>
-    <p><strong>Gate:</strong> <span class="tag is-info">${escapeHtml(String(v.gate ?? ""))}</span></p>
-    <p><strong>Task:</strong> <code>${escapeHtml(task.id ?? "")}</code> — ${escapeHtml(task.title ?? "")}</p>
-    <p><strong>Status:</strong> <span class="tag">${escapeHtml(task.status ?? "")}</span> <strong>Risk:</strong> <span class="tag">${escapeHtml(task.risk ?? "")}</span> <strong>Areas:</strong> ${escapeHtml((task.areas ?? []).join(", "))}</p>
-    <h4 class="is-size-6 mt-3">Review artifacts</h4>
-    ${artifacts.length ? `<ul>${artifacts.map((a) => `<li><code>${escapeHtml(a.name ?? "")}</code> → <code>${escapeHtml(a.path ?? "")}</code></li>`).join("")}</ul>` : "<p><em>none</em></p>"}
-    <p><strong>Decisions:</strong> ${escapeHtml(summarize(v.decisions))}</p>
-    <p><strong>Execution:</strong> ${escapeHtml(summarize(v.execution))}</p>
-    <h4 class="is-size-6 mt-3">Verification evidence</h4>
-    ${evidence.length ? `<table class="table is-fullwidth is-striped"><thead><tr><th>kind</th><th>result</th><th>source</th></tr></thead><tbody>${evidence.map((e) => `<tr><td>${escapeHtml(e.kind ?? "")}</td><td>${escapeHtml(e.result ?? "")}</td><td>${escapeHtml(e.source ?? "")}</td></tr>`).join("")}</tbody></table>` : "<p><em>none yet</em></p>"}
-    ${diagnostics.length ? `<h4 class="is-size-6 mt-3">Diagnostics</h4><ul>${diagnostics.map((d) => `<li><span class="tag ${levelClass(d.level)}">${escapeHtml(d.level ?? "")}</span> <code>${escapeHtml(d.code ?? "")}</code> ${escapeHtml(d.message ?? "")}</li>`).join("")}</ul>` : ""}
-    <p class="has-text-weight-semibold mt-3">Action required: ${escapeHtml(String(v.action ?? ""))}</p>
-  </div>`;
+  const levelTone = (level?: string): string => level === "ERROR" ? "is-danger" : level === "WARN" ? "is-warning" : "is-info";
+  const cell = (label: string, value: string): string => `<div class="ad-gate-cell"><small>${escapeHtml(label)}</small><span>${value}</span></div>`;
+  return `<section class="ad-panel is-warning">
+    <header class="ad-panel-head"><span aria-hidden="true">${escapeHtml(String(v.icon ?? ""))}</span><h2>${escapeHtml(String(v.title ?? ""))}</h2><span class="ad-pill is-warning ad-panel-tools" title="gate">${escapeHtml(String(v.gate ?? ""))}</span></header>
+    <div class="ad-panel-body">
+      <div class="ad-gate-grid">
+        ${cell("Status", escapeHtml(task.status ?? ""))}
+        ${cell("Risk", escapeHtml(task.risk ?? ""))}
+        ${cell("Areas", escapeHtml((task.areas ?? []).join(", ")))}
+        ${cell("Decisions", escapeHtml(summarize(v.decisions)))}
+        ${cell("Execution", escapeHtml(summarize(v.execution)))}
+      </div>
+      <h3 class="ad-subhead">Review artifacts</h3>
+      ${artifacts.length ? `<ul class="ad-plain-list">${artifacts.map((a) => `<li><strong>${escapeHtml(a.name ?? "")}</strong><code>${escapeHtml(a.path ?? "")}</code></li>`).join("")}</ul>` : '<p class="has-text-grey">none</p>'}
+      <h3 class="ad-subhead">Verification evidence</h3>
+      ${evidence.length ? `<ul class="ad-plain-list">${evidence.map((e) => `<li>${pill(e.result ?? "", RESULT_TONE[e.result ?? ""] ?? "")} <strong>${escapeHtml(e.kind ?? "")}</strong> <span class="has-text-grey">${escapeHtml(e.source ?? "")}</span></li>`).join("")}</ul>` : '<p class="has-text-grey">none yet</p>'}
+      ${diagnostics.length ? `<h3 class="ad-subhead">Diagnostics</h3><ul class="ad-plain-list">${diagnostics.map((d) => `<li>${pill(d.level ?? "", levelTone(d.level))} <code>${escapeHtml(d.code ?? "")}</code> ${escapeHtml(d.message ?? "")}</li>`).join("")}</ul>` : ""}
+      <div class="ad-callout"><span aria-hidden="true">→</span><span>Action required: ${escapeHtml(String(v.action ?? ""))}</span></div>
+    </div>
+  </section>`;
 };
 
 const jsonToHtml = (value: unknown): string => {
@@ -404,18 +484,19 @@ const jsonToHtml = (value: unknown): string => {
   if (typeof value === "string") return escapeHtml(value);
   if (Array.isArray(value)) {
     if (!value.length) return '<span class="has-text-grey">[]</span>';
-    return `<ul class="ml-4">${value.map((item) => `<li>${jsonToHtml(item)}</li>`).join("")}</ul>`;
+    return `<ul>${value.map((item) => `<li>${jsonToHtml(item)}</li>`).join("")}</ul>`;
   }
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>);
     if (!entries.length) return '<span class="has-text-grey">{}</span>';
-    return `<table class="table is-narrow is-fullwidth is-striped"><tbody>${entries.map(([k, v]) => `<tr><td class="has-text-weight-semibold" style="width:16rem">${escapeHtml(k)}</td><td>${jsonToHtml(v)}</td></tr>`).join("")}</tbody></table>`;
+    return `<table><tbody>${entries.map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${jsonToHtml(v)}</td></tr>`).join("")}</tbody></table>`;
   }
   return escapeHtml(String(value));
 };
 
 /* ---------------------------------------------------------------------------
  * Client script shared across dashboard and detail page.
+ * All dynamic text is written with textContent; never innerHTML of user data.
  * ------------------------------------------------------------------------- */
 
 const sharedScript = `<script>
@@ -423,11 +504,54 @@ const storedToken = () => (localStorage.getItem("aidlc-token") || "");
 const setStoredToken = (value) => localStorage.setItem("aidlc-token", value);
 const post = async (url, body) => {
   const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": storedToken() }, body: JSON.stringify(body) });
-  return { status: response.status, body: await response.json() };
+  let parsed = {};
+  try { parsed = await response.json(); } catch (error) { parsed = { error: "Unexpected response (" + response.status + ")" }; }
+  return { status: response.status, body: parsed };
 };
-const openModal = (id) => { const el = document.getElementById(id); if (el) el.classList.add("is-active"); };
-const closeModal = (id) => { const el = document.getElementById(id); if (el) el.classList.remove("is-active"); };
-const closeAllModals = () => document.querySelectorAll(".modal").forEach((m) => m.classList.remove("is-active"));
+const toast = (message, kind = "info", detail = "") => {
+  const stack = document.getElementById("toasts");
+  if (!stack) return;
+  const icons = { success: "✓", danger: "!", warning: "!", info: "i" };
+  const item = document.createElement("div");
+  item.className = "ad-toast is-" + kind;
+  item.setAttribute("role", kind === "danger" ? "alert" : "status");
+  const icon = document.createElement("span");
+  icon.className = "ad-toast-icon";
+  icon.textContent = icons[kind] || "i";
+  const body = document.createElement("div");
+  body.className = "ad-toast-body";
+  body.textContent = message;
+  if (detail) { const small = document.createElement("small"); small.textContent = detail; body.appendChild(small); }
+  const close = document.createElement("button");
+  close.className = "ad-toast-close";
+  close.setAttribute("aria-label", "dismiss");
+  close.textContent = "×";
+  const dismiss = () => { item.classList.add("is-leaving"); setTimeout(() => item.remove(), 220); };
+  close.addEventListener("click", dismiss);
+  item.append(icon, body, close);
+  stack.appendChild(item);
+  setTimeout(dismiss, kind === "danger" ? 9000 : 4500);
+};
+const failureToast = (res, fallback) => {
+  const message = (res.body && res.body.error) || fallback;
+  toast(message, "danger", res.status === 401 ? "Paste the session token in Settings (top right) and retry." : "HTTP " + res.status);
+};
+const withLoading = async (button, work) => {
+  if (button) { button.classList.add("is-loading"); button.disabled = true; }
+  try { return await work(); }
+  catch (error) { toast("Request failed", "danger", String(error && error.message || error)); return undefined; }
+  finally { if (button) { button.classList.remove("is-loading"); button.disabled = false; } }
+};
+const openModal = (id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.add("is-active");
+  document.documentElement.classList.add("is-clipped");
+  const focusable = el.querySelector("[data-autofocus]");
+  if (focusable) setTimeout(() => focusable.focus(), 30);
+};
+const closeModal = (id) => { const el = document.getElementById(id); if (el) el.classList.remove("is-active"); if (!document.querySelector(".modal.is-active")) document.documentElement.classList.remove("is-clipped"); };
+const closeAllModals = () => { document.querySelectorAll(".modal").forEach((m) => m.classList.remove("is-active")); document.documentElement.classList.remove("is-clipped"); };
 const openTaskModal = async (id) => {
   const body = document.getElementById("task-modal-body");
   const link = document.getElementById("task-modal-open");
@@ -441,25 +565,53 @@ const openTaskModal = async (id) => {
     if (body) body.innerHTML = "<p class='has-text-danger'>Failed to load task detail.</p>";
   }
 };
+const isTyping = (target) => !!target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+const REQUIREMENT_LIMIT = 8192;
 document.addEventListener("DOMContentLoaded", () => {
   const tokenInput = document.getElementById("settings-token-input");
   if (tokenInput) tokenInput.value = storedToken();
+  const tokenState = document.getElementById("settings-token-state");
+  const renderTokenState = () => { if (tokenState) tokenState.textContent = storedToken() ? "Token saved in this browser" : "No token saved"; };
+  renderTokenState();
   document.querySelectorAll("[data-open]").forEach((el) => el.addEventListener("click", () => openModal(el.getAttribute("data-open"))));
   document.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", () => closeAllModals()));
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeAllModals(); });
-  const saveBtn = document.getElementById("settings-token-save");
-  if (saveBtn) saveBtn.addEventListener("click", () => { if (tokenInput) setStoredToken(tokenInput.value); closeModal("settings-modal"); });
-  const clearBtn = document.getElementById("settings-token-clear");
-  if (clearBtn) clearBtn.addEventListener("click", () => { setStoredToken(""); if (tokenInput) tokenInput.value = ""; });
-  const startBtn = document.getElementById("new-task-submit");
-  if (startBtn) startBtn.addEventListener("click", async () => {
-    const result = document.getElementById("new-task-result");
-    const requirement = document.getElementById("new-task-requirement").value;
-    if (result) result.textContent = "";
-    const res = await post("/api/loop/start", { requirement });
-    if (result) result.textContent = JSON.stringify(res.body, null, 2);
-    if (res.status >= 200 && res.status < 300) setTimeout(() => location.reload(), 1500);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { closeAllModals(); return; }
+    if (event.ctrlKey || event.metaKey || event.altKey || isTyping(event.target) || document.querySelector(".modal.is-active")) return;
+    if (event.key === "n" && document.getElementById("new-task-modal")) { event.preventDefault(); openModal("new-task-modal"); }
+    else if (event.key === "/") { const search = document.getElementById("task-search"); if (search) { event.preventDefault(); search.focus(); search.select(); } }
   });
+  const saveBtn = document.getElementById("settings-token-save");
+  if (saveBtn) saveBtn.addEventListener("click", () => { if (tokenInput) setStoredToken(tokenInput.value.trim()); renderTokenState(); closeModal("settings-modal"); toast("Token saved", "success"); });
+  const clearBtn = document.getElementById("settings-token-clear");
+  if (clearBtn) clearBtn.addEventListener("click", () => { setStoredToken(""); if (tokenInput) tokenInput.value = ""; renderTokenState(); toast("Token cleared", "info"); });
+
+  const requirement = document.getElementById("new-task-requirement");
+  const counter = document.getElementById("new-task-count");
+  const startBtn = document.getElementById("new-task-submit");
+  const updateCounter = () => {
+    if (!requirement || !counter) return;
+    const used = new TextEncoder().encode(requirement.value).length;
+    counter.textContent = used + " / " + REQUIREMENT_LIMIT + " bytes";
+    counter.classList.toggle("is-over", used > REQUIREMENT_LIMIT);
+  };
+  if (requirement) {
+    requirement.addEventListener("input", updateCounter);
+    requirement.addEventListener("keydown", (event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && startBtn) { event.preventDefault(); startBtn.click(); } });
+    updateCounter();
+  }
+  if (startBtn) startBtn.addEventListener("click", () => withLoading(startBtn, async () => {
+    const value = requirement ? requirement.value : "";
+    if (!value.trim()) { toast("Describe the requirement first", "warning"); if (requirement) requirement.focus(); return; }
+    const res = await post("/api/loop/start", { requirement: value });
+    if (res.status >= 200 && res.status < 300) {
+      const daemon = res.body.daemon || {};
+      toast("Task " + res.body.taskId + " created", "success", daemon.started ? "Started the loop daemon (pid " + daemon.pid + ")" : "Picked up by the running daemon");
+      closeAllModals();
+      setTimeout(() => location.reload(), 1200);
+    } else failureToast(res, "Could not create the task");
+  }));
+
   document.querySelectorAll("[data-task-link]").forEach((link) => {
     link.addEventListener("click", (event) => {
       if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
@@ -467,172 +619,291 @@ document.addEventListener("DOMContentLoaded", () => {
       openTaskModal(link.getAttribute("data-task-link"));
     });
   });
+
   const viewKey = "aidlc-view";
   const applyView = (view) => {
     const kanban = document.getElementById("kanban-view");
     const list = document.getElementById("list-view");
     if (kanban) kanban.style.display = view === "kanban" ? "" : "none";
     if (list) list.style.display = view === "list" ? "" : "none";
-    document.querySelectorAll("[data-view-toggle]").forEach((el) => el.classList.toggle("is-active", el.getAttribute("data-view-toggle") === view));
+    document.querySelectorAll("[data-view-toggle]").forEach((el) => {
+      const active = el.getAttribute("data-view-toggle") === view;
+      el.classList.toggle("is-active", active);
+      el.setAttribute("aria-pressed", String(active));
+    });
   };
   document.querySelectorAll("[data-view-toggle]").forEach((el) => el.addEventListener("click", () => { const v = el.getAttribute("data-view-toggle"); localStorage.setItem(viewKey, v); applyView(v); }));
   applyView(localStorage.getItem(viewKey) || "kanban");
+
+  // Client-side filtering over server-rendered cards and rows (no extra API calls).
+  const search = document.getElementById("task-search");
+  const statusFilter = document.getElementById("filter-status");
+  const riskFilter = document.getElementById("filter-risk");
+  const resultCount = document.getElementById("result-count");
+  const applyFilter = () => {
+    const terms = (search ? search.value : "").toLowerCase().split(/\\s+/).filter(Boolean);
+    const status = statusFilter ? statusFilter.value : "";
+    const risk = riskFilter ? riskFilter.value : "";
+    const matches = (el) => (!status || el.getAttribute("data-status") === status) && (!risk || el.getAttribute("data-risk") === risk) && terms.every((term) => (el.getAttribute("data-search") || "").includes(term));
+    let visible = 0;
+    document.querySelectorAll("#kanban-view [data-task-item]").forEach((el) => { const show = matches(el); el.hidden = !show; if (show) visible += 1; });
+    document.querySelectorAll("#list-view [data-task-item]").forEach((el) => { el.hidden = !matches(el); });
+    document.querySelectorAll("[data-phase-column]").forEach((column) => {
+      const count = column.querySelectorAll("[data-task-item]:not([hidden])").length;
+      const badge = column.querySelector("[data-column-count]");
+      if (badge) badge.textContent = String(count);
+      const empty = column.querySelector("[data-column-empty]");
+      if (empty) empty.hidden = count > 0;
+    });
+    const total = document.querySelectorAll("#kanban-view [data-task-item]").length;
+    const filtered = terms.length || status || risk;
+    if (resultCount) resultCount.textContent = filtered ? visible + " of " + total + " tasks" : total + (total === 1 ? " task" : " tasks");
+    document.querySelectorAll("[data-no-match]").forEach((el) => el.classList.toggle("is-visible", !!filtered && visible === 0));
+    document.querySelectorAll("[data-stat-filter]").forEach((el) => el.setAttribute("aria-pressed", String(el.getAttribute("data-stat-filter") === status && !terms.length && !risk)));
+  };
+  [search, statusFilter, riskFilter].forEach((el) => { if (el) el.addEventListener("input", applyFilter); });
+  document.querySelectorAll("[data-stat-filter]").forEach((el) => el.addEventListener("click", () => {
+    if (!statusFilter) return;
+    const value = el.getAttribute("data-stat-filter") || "";
+    statusFilter.value = statusFilter.value === value ? "" : value;
+    if (search) search.value = "";
+    if (riskFilter) riskFilter.value = "";
+    applyFilter();
+  }));
+  const clearFilters = document.getElementById("filter-clear");
+  if (clearFilters) clearFilters.addEventListener("click", () => { if (search) search.value = ""; if (statusFilter) statusFilter.value = ""; if (riskFilter) riskFilter.value = ""; applyFilter(); });
+  if (search || statusFilter) applyFilter();
 });
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-resume]");
   if (!button) return;
   event.preventDefault();
-  post("/api/loop/resume", { taskId: button.getAttribute("data-resume") }).then((res) => {
-    if (res.status >= 200 && res.status < 300) location.reload();
-    else window.alert(res.body && res.body.error ? res.body.error : JSON.stringify(res.body, null, 2));
+  const taskId = button.getAttribute("data-resume");
+  withLoading(button, async () => {
+    const res = await post("/api/loop/resume", { taskId });
+    if (res.status >= 200 && res.status < 300) { toast("Resumed " + taskId, "success", "The daemon will pick it up on its next poll"); setTimeout(() => location.reload(), 1200); }
+    else failureToast(res, "Could not resume " + taskId);
   });
 });
 </script>`;
 
 /* ---------------------------------------------------------------------------
- * Dashboard: kanban (default) + list toggle, modals for settings/new task/detail.
+ * Dashboard: stats, review queue, filters, kanban (default) + list toggle.
  * ------------------------------------------------------------------------- */
 
-const riskClass = (risk: string): string => risk === "high" || risk === "regulated" ? "is-danger" : risk === "normal" ? "is-warning" : "is-success";
+interface CardTask { id: string; title: string; phase: string; gate: string; status: string; risk: string; areas: string[]; updatedAt?: string }
 
 /** Per-status action: a paused task can be re-activated for the daemon; a task
  * waiting at a human gate links to the detail page that hosts gate approval. */
 const taskAction = (task: { id: string; status: string }, handedOff = false): string => {
-  if (handedOff) return `<a class="button is-small is-warning is-light" href="/tasks/${encodeURIComponent(task.id)}" title="handed off: follow the handoff actions">handoff</a>`;
-  if (task.status === "paused") return `<button class="button is-small is-light" data-resume="${escapeHtml(task.id)}">resume</button>`;
-  if (task.status === "blocked_on_user") return `<a class="button is-small is-success is-light" href="/tasks/${encodeURIComponent(task.id)}">approve</a>`;
+  if (handedOff) return `<a class="button is-small is-danger ad-soft" href="/tasks/${encodeURIComponent(task.id)}" title="handed off: follow the handoff actions">handoff</a>`;
+  if (task.status === "paused") return `<button class="button is-small is-link ad-soft" data-resume="${escapeHtml(task.id)}">resume</button>`;
+  if (task.status === "blocked_on_user") return `<a class="button is-small is-warning" href="/tasks/${encodeURIComponent(task.id)}">approve</a>`;
   return "";
 };
 
-const renderDaemonTag = (root: string): string => {
+const renderDaemonPill = (root: string): string => {
   const daemon = daemonStatus(root);
   return daemon.running
-    ? `<span class="tag is-success is-light" title="started ${escapeHtml(daemon.startedAt ?? "")}">daemon running · pid ${daemon.pid}</span>`
-    : `<span class="tag is-light" title="start it with: aidlc-kit loop start (or New task)">daemon stopped</span>`;
+    ? `<span class="ad-pill is-success is-live" title="started ${escapeHtml(daemon.startedAt ?? "")}"><span class="ad-dot"></span>daemon running · pid ${daemon.pid}</span>`
+    : `<span class="ad-pill is-ghost" title="start it with: aidlc-kit loop start (or New task)"><span class="ad-dot"></span>daemon stopped</span>`;
 };
 
-const renderTaskCard = (task: { id: string; title: string; phase: string; gate: string; status: string; risk: string; areas: string[] }, handedOff = false): string => {
-  const resume = taskAction(task, handedOff);
-  return `<div class="box mb-2">
-    <p class="is-size-7 has-text-grey"><a href="/tasks/${encodeURIComponent(task.id)}" data-task-link="${escapeHtml(task.id)}"><code>${escapeHtml(task.id)}</code></a></p>
-    <p class="has-text-weight-semibold">${escapeHtml(task.title)}</p>
-    <div class="tags are-small mt-1">
-      <span class="tag is-light">${escapeHtml(task.status)}</span>
-      <span class="tag is-light">${escapeHtml(task.gate)}</span>
-      <span class="tag ${riskClass(task.risk)}">${escapeHtml(task.risk)}</span>
+const renderHeader = (root: string): string => `<header class="ad-header">
+  <div class="container ad-header-inner">
+    <a class="ad-brand" href="/"><span class="ad-logo" aria-hidden="true">AI</span>AI-DLC Loop</a>
+    ${renderDaemonPill(root)}
+    <div class="ad-header-actions">
+      <button class="button is-small" data-open="settings-modal" title="Settings">⚙<span class="ad-hide-mobile ml-1">Settings</span></button>
+      <button class="button is-small is-primary" data-open="new-task-modal">＋ New task<kbd class="ad-hide-mobile">N</kbd></button>
     </div>
-    <p class="is-size-7 has-text-grey">${escapeHtml(task.areas.join(", "))}</p>
-    <div class="mt-2">${resume}</div>
+  </div>
+</header>`;
+
+/** Lower-cased haystack for client-side search (escaped when rendered). */
+const searchText = (task: CardTask): string =>
+  [task.id, task.title, task.phase, task.gate, gateLabel(task.gate), task.status, STATUS_META[task.status]?.label ?? "", task.risk, ...task.areas].join(" ").toLowerCase();
+
+const itemAttrs = (task: CardTask, handedOff: boolean): string =>
+  `data-task-item data-status="${escapeHtml(task.status)}" data-risk="${escapeHtml(task.risk)}"${handedOff ? ' data-handoff="true"' : ""} data-search="${escapeHtml(searchText(task))}"`;
+
+const renderTaskCard = (task: CardTask, handedOff = false): string => {
+  const href = `/tasks/${encodeURIComponent(task.id)}`;
+  const attention = task.status === "blocked_on_user" && !handedOff;
+  return `<article class="ad-card${attention ? " is-attention" : ""}" ${itemAttrs(task, handedOff)}>
+    <div class="ad-card-top"><a class="ad-card-id" href="${href}" data-task-link="${escapeHtml(task.id)}" title="${escapeHtml(task.id)}">${escapeHtml(task.id)}</a>${statusPill(task.status, handedOff)}</div>
+    <div class="ad-card-title"><a href="${href}" data-task-link="${escapeHtml(task.id)}">${escapeHtml(task.title)}</a></div>
+    ${phaseSteps(task.phase)}
+    <div class="ad-card-meta">${gatePill(task.gate)}${riskPill(task.risk)}</div>
+    <div class="ad-card-foot"><span class="ad-areas" title="areas: ${escapeHtml(task.areas.join(", "))}">${escapeHtml(task.areas.join(", "))}</span>${task.updatedAt ? `<span>· ${relativeTime(task.updatedAt)}</span>` : ""}${taskAction(task, handedOff)}</div>
+  </article>`;
+};
+
+const renderListRow = (task: CardTask, handedOff: boolean): string => `<tr ${itemAttrs(task, handedOff)}>
+  <td><a href="/tasks/${encodeURIComponent(task.id)}" data-task-link="${escapeHtml(task.id)}"><code>${escapeHtml(task.id)}</code></a></td>
+  <td class="has-text-weight-semibold">${escapeHtml(task.title)}</td>
+  <td><div class="is-size-7 mb-1">${escapeHtml(task.phase)}</div>${phaseSteps(task.phase)}</td>
+  <td>${gatePill(task.gate) || '<span class="has-text-grey">—</span>'}</td>
+  <td>${statusPill(task.status, handedOff)}</td>
+  <td>${riskPill(task.risk)}</td>
+  <td class="is-size-7">${escapeHtml(task.areas.join(", "))}</td>
+  <td class="is-size-7 has-text-grey">${relativeTime(task.updatedAt)}</td>
+  <td class="has-text-right">${taskAction(task, handedOff)}</td>
+</tr>`;
+
+const renderStats = (tasks: CardTask[], handedOff: Set<string>): string => {
+  const count = (predicate: (task: CardTask) => boolean): number => tasks.filter(predicate).length;
+  const stat = (label: string, value: number, tone: string, filter: string): string =>
+    `<button type="button" class="ad-stat ${tone}" data-stat-filter="${filter}" aria-pressed="false" title="${filter ? `Filter: ${escapeHtml(filter)}` : "Show all"}"><span class="ad-stat-label"><span class="ad-dot"></span>${escapeHtml(label)}</span><span class="ad-stat-value">${value}</span></button>`;
+  return `<div class="ad-stats">
+    ${stat("Total", tasks.length, "is-primary", "")}
+    ${stat("Active", count((t) => t.status === "active"), "is-info", "active")}
+    ${stat("Needs review", count((t) => t.status === "blocked_on_user" && !handedOff.has(t.id)), "is-warning", "blocked_on_user")}
+    ${stat("Paused", count((t) => t.status === "paused"), "", "paused")}
+    ${stat("Done", count((t) => t.status === "done"), "is-success", "done")}
   </div>`;
 };
 
+const renderReviewQueue = (tasks: CardTask[], handedOff: Set<string>): string => {
+  const waiting = tasks.filter((task) => task.status === "blocked_on_user" && task.gate !== "none" && !handedOff.has(task.id));
+  if (!waiting.length) return "";
+  return `<section class="ad-attention" aria-labelledby="review-queue-title">
+    <div class="ad-attention-head"><span aria-hidden="true">⏳</span><span id="review-queue-title">Needs your review</span><span class="ad-count">${waiting.length}</span></div>
+    <ul class="ad-attention-list">${waiting.map((task) => `<li class="ad-attention-item">
+      ${pill(gateLabel(task.gate), "is-warning", `gate: ${task.gate}`, false)}
+      <code>${escapeHtml(task.id)}</code>
+      <span class="ad-title">${escapeHtml(task.title)}</span>
+      <span class="is-size-7 has-text-grey">${relativeTime(task.updatedAt)}</span>
+      <span class="ad-actions"><a class="button is-small is-warning ad-soft" href="/tasks/${encodeURIComponent(task.id)}">Open review →</a></span>
+    </li>`).join("")}</ul>
+  </section>`;
+};
+
+const renderToolbar = (): string => `<div class="ad-toolbar">
+  <div class="ad-search">
+    <svg class="ad-search-icon" aria-hidden="true" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg>
+    <input id="task-search" class="input" type="search" placeholder="Search id, title, area…" aria-label="Search tasks" autocomplete="off">
+    <kbd>/</kbd>
+  </div>
+  <div class="select"><select id="filter-status" aria-label="Filter by status">
+    <option value="">All statuses</option>
+    ${Object.entries(STATUS_META).map(([value, meta]) => `<option value="${value}">${escapeHtml(meta.label)}</option>`).join("")}
+  </select></div>
+  <div class="select"><select id="filter-risk" aria-label="Filter by risk">
+    <option value="">Any risk</option>
+    ${Object.keys(RISK_TONE).map((risk) => `<option value="${risk}">${risk}</option>`).join("")}
+  </select></div>
+  <div class="ad-toolbar-end">
+    <span id="result-count" class="ad-result-count" aria-live="polite"></span>
+    <div class="ad-segmented" role="group" aria-label="View">
+      <button type="button" data-view-toggle="kanban" aria-pressed="true">▦ Kanban</button>
+      <button type="button" data-view-toggle="list" aria-pressed="false">☰ List</button>
+    </div>
+  </div>
+</div>`;
+
 const renderModals = (): string => `
-<div id="settings-modal" class="modal">
+<div id="settings-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
   <div class="modal-background" data-close></div>
   <div class="modal-card">
     <header class="modal-card-head">
-      <p class="modal-card-title">Settings</p>
+      <p class="modal-card-title" id="settings-title">Settings</p>
       <button class="delete" aria-label="close" data-close></button>
     </header>
     <section class="modal-card-body">
       <div class="field">
-        <label class="label" for="settings-token-input">Approve token</label>
-        <div class="control"><input id="settings-token-input" class="input" type="password" placeholder="session token"></div>
-        <p class="help">Paste the token printed in the terminal that started this server. Required for loop actions and gate approve.</p>
+        <label class="label" for="settings-token-input">Session token</label>
+        <div class="control"><input id="settings-token-input" class="input" type="password" placeholder="paste the token printed by aidlc-kit ui" autocomplete="off" data-autofocus></div>
+        <p class="help">Printed once in the terminal that started this server. Required for New task, resume, and gate approve. Stored only in this browser's localStorage.</p>
       </div>
     </section>
     <footer class="modal-card-foot">
-      <button id="settings-token-save" class="button is-primary">save</button>
-      <button id="settings-token-clear" class="button is-light">clear</button>
-      <button class="button" data-close>cancel</button>
+      <span class="ad-foot-start" id="settings-token-state"></span>
+      <button id="settings-token-clear" class="button is-light">Clear</button>
+      <button id="settings-token-save" class="button is-primary">Save</button>
     </footer>
   </div>
 </div>
-<div id="new-task-modal" class="modal">
+<div id="new-task-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="new-task-title">
   <div class="modal-background" data-close></div>
   <div class="modal-card">
     <header class="modal-card-head">
-      <p class="modal-card-title">Start a new task</p>
+      <p class="modal-card-title" id="new-task-title">Start a new task</p>
       <button class="delete" aria-label="close" data-close></button>
     </header>
     <section class="modal-card-body">
       <div class="field">
         <label class="label" for="new-task-requirement">Requirement</label>
-        <div class="control"><textarea id="new-task-requirement" class="textarea" rows="4" placeholder="Requirement (max 8192 bytes)"></textarea></div>
+        <div class="control"><textarea id="new-task-requirement" class="textarea" rows="6" placeholder="Describe the feature, bug fix, or change. The first line becomes the task title." data-autofocus></textarea></div>
+        <div class="ad-field-hint"><span>The loop creates the task and starts the daemon if it is not running.</span><span id="new-task-count">0 / 8192 bytes</span></div>
       </div>
-      <pre id="new-task-result" class="mt-3"></pre>
     </section>
     <footer class="modal-card-foot">
-      <button id="new-task-submit" class="button is-primary">create task</button>
-      <button class="button" data-close>cancel</button>
+      <span class="ad-foot-start"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to submit</span>
+      <button class="button" data-close>Cancel</button>
+      <button id="new-task-submit" class="button is-primary">Create task</button>
     </footer>
   </div>
 </div>
-<div id="task-modal" class="modal">
+<div id="task-modal" class="modal" role="dialog" aria-modal="true" aria-label="Task detail">
   <div class="modal-background" data-close></div>
-  <div class="modal-card">
+  <div class="modal-card is-wide">
     <header class="modal-card-head">
       <p class="modal-card-title">Task</p>
       <button class="delete" aria-label="close" data-close></button>
     </header>
     <section class="modal-card-body" id="task-modal-body"><p class="has-text-grey">Loading…</p></section>
     <footer class="modal-card-foot">
-      <a id="task-modal-open" class="button is-small" href="#" target="_blank" rel="noopener">open in page</a>
-      <button class="button is-small" data-close>close</button>
+      <button class="button is-small" data-close>Close</button>
+      <a id="task-modal-open" class="button is-small is-link" href="#" target="_blank" rel="noopener">Open full page ↗</a>
     </footer>
   </div>
-</div>`;
+</div>
+<div id="toasts" class="ad-toasts" aria-live="polite"></div>`;
 
 const renderDashboard = (options: UiOptions): string => {
   const state = loadState(options.root);
-  const { items } = listTaskSummaries(state);
+  const { items } = listTaskSummaries(state, { limit: 100 });
   const handedOff = new Set(Object.values(state.tasks).filter((task) => task.handoff).map((task) => task.id));
 
-  const kanban = PHASES.map((phase) => {
-    const cards = items.filter((task) => task.phase === phase).map((task) => renderTaskCard(task, handedOff.has(task.id))).join("\n");
-    return `<div class="column kanban-column">
-      <h3 class="subtitle is-6 has-text-centered">${escapeHtml(phase)} <span class="tag is-light">${items.filter((t) => t.phase === phase).length}</span></h3>
-      ${cards || "<p class=\"has-text-grey is-size-7 has-text-centered\">none</p>"}
-    </div>`;
+  const kanban = PHASES.map((phase, index) => {
+    const tasks = items.filter((task) => task.phase === phase);
+    const cards = tasks.map((task) => renderTaskCard(task, handedOff.has(task.id))).join("\n");
+    return `<section class="ad-column" data-phase-column="${phase}">
+      <header class="ad-column-head"><span class="ad-step-index">${index + 1}</span><span class="ad-column-title">${escapeHtml(phase)}</span><span class="ad-count" data-column-count>${tasks.length}</span></header>
+      <div class="ad-column-body">${cards}<p class="ad-column-empty" data-column-empty${tasks.length ? " hidden" : ""}>No tasks</p></div>
+    </section>`;
   }).join("\n");
 
-  const rows = items.length
-    ? items.map((task) => {
-      const resume = taskAction(task, handedOff.has(task.id));
-      return `<tr><td><a href="/tasks/${encodeURIComponent(task.id)}" data-task-link="${escapeHtml(task.id)}"><code>${escapeHtml(task.id)}</code></a></td><td>${escapeHtml(task.title)}</td><td>${escapeHtml(task.phase)}</td><td>${escapeHtml(task.gate)}</td><td>${escapeHtml(task.status)}</td><td>${escapeHtml(task.risk)}</td><td>${escapeHtml(task.areas.join(", "))}</td><td>${resume}</td></tr>`;
-    }).join("\n")
-    : "<tr><td colspan=\"8\"><em>No active tasks</em></td></tr>";
+  const rows = items.map((task) => renderListRow(task, handedOff.has(task.id))).join("\n");
+
+  const board = items.length
+    ? `${renderToolbar()}
+    <div id="kanban-view"><div class="ad-board">${kanban}</div></div>
+    <div id="list-view" style="display:none">
+      <div class="ad-table-wrap"><table class="table ad-table is-fullwidth">
+        <thead><tr><th>id</th><th>title</th><th>phase</th><th>gate</th><th>status</th><th>risk</th><th>areas</th><th>updated</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </div>
+    <p class="ad-no-match" data-no-match>No tasks match the current filters. <button type="button" id="filter-clear" class="button is-small is-text">Clear filters</button></p>`
+    : `<div class="ad-empty">
+      <div class="ad-empty-icon" aria-hidden="true">🌱</div>
+      <h2>No tasks yet</h2>
+      <p>Describe a requirement and the loop will create the task and drive it through clarify → plan → build → wrap.</p>
+      <button class="button is-primary" data-open="new-task-modal">＋ New task</button>
+    </div>`;
 
   return `${pageHead("AI-DLC Loop")}
-<section class="section">
+${renderHeader(options.root)}
+<main class="section ad-main">
   <div class="container">
-    <nav class="level">
-      <div class="level-left"><h1 class="title is-3 mr-3">AI-DLC Loop</h1>${renderDaemonTag(options.root)}</div>
-      <div class="level-right">
-        <div class="buttons">
-          <button class="button is-primary" data-open="new-task-modal">New task</button>
-          <button class="button" data-open="settings-modal" title="Settings">⚙ Settings</button>
-        </div>
-      </div>
-    </nav>
-    <div class="level">
-      <div class="level-left">
-        <div class="buttons has-addons">
-          <button class="button is-small" data-view-toggle="kanban">Kanban</button>
-          <button class="button is-small" data-view-toggle="list">List</button>
-        </div>
-      </div>
-    </div>
-    <div id="kanban-view"><div class="columns">${kanban}</div></div>
-    <div id="list-view" style="display:none">
-      <table class="table is-fullwidth is-striped is-hoverable">
-        <thead><tr><th>id</th><th>title</th><th>phase</th><th>gate</th><th>status</th><th>risk</th><th>areas</th><th>actions</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-    <p class="help">Click a task to open a quick detail modal; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. Gate approval stays available on the detail page and on the trusted terminal (<code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>).</p>
+    ${renderStats(items, handedOff)}
+    ${renderReviewQueue(items, handedOff)}
+    ${board}
+    <p class="ad-help">Click a task to open a quick view; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. Gate approval stays available on the detail page and on the trusted terminal (<code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close.</p>
   </div>
-</section>
+</main>
 ${renderModals()}
 ${sharedScript}
 </body>
@@ -643,107 +914,226 @@ ${sharedScript}
  * Task detail (page and modal fragment share the same body).
  * ------------------------------------------------------------------------- */
 
+/** The artifact a reviewer most likely needs at each gate opens by default. */
+const GATE_ARTIFACT: Record<string, string> = { G0_confirm: "intent", G1_review: "design", G2_codereview: "workplan" };
+
+const panel = (title: string, body: string, extra = "", flush = false): string =>
+  `<section class="ad-panel"><header class="ad-panel-head"><h2>${escapeHtml(title)}</h2>${extra}</header><div class="ad-panel-body${flush ? " is-flush" : ""}">${body}</div></section>`;
+
 const renderTaskDetail = async (options: UiOptions, id: string, fragment = false): Promise<string> => {
   const state = loadState(options.root);
   const task = loadTask(options.root, id, state);
   if (!task) {
     const body = `<p class="has-text-danger">Task not found: ${escapeHtml(id)}</p>`;
-    return fragment ? body : `${pageHead("Task not found")}<section class="section"><div class="container"><h1 class="title">Task not found</h1><p><a href="/">← back</a></p></div></section></body></html>`;
+    return fragment ? body : `${pageHead("Task not found")}${renderHeader(options.root)}<main class="section ad-main"><div class="container"><div class="ad-empty"><div class="ad-empty-icon" aria-hidden="true">🔍</div><h2>Task not found</h2><p><code>${escapeHtml(id)}</code> is not in the local canonical state.</p><a class="button" href="/">← Back to dashboard</a></div></div></main>${renderModals()}${sharedScript}</body></html>`;
   }
 
-  const gate = task.status === "blocked_on_user" && task.gate !== "none"
-    ? taskGatePayload(options.root, id)
-    : undefined;
+  const waiting = task.status === "blocked_on_user" && task.gate !== "none";
+  // A gate whose structural checks now fail (e.g. an artifact edited after the
+  // wait was set) makes gateView throw; show the diagnostics instead of a 500.
+  let gateBlock = "";
+  if (waiting) {
+    try {
+      const gate = taskGatePayload(options.root, id);
+      if (gate.ok && gate.view) gateBlock = renderGateViewHtml(gate.view);
+    } catch (error) {
+      const problems = (error instanceof Error ? error.message : String(error)).split("; ").filter(Boolean);
+      gateBlock = `<section class="ad-panel is-danger">
+        <header class="ad-panel-head"><span aria-hidden="true">⚠</span><h2>${escapeHtml(gateLabel(task.gate))} · gate check failing</h2><span class="ad-pill is-danger ad-panel-tools">${escapeHtml(task.gate)}</span></header>
+        <div class="ad-panel-body">
+          <p class="mb-3">The task waits at this gate, but its structural checks no longer pass. Approval will be rejected until these are fixed:</p>
+          <ul class="ad-plain-list">${problems.map((problem) => `<li>${pill("ERROR", "is-danger")} ${escapeHtml(problem)}</li>`).join("")}</ul>
+          <p class="is-size-7 has-text-grey mt-3">Re-check with <code>node .agents/aidlc/scripts/gate-check.mjs ${escapeHtml(task.id)} --gate ${escapeHtml(task.gate)}</code>.</p>
+        </div>
+      </section>`;
+    }
+  }
 
-  const gateBlock = gate && gate.ok && gate.view
-    ? renderGateViewHtml(gate.view)
+  const approveBlock = !fragment && waiting
+    ? `<section class="ad-panel is-success" id="approve-panel">
+        <header class="ad-panel-head"><h2>Approve · ${escapeHtml(gateLabel(task.gate))}</h2><span class="ad-pill is-ghost ad-panel-tools">${escapeHtml(task.gate)}</span></header>
+        <div class="ad-panel-body">
+          <div class="field">
+            <label class="label is-small" for="source">Approval note <span class="has-text-grey has-text-weight-normal">(required, recorded as provenance)</span></label>
+            <div class="control"><textarea id="source" class="textarea" rows="2" placeholder="e.g. reviewed intent and scope — ok"></textarea></div>
+          </div>
+          <div class="is-flex is-align-items-center" style="gap:0.75rem">
+            <button id="approve-button" class="button is-success">✓ Approve</button>
+            <span id="approve-result" class="help m-0" role="status"></span>
+          </div>
+        </div>
+      </section>`
     : "";
 
-  const approveBlock = !fragment && task.status === "blocked_on_user" && task.gate !== "none"
-    ? `<div class="box">
-        <h3 class="subtitle">Approve ${escapeHtml(task.gate)}</h3>
-        <div class="field"><div class="control"><input id="source" class="input" placeholder="approval note / source (required)"></div></div>
-        <div class="control"><button id="approve-button" class="button is-success">approve</button></div>
-        <pre id="approve-result" class="mt-3"></pre>
-      </div>`
-    : "";
-
+  const openArtifact = waiting ? GATE_ARTIFACT[task.gate] : undefined;
   const artifacts = ARTIFACT_NAMES.map((name) => {
     const artifactPath = task.artifacts?.[name];
     if (!artifactPath) return "";
     const payload = artifactPayload(options.root, id, name);
     const content = payload.ok && payload.content !== undefined
       ? `<div class="content artifact">${markdownToHtml(payload.content)}</div>`
-      : `<p class="help is-danger">${escapeHtml(payload.error ?? "unavailable")}</p>`;
-    return `<details class="box mb-2"><summary>${escapeHtml(name)} <span class="tag is-light is-small">${escapeHtml(artifactPath)}</span></summary>${content}</details>`;
+      : `<p class="help is-danger px-5 pb-4">${escapeHtml(payload.error ?? "unavailable")}</p>`;
+    return `<details class="ad-artifact"${name === openArtifact ? " open" : ""}><summary>${escapeHtml(name)}<code>${escapeHtml(artifactPath)}</code></summary>${content}</details>`;
   }).join("\n");
 
   let loopStatus: string;
   try {
-    loopStatus = `<div class="box"><h3 class="subtitle">Loop status</h3>${jsonToHtml(await loopStatusJson(options.root, id))}</div>`;
+    loopStatus = `<div class="ad-kv">${jsonToHtml(await loopStatusJson(options.root, id))}</div>`;
   } catch (error) {
-    loopStatus = `<div class="box"><h3 class="subtitle">Loop status</h3><p class="help is-danger">Loop status unavailable: ${escapeHtml(childError(error))}</p></div>`;
+    const message = childError(error);
+    const summary = message.split("\n").map((line) => line.trim()).find((line) => /error/i.test(line)) ?? message.split("\n")[0] ?? "";
+    loopStatus = `<p class="help is-danger m-0">Loop status unavailable: ${escapeHtml(summary.slice(0, 240))}</p>${message.length > summary.length ? `<details class="mt-2 is-size-7"><summary class="has-text-grey">details</summary><pre class="mt-2" style="white-space:pre-wrap">${escapeHtml(message)}</pre></details>` : ""}`;
   }
 
-  const decisions = task.decisions.length
-    ? task.decisions.map((decision) => `<tr><td><code>${escapeHtml(decision.id)}</code></td><td>${escapeHtml(decision.status)}</td><td>${escapeHtml(decision.resolution ?? "")}</td></tr>`).join("\n")
-    : "<tr><td colspan=\"3\"><em>none</em></td></tr>";
+  const table = (head: string[], rows: string[], empty: string): string => rows.length
+    ? `<table class="table ad-table is-fullwidth"><thead><tr>${head.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("\n")}</tbody></table>`
+    : `<p class="ad-empty-line">${escapeHtml(empty)}</p>`;
 
-  const workItems = task.tasks.length
-    ? task.tasks.map((item) => `<tr><td><code>${escapeHtml(item.id)}</code></td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.label ?? "")}</td></tr>`).join("\n")
-    : "<tr><td colspan=\"3\"><em>none</em></td></tr>";
+  const decisions = table(["decision", "status", "resolution"], task.decisions.map((decision) =>
+    `<tr><td><code>${escapeHtml(decision.id)}</code><div class="is-size-7 has-text-grey mt-1">${escapeHtml(decision.label ?? "")}</div></td><td>${pill(decision.status, DECISION_TONE[decision.status] ?? "")}</td><td class="is-size-7">${escapeHtml(decision.resolution ?? "")}</td></tr>`), "No decisions recorded");
 
-  const evidence = task.evidence.length
-    ? task.evidence.map((entry) => `<tr><td>${escapeHtml(entry.kind)}</td><td>${escapeHtml(entry.result)}</td><td>${escapeHtml(entry.gate ?? "")}</td><td>${escapeHtml(entry.source ?? "")}</td></tr>`).join("\n")
-    : "<tr><td colspan=\"4\"><em>none</em></td></tr>";
+  const doneItems = task.tasks.filter((item) => item.status === "done").length;
+  const workItems = table(["item", "status", "label"], task.tasks.map((item) =>
+    `<tr><td><code>${escapeHtml(item.id)}</code></td><td>${pill(item.status.replace("_", " "), ITEM_TONE[item.status] ?? "")}</td><td class="is-size-7">${escapeHtml(item.label ?? "")}</td></tr>`), "No work items yet");
+  const workProgress = task.tasks.length
+    ? `<div class="px-5 pt-4 pb-1"><progress class="progress is-small is-primary mb-0" value="${doneItems}" max="${task.tasks.length}" aria-label="work items done">${doneItems}/${task.tasks.length}</progress></div>`
+    : "";
 
-  const body = `<h1 class="title">${escapeHtml(task.title)}</h1>
-<p class="subtitle"><code>${escapeHtml(task.id)}</code> · ${escapeHtml(task.phase)} · ${escapeHtml(task.gate)} · ${escapeHtml(task.status)} · ${escapeHtml(task.risk)}</p>
-<p>Areas: ${escapeHtml(task.areas.join(", "))}</p>
-${gateBlock}
-${approveBlock}
-<h2 class="subtitle">Artifacts</h2>
-${artifacts || "<p><em>No artifacts recorded</em></p>"}
-${loopStatus}
-<h2 class="subtitle">Decisions</h2>
-<table class="table is-fullwidth is-striped"><thead><tr><th>id</th><th>status</th><th>resolution</th></tr></thead><tbody>${decisions}</tbody></table>
-<h2 class="subtitle">Work items</h2>
-<table class="table is-fullwidth is-striped"><thead><tr><th>id</th><th>status</th><th>label</th></tr></thead><tbody>${workItems}</tbody></table>
-<h2 class="subtitle">Evidence</h2>
-<table class="table is-fullwidth is-striped"><thead><tr><th>kind</th><th>result</th><th>gate</th><th>source</th></tr></thead><tbody>${evidence}</tbody></table>`;
+  const evidence = table(["kind", "result", "gate", "source", "recorded"], task.evidence.map((entry) =>
+    `<tr><td><strong>${escapeHtml(entry.kind)}</strong>${entry.area ? `<div class="is-size-7 has-text-grey">${escapeHtml(entry.area)}</div>` : ""}</td><td>${pill(entry.result, RESULT_TONE[entry.result] ?? "")}</td><td class="is-size-7">${escapeHtml(entry.gate ?? "")}</td><td class="is-size-7">${escapeHtml(entry.source ?? "")}${entry.detail ? `<div class="has-text-grey mt-1">${escapeHtml(entry.detail)}</div>` : ""}</td><td class="is-size-7 has-text-grey">${relativeTime(entry.recordedAt)}</td></tr>`), "No verification evidence yet");
+
+  const handoff = task.handoff
+    ? `<section class="ad-panel" style="box-shadow:0 0 0 1px var(--bulma-danger)"><header class="ad-panel-head"><h2>Handed off · ${escapeHtml(task.handoff.kind)}</h2></header><div class="ad-panel-body"><p>${escapeHtml(task.handoff.reason)}</p><p class="is-size-7 has-text-grey mt-2">Follow the handoff actions from <code>node .agents/aidlc/scripts/state.mjs task next ${escapeHtml(task.id)}</code>.</p></div></section>`
+    : "";
+
+  const meta = `<dl class="ad-meta">
+    <dt>Status</dt><dd>${statusPill(task.status, Boolean(task.handoff))}</dd>
+    <dt>Gate</dt><dd>${task.gate === "none" ? '<span class="has-text-grey">none</span>' : `${escapeHtml(gateLabel(task.gate))}<div class="is-size-7 has-text-grey">${escapeHtml(task.gate)}</div>`}</dd>
+    <dt>Risk</dt><dd>${riskPill(task.risk)}</dd>
+    <dt>Type</dt><dd>${escapeHtml(task.type)}</dd>
+    <dt>Language</dt><dd>${escapeHtml(task.language)}</dd>
+    <dt>Areas</dt><dd>${escapeHtml(task.areas.join(", "))}</dd>
+    <dt>Branch</dt><dd><code>${escapeHtml(task.branch)}</code></dd>
+    <dt>Created</dt><dd>${relativeTime(task.createdAt)}</dd>
+    <dt>Updated</dt><dd>${relativeTime(task.updatedAt)}</dd>
+  </dl>`;
+
+  const liveLog = fragment ? "" : `<section class="ad-terminal">
+    <div class="ad-terminal-head"><span class="ad-lights" aria-hidden="true"><span></span><span></span><span></span></span><strong>Live log</strong><span id="log-state">connecting…</span>
+      <div class="ad-terminal-tools"><button type="button" id="log-follow" aria-pressed="true">Follow</button><button type="button" id="log-clear">Clear</button></div>
+    </div>
+    <div id="log" class="log-panel" role="log" aria-live="off"><span class="ad-log-muted">connecting…</span></div>
+  </section>`;
+
+  const body = `<h1 class="ad-page-title">${escapeHtml(task.title)}</h1>
+<div class="ad-page-sub"><code>${escapeHtml(task.id)}</code>${statusPill(task.status, Boolean(task.handoff))}${gatePill(task.gate)}${riskPill(task.risk)}</div>
+<div class="columns is-desktop">
+  <div class="column is-8-desktop">
+    ${handoff}
+    ${gateBlock}
+    ${approveBlock}
+    ${panel("Artifacts", artifacts || '<p class="ad-empty-line">No artifacts recorded</p>', `<span class="ad-count">${ARTIFACT_NAMES.filter((name) => task.artifacts?.[name]).length}</span>`, true)}
+    ${panel("Decisions", decisions, `<span class="ad-count">${task.decisions.length}</span>`, true)}
+    ${panel("Work items", workProgress + workItems, `<span class="ad-count">${doneItems}/${task.tasks.length}</span>`, true)}
+    ${panel("Evidence", evidence, `<span class="ad-count">${task.evidence.length}</span>`, true)}
+    ${liveLog}
+  </div>
+  <aside class="column is-4-desktop">
+    <div class="ad-sticky">
+      ${panel("Progress", phaseTimeline(task.phase, task.gate, task.status))}
+      ${panel("Details", meta)}
+      ${panel("Loop status", loopStatus)}
+    </div>
+  </aside>
+</div>`;
 
   if (fragment) return body;
 
-  const liveLog = `<h2 class="subtitle">Live log</h2><div id="log" class="log-panel">connecting…</div>`;
   const detailScript = `<script>
-document.getElementById("approve-button")?.addEventListener("click", async () => {
+document.getElementById("approve-button")?.addEventListener("click", (event) => {
+  const button = event.currentTarget;
+  const note = document.getElementById("source");
   const result = document.getElementById("approve-result");
-  result.textContent = "";
-  const res = await post("/api/gate/approve", { taskId: ${JSON.stringify(id)}, gate: ${JSON.stringify(task.gate)}, source: document.getElementById("source").value });
-  result.textContent = JSON.stringify(res.body, null, 2);
-  if (res.status >= 200 && res.status < 300) setTimeout(() => location.reload(), 1500);
+  if (result) result.textContent = "";
+  if (!note.value.trim()) { toast("Add an approval note first", "warning", "It is recorded as the approval source."); note.focus(); return; }
+  withLoading(button, async () => {
+    const res = await post("/api/gate/approve", { taskId: ${JSON.stringify(id)}, gate: ${JSON.stringify(task.gate)}, source: note.value });
+    if (res.status >= 200 && res.status < 300) {
+      const next = res.body && res.body.result && res.body.result.nextAction;
+      toast(${JSON.stringify(`Approved ${gateLabel(task.gate)}`)}, "success", next && next.classification ? "Next: " + next.classification + (next.phase ? " · " + next.phase : "") : "");
+      if (result) result.textContent = "Approved — reloading…";
+      setTimeout(() => location.reload(), 1500);
+    } else failureToast(res, "Approval failed");
+  });
 });
-const logEl = document.getElementById("log");
-const events = new EventSource("/api/events?task-id=" + encodeURIComponent(${JSON.stringify(id)}));
-events.onmessage = (message) => {
-  if (logEl.textContent === "connecting…") logEl.textContent = "";
-  logEl.textContent += message.data + "\\n";
-  logEl.scrollTop = logEl.scrollHeight;
-};
-events.onerror = () => { if (logEl.textContent === "connecting…") logEl.textContent = "log stream unavailable (loop not running or sidecar missing)"; };
+(() => {
+  const logEl = document.getElementById("log");
+  const stateEl = document.getElementById("log-state");
+  const followBtn = document.getElementById("log-follow");
+  const clearBtn = document.getElementById("log-clear");
+  if (!logEl) return;
+  let follow = true;
+  let started = false;
+  const MAX_LINES = 2000;
+  followBtn?.addEventListener("click", () => { follow = !follow; followBtn.setAttribute("aria-pressed", String(follow)); if (follow) logEl.scrollTop = logEl.scrollHeight; });
+  clearBtn?.addEventListener("click", () => { logEl.textContent = ""; });
+  const two = (n) => String(n).padStart(2, "0");
+  const clock = (iso) => { const d = new Date(iso); return isNaN(d) ? "--:--:--" : two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds()); };
+  const describe = (e) => {
+    switch (e.type) {
+      case "turn_start": return "turn " + (Number(e.iteration || 0) + 1) + " · phase " + (e.phase || "?") + " · agent " + (e.agent || "?");
+      case "turn_end": return "turn done";
+      case "agent_text": return e.text || "";
+      case "agent_tool": return "tool: " + (e.tool || "?");
+      case "lifecycle_command": return "command " + (e.status || "?") + " (exit " + (e.exitCode ?? "?") + ")";
+      case "daemon_turn_error": return (e.message || "error") + " (retry in " + Math.round(Number(e.retryInMs || 0) / 1000) + "s)";
+      case "loop_stopped": return "stopped: " + (e.reason || "");
+      case "gate": return "gate " + (e.gate || "?") + " reached — review and approve on this page";
+      case "waiting": return "waiting at " + (e.gate || "?");
+      default: {
+        if (e.message) return e.message;
+        const rest = Object.assign({}, e); delete rest.at; delete rest.type; delete rest.taskId;
+        const text = JSON.stringify(rest);
+        return text === "{}" ? "" : text;
+      }
+    }
+  };
+  const tone = (type) => /error|fail/.test(type) ? "is-error" : /stop|wait|gate|blocked/.test(type) ? "is-warn" : /integrated|done|complete|end/.test(type) ? "is-ok" : /^agent/.test(type) ? "is-agent" : "";
+  const append = (raw) => {
+    if (!started) { logEl.textContent = ""; started = true; if (stateEl) stateEl.textContent = "streaming"; }
+    const line = document.createElement("div");
+    line.className = "ad-log-line";
+    let event;
+    try { event = JSON.parse(raw); } catch (error) { event = null; }
+    if (event && typeof event === "object" && typeof event.type === "string") {
+      const cls = tone(event.type);
+      if (cls) line.classList.add(cls);
+      const time = document.createElement("span"); time.className = "ad-log-time"; time.textContent = clock(event.at);
+      const type = document.createElement("span"); type.className = "ad-log-type"; type.textContent = event.type;
+      const text = document.createElement("span"); text.className = "ad-log-text"; text.textContent = describe(event);
+      line.append(time, type, text);
+    } else {
+      line.textContent = raw;
+    }
+    logEl.appendChild(line);
+    while (logEl.childElementCount > MAX_LINES) logEl.firstElementChild.remove();
+    if (follow) logEl.scrollTop = logEl.scrollHeight;
+  };
+  const events = new EventSource("/api/events?task-id=" + encodeURIComponent(${JSON.stringify(id)}));
+  events.onopen = () => { if (!started && stateEl) stateEl.textContent = "connected · waiting for events"; if (!started) logEl.innerHTML = "<span class='ad-log-muted'>No events for this task yet.</span>"; };
+  events.onmessage = (message) => append(message.data);
+  events.onerror = () => { if (stateEl) stateEl.textContent = started ? "reconnecting…" : "unavailable"; if (!started) logEl.innerHTML = "<span class='ad-log-muted'>Log stream unavailable (loop not running or sidecar missing).</span>"; };
+})();
 </script>`;
 
-  return `${pageHead(`Task ${id}`)}
-<section class="section">
+  return `${pageHead(`${task.title} · ${id}`)}
+${renderHeader(options.root)}
+<main class="section ad-main">
   <div class="container">
-    <nav class="level">
-      <div class="level-left"><p><a href="/">← back to dashboard</a></p></div>
-      <div class="level-right"><button class="button is-small" data-open="settings-modal" title="Settings">⚙ Settings</button></div>
-    </nav>
+    <a class="ad-breadcrumb" href="/">← Dashboard</a>
     ${body}
-    ${liveLog}
   </div>
-</section>
+</main>
 ${renderModals()}
 ${sharedScript}
 ${detailScript}
@@ -864,7 +1254,10 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
 
     void (async () => {
       try {
-        if (method === "GET" && path === "/assets/bulma.css") return sendCss(res, bulmaCss());
+        if (method === "GET" && path.startsWith("/assets/")) {
+          const css = stylesheet(path);
+          if (css !== undefined) return sendCss(res, css);
+        }
         if (method === "GET" && path === "/") return sendHtml(res, renderDashboard(options));
         if (method === "GET" && path.startsWith("/partial/tasks/")) {
           const id = decodeURIComponent(path.slice("/partial/tasks/".length));

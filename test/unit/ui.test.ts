@@ -63,11 +63,20 @@ test("ui server serves the styled dashboard, vendored CSS, and read-only JSON en
     const home = await fetch(`${fixture.base}/`);
     assert.equal(home.status, 200);
     assert.match(await home.text(), /AI-DLC Loop/);
-    assert.match(await (await fetch(`${fixture.base}/`)).text(), /bulma\.css/);
+    const homeHtml = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(homeHtml, /href="\/assets\/bulma\.css"[\s\S]*href="\/assets\/dashboard\.css"/, "theme layer loads after Bulma");
+    assert.match(homeHtml, /<meta name="color-scheme" content="light dark">/);
 
     const css = await fetch(`${fixture.base}/assets/bulma.css`);
     assert.equal(css.status, 200);
     assert.match(css.headers.get("content-type") ?? "", /text\/css/);
+
+    const theme = await fetch(`${fixture.base}/assets/dashboard.css`);
+    assert.equal(theme.status, 200);
+    assert.match(theme.headers.get("content-type") ?? "", /text\/css/);
+    assert.match(await theme.text(), /prefers-color-scheme: dark/);
+
+    assert.equal((await fetch(`${fixture.base}/assets/missing.css`)).status, 404);
 
     const tasks = await fetch(`${fixture.base}/api/tasks`);
     assert.equal(tasks.status, 200);
@@ -510,5 +519,67 @@ test("malformed or non-object JSON bodies are client errors, and a failing loop 
     assert.equal(status.status, 502);
   } finally {
     await fixture.close();
+  }
+});
+
+test("dashboard shows stats, the review queue, filters, and phase steppers", async () => {
+  const fixture = await startFixture(makeTask({ status: "blocked_on_user", phase: "plan", gate: "G1_review" }));
+  try {
+    const html = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(html, /class="ad-stats"/);
+    assert.match(html, /data-stat-filter="blocked_on_user"/);
+    assert.match(html, /Needs your review/);
+    assert.match(html, /href="\/tasks\/task-a">Open review →<\/a>/);
+    assert.match(html, /id="task-search"/);
+    assert.match(html, /id="filter-status"/);
+    assert.match(html, /aria-label="Phase 2 of 5: plan"/);
+    assert.match(html, /data-status="blocked_on_user"/);
+    assert.match(html, /id="toasts"/);
+  } finally {
+    await fixture.close();
+  }
+
+  const quiet = await startFixture(makeTask());
+  try {
+    assert.doesNotMatch(await (await fetch(`${quiet.base}/`)).text(), /Needs your review/);
+  } finally {
+    await quiet.close();
+  }
+});
+
+test("dashboard escapes task data in card markup and search attributes", async () => {
+  const fixture = await startFixture(makeTask({ title: "<img src=x onerror=alert(1)> \"quoted\"" }));
+  try {
+    const html = await (await fetch(`${fixture.base}/`)).text();
+    assert.doesNotMatch(html, /<img src=x/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; &quot;quoted&quot;/);
+    assert.match(html, /data-search="task-a &lt;img src=x onerror=alert\(1\)&gt; &quot;quoted&quot;/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("task detail renders a sidebar timeline and survives a failing gate check", async () => {
+  const fixture = await startFixture(makeTask({ status: "blocked_on_user" }), true);
+  try {
+    const page = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    assert.match(page, /class="ad-timeline"/);
+    assert.match(page, /waiting at Confirm requirements/);
+    assert.match(page, /<h2>Details<\/h2>/);
+    assert.match(page, /<details class="ad-artifact" open><summary>intent/, "the gate's artifact opens by default");
+  } finally {
+    await fixture.close();
+  }
+
+  // No intent on disk: the gate's structural check fails; the page still renders with diagnostics.
+  const broken = await startFixture(makeTask({ status: "blocked_on_user" }), false);
+  try {
+    const res = await fetch(`${broken.base}/tasks/task-a`);
+    assert.equal(res.status, 200);
+    const page = await res.text();
+    assert.match(page, /gate check failing/);
+    assert.match(page, /approve-button/);
+  } finally {
+    await broken.close();
   }
 });
