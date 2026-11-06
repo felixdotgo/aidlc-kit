@@ -1,11 +1,15 @@
 # aidlc-kit
 
+[![npm version](https://img.shields.io/npm/v/@felixdotgo/aidlc-kit)](https://www.npmjs.com/package/@felixdotgo/aidlc-kit)
+[![license](https://img.shields.io/npm/l/@felixdotgo/aidlc-kit)](https://github.com/felixdotgo/aidlc-kit/blob/main/LICENSE)
+[![node](https://img.shields.io/node/v/@felixdotgo/aidlc-kit)](https://nodejs.org/)
+
 `@felixdotgo/aidlc-kit` installs an AI-DLC workflow into an existing project. The workflow gives coding agents a shared task lifecycle, dependency-aware work, explicit human review gates, and project-owned state and rules. The normal lead runs in your Codex, Claude Code, or OpenCode conversation; an optional coordination service supports workers on multiple machines.
 
 Workflow assets are bundled with the package, `remoteUpdates` is `false`, and normal status checks never contact a registry. Fleet execution is opt-in and uses a separately deployed service. The optional end-to-end loop is also opt-in: select a mode during `init` or a human-run `upgrade`, then start it explicitly with `aidlc-kit loop start` — selecting a mode never starts or approves anything by itself.
 
 > [!WARNING]
-> The optional end-to-end loop and the AI-DLC Coordination service are **experimental and unfinished**: they contain known bugs and rough edges. The package is pre-1.0 (`0.x`), so their CLI flags, `loop.*`/`mcp.*` configuration fields, environment variables, and installed layouts can change incompatibly in any release before `1.0.0`.
+> **Local loop mode is usable** today; **fleet mode and the AI-DLC Coordination service are still under active development**. The loop is **experimental** — the package is pre-1.0 (`0.x`), so CLI flags, `loop.*`/`mcp.*` configuration fields, environment variables, and installed layouts can change incompatibly in any release before `1.0.0`.
 
 ## Requirements
 
@@ -19,11 +23,11 @@ Workflow assets are bundled with the package, `remoteUpdates` is `false`, and no
 Run these commands from your existing project's directory to preview the installation, then apply it:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit init . --agent codex --dry-run
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit init . --agent codex --yes
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init . --agent codex --dry-run
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init . --agent codex --yes
 ```
 
-`npx` may ask permission to download the package on first use. These examples pin version `0.1.1`. After installation, the project's lifecycle scripts run locally without `npx` or a registry connection.
+`npx` may ask permission to download the package on first use. These examples pin version `0.2.0`. After installation, the project's lifecycle scripts run locally without `npx` or a registry connection.
 
 Use the adapter that matches the coding tool:
 
@@ -38,8 +42,8 @@ Use `--all` to install every supported adapter. Codex installs workspace-write s
 Confirm the installed project locally:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit status .
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit doctor . --strict
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit status .
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit doctor . --strict
 ```
 
 ## Documentation
@@ -58,13 +62,6 @@ The detailed documentation is organised by task and audience:
 ## Safety note
 
 Only a human may initiate or apply a workflow upgrade. `upgrade` rejects `--yes` and `--force`, requires an interactive terminal, and asks the human to type the target package version. See the [command reference](./docs/command-reference.md#upgrade) before changing an existing installation.
-
-## Recent changes
-
-- Synced the two committed ESM lifecycle cores so `lifecycle-core-conformance` passes.
-- Normalized Git path scopes (trailing slashes stripped) consistently across fleet, local-worker, and snapshot flows; directory scopes now work in all three.
-- Hardened the state lock to reclaim partially written (corrupt) lock files instead of wedging mutations.
-- Made the fleet end-to-end test skip cleanly when its Docker worker image is unavailable.
 
 ## License
 
