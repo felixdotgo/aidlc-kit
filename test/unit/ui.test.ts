@@ -62,8 +62,10 @@ test("ui server serves the styled dashboard, vendored CSS, and read-only JSON en
   try {
     const home = await fetch(`${fixture.base}/`);
     assert.equal(home.status, 200);
-    assert.match(await home.text(), /AI-DLC Loop/);
-    const homeHtml = await (await fetch(`${fixture.base}/`)).text();
+    const homeHtml = await home.text();
+    assert.match(homeHtml, /<title>Loop<\/title>/);
+    assert.match(homeHtml, /<span class="ad-logo" aria-hidden="true">L<\/span>Loop<\/a>/);
+    assert.doesNotMatch(homeHtml, /AI-DLC Loop/);
     assert.match(homeHtml, /href="\/assets\/bulma\.css"[\s\S]*href="\/assets\/dashboard\.css"/, "theme layer loads after Bulma");
     assert.match(homeHtml, /<meta name="color-scheme" content="light dark">/);
 
@@ -236,11 +238,19 @@ test("markdownToHtml renders a minimal subset and escapes HTML", async () => {
   assert.equal(markdownToHtml("[x](javascript:alert(1))").includes("javascript:"), false);
 });
 
-test("dashboard renders kanban as the default view with phase columns and modals", async () => {
+test("dashboard renders kanban as the default view with phase columns, modals, and the task side panel", async () => {
   const fixture = await startFixture(makeTask());
   try {
     const html = await (await fetch(`${fixture.base}/`)).text();
     assert.match(html, /id="kanban-view"/);
+    assert.match(html, /<div id="task-drawer" class="ad-drawer" role="dialog" aria-modal="true"[^>]*hidden>/);
+    assert.match(html, /id="task-drawer-open"/);
+    assert.doesNotMatch(html, /id="task-modal"/);
+    assert.match(html, /openTaskDrawer/);
+    assert.match(html, /history\.pushState/);
+    const containers = html.match(/class="container[^"]*"/g) ?? [];
+    assert.ok(containers.length >= 2);
+    assert.ok(containers.every((value) => value.includes("is-fluid")), "every dashboard container is full-width");
     assert.match(html, /id="list-view" style="display:none"/);
     assert.match(html, /New task/);
     assert.match(html, /Settings/);
@@ -262,7 +272,7 @@ test("task detail renders artifacts and gate view as structured HTML, not raw JS
   }
 });
 
-test("partial task detail fragment serves modal content without a full page", async () => {
+test("partial task detail fragment serves side-panel content without a full page", async () => {
   const fixture = await startFixture(makeTask(), true);
   try {
     const res = await fetch(`${fixture.base}/partial/tasks/task-a`);
@@ -270,6 +280,9 @@ test("partial task detail fragment serves modal content without a full page", as
     const html = await res.text();
     assert.match(html, /Task A/);
     assert.doesNotMatch(html, /<html/);
+    assert.match(html, /class="ad-stepper"/);
+    assert.ok(html.indexOf('class="ad-stepper"') < html.indexOf("<h2>Artifacts</h2>"), "progress renders before artifacts");
+    assert.doesNotMatch(html, /Loop status/);
   } finally {
     await fixture.close();
   }
@@ -559,11 +572,17 @@ test("dashboard escapes task data in card markup and search attributes", async (
   }
 });
 
-test("task detail renders a sidebar timeline and survives a failing gate check", async () => {
+test("task detail renders a horizontal progress stepper before artifacts, no loop status, and survives a failing gate check", async () => {
   const fixture = await startFixture(makeTask({ status: "blocked_on_user" }), true);
   try {
     const page = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
-    assert.match(page, /class="ad-timeline"/);
+    assert.match(page, /<ol class="ad-stepper" aria-label="Progress">/);
+    assert.match(page, /<li class="is-current" aria-current="step">/);
+    assert.ok(page.indexOf('class="ad-stepper"') < page.indexOf("<h2>Artifacts</h2>"), "progress renders before artifacts");
+    assert.doesNotMatch(page, /<h2>Progress<\/h2>/);
+    assert.doesNotMatch(page, /Loop status/);
+    assert.match(page, /<title>Task A · Loop<\/title>/);
+    assert.ok((page.match(/class="container[^"]*"/g) ?? []).every((value) => value.includes("is-fluid")));
     assert.match(page, /waiting at Confirm requirements/);
     assert.match(page, /<h2>Details<\/h2>/);
     assert.match(page, /<details class="ad-artifact" open><summary>intent/, "the gate's artifact opens by default");

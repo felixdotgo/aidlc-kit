@@ -54,7 +54,7 @@ export const runUi = async (args: string[]): Promise<void> => {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be an integer between 1 and 65535");
   const host = value(args, "--host") ?? "127.0.0.1";
   const { server, port: boundPort, token } = await startUiServer({ root, host, port });
-  console.log(`AI-DLC UI listening on http://${host}:${boundPort} (Ctrl-C to stop)`);
+  console.log(`Loop (AI-DLC UI) listening on http://${host}:${boundPort} (Ctrl-C to stop)`);
   console.log(`Approve token (paste into the dashboard for loop actions and gate approval): ${token}`);
   await new Promise<void>((resolve) => {
     const close = (): void => { server.close(() => resolve()); };

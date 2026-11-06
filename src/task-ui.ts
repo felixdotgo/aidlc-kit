@@ -407,16 +407,17 @@ const phaseSteps = (phase: string): string => {
   return `<div class="ad-steps${done ? " is-done" : ""}" role="img" aria-label="Phase ${current + 1} of ${PHASES.length}: ${escapeHtml(phase)}">${bars}</div>`;
 };
 
-const phaseTimeline = (phase: string, gate: string, status: string): string => {
+/** Horizontal phase stepper shown above the artifacts (detail page and drawer). */
+const phaseStepper = (phase: string, gate: string, status: string): string => {
   const current = (PHASES as readonly string[]).indexOf(phase);
-  return `<ol class="ad-timeline">${PHASES.map((name, index) => {
+  return `<ol class="ad-stepper" aria-label="Progress">${PHASES.map((name, index) => {
     const complete = phase === "done" || index < current;
     const isCurrent = !complete && index === current;
     const phaseGate = PHASE_GATE[name];
     const note = isCurrent && status === "blocked_on_user" && gate !== "none"
       ? `waiting at ${gateLabel(gate)}`
       : phaseGate ? `gate · ${gateLabel(phaseGate)}` : name === "done" ? "complete" : "no gate";
-    return `<li class="${complete ? "is-complete" : isCurrent ? "is-current" : ""}"><span class="ad-timeline-marker">${complete ? "✓" : index + 1}</span><span class="ad-timeline-text"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(note)}</small></span></li>`;
+    return `<li class="${complete ? "is-complete" : isCurrent ? "is-current" : ""}"${isCurrent ? ' aria-current="step"' : ""}><span class="ad-stepper-marker">${complete ? "✓" : index + 1}</span><span class="ad-stepper-text"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(note)}</small></span></li>`;
   }).join("")}</ol>`;
 };
 
@@ -478,22 +479,6 @@ const renderGateViewHtml = (view: unknown): string => {
   </section>`;
 };
 
-const jsonToHtml = (value: unknown): string => {
-  if (value === null || value === undefined) return '<span class="has-text-grey">null</span>';
-  if (typeof value === "boolean" || typeof value === "number") return escapeHtml(String(value));
-  if (typeof value === "string") return escapeHtml(value);
-  if (Array.isArray(value)) {
-    if (!value.length) return '<span class="has-text-grey">[]</span>';
-    return `<ul>${value.map((item) => `<li>${jsonToHtml(item)}</li>`).join("")}</ul>`;
-  }
-  if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (!entries.length) return '<span class="has-text-grey">{}</span>';
-    return `<table><tbody>${entries.map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${jsonToHtml(v)}</td></tr>`).join("")}</tbody></table>`;
-  }
-  return escapeHtml(String(value));
-};
-
 /* ---------------------------------------------------------------------------
  * Client script shared across dashboard and detail page.
  * All dynamic text is written with textContent; never innerHTML of user data.
@@ -552,19 +537,62 @@ const openModal = (id) => {
 };
 const closeModal = (id) => { const el = document.getElementById(id); if (el) el.classList.remove("is-active"); if (!document.querySelector(".modal.is-active")) document.documentElement.classList.remove("is-clipped"); };
 const closeAllModals = () => { document.querySelectorAll(".modal").forEach((m) => m.classList.remove("is-active")); document.documentElement.classList.remove("is-clipped"); };
-const openTaskModal = async (id) => {
-  const body = document.getElementById("task-modal-body");
-  const link = document.getElementById("task-modal-open");
-  if (body) body.innerHTML = "<p class='has-text-grey'>Loading…</p>";
+// Task side panel (drawer): slides in from the right, mirrors ?task=<id> in the
+// URL so refresh/share reopens it and Back closes it. Only the newest fetch
+// may write the body when the user switches tasks quickly.
+let drawerRequest = 0;
+let drawerReturnFocus = null;
+const drawerEl = () => document.getElementById("task-drawer");
+// "Open" means shown or opening; a drawer mid-close counts as closed so a quick
+// reopen re-adds is-open instead of being hidden by the pending close timer.
+const drawerOpen = () => { const el = drawerEl(); return !!el && el.classList.contains("is-open"); };
+const drawerTaskFromUrl = () => new URLSearchParams(location.search).get("task");
+const openTaskDrawer = async (id, options = {}) => {
+  const el = drawerEl();
+  if (!el || !id) return;
+  const body = document.getElementById("task-drawer-body");
+  const title = document.getElementById("task-drawer-title");
+  const link = document.getElementById("task-drawer-open");
+  if (title) title.textContent = id;
   if (link) link.href = "/tasks/" + encodeURIComponent(id);
-  openModal("task-modal");
+  if (!drawerOpen()) {
+    if (el.hidden) drawerReturnFocus = document.activeElement;
+    el.hidden = false;
+    document.documentElement.classList.add("is-clipped");
+    el.classList.add("is-opening");
+    requestAnimationFrame(() => { el.classList.add("is-open"); el.classList.remove("is-opening"); });
+    const panel = el.querySelector(".ad-drawer-panel");
+    if (panel) setTimeout(() => panel.focus(), 30);
+  }
+  if (options.push !== false && drawerTaskFromUrl() !== id) history.pushState({ task: id }, "", "?task=" + encodeURIComponent(id));
+  const request = ++drawerRequest;
+  if (body) body.innerHTML = "<p class='has-text-grey'>Loading…</p>";
+  let html;
   try {
     const response = await fetch("/partial/tasks/" + encodeURIComponent(id));
-    if (body) body.innerHTML = response.ok ? await response.text() : "<p class='has-text-danger'>Failed to load task detail.</p>";
+    html = response.ok ? await response.text() : "<p class='has-text-danger'>Failed to load task detail.</p>";
   } catch (error) {
-    if (body) body.innerHTML = "<p class='has-text-danger'>Failed to load task detail.</p>";
+    html = "<p class='has-text-danger'>Failed to load task detail.</p>";
   }
+  if (request === drawerRequest && body) { body.innerHTML = html; body.scrollTop = 0; }
 };
+const closeTaskDrawer = (options = {}) => {
+  const el = drawerEl();
+  if (!el || el.hidden) return;
+  drawerRequest += 1;
+  el.classList.remove("is-open");
+  const finish = () => { if (!el.classList.contains("is-open") && !el.classList.contains("is-opening")) el.hidden = true; };
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) finish(); else setTimeout(finish, 200);
+  if (!document.querySelector(".modal.is-active")) document.documentElement.classList.remove("is-clipped");
+  // Replace (not push) the ?task entry so Back after closing does not reopen it.
+  if (options.push !== false && drawerTaskFromUrl()) history.replaceState({}, "", location.pathname);
+  if (drawerReturnFocus && typeof drawerReturnFocus.focus === "function") drawerReturnFocus.focus();
+  drawerReturnFocus = null;
+};
+window.addEventListener("popstate", () => {
+  const id = drawerTaskFromUrl();
+  if (id) openTaskDrawer(id, { push: false }); else closeTaskDrawer({ push: false });
+});
 const isTyping = (target) => !!target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 const REQUIREMENT_LIMIT = 8192;
 document.addEventListener("DOMContentLoaded", () => {
@@ -575,9 +603,19 @@ document.addEventListener("DOMContentLoaded", () => {
   renderTokenState();
   document.querySelectorAll("[data-open]").forEach((el) => el.addEventListener("click", () => openModal(el.getAttribute("data-open"))));
   document.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", () => closeAllModals()));
+  document.querySelectorAll("[data-drawer-close]").forEach((el) => el.addEventListener("click", () => closeTaskDrawer()));
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { closeAllModals(); return; }
-    if (event.ctrlKey || event.metaKey || event.altKey || isTyping(event.target) || document.querySelector(".modal.is-active")) return;
+    if (event.key === "Escape") { if (document.querySelector(".modal.is-active")) closeAllModals(); else closeTaskDrawer(); return; }
+    if (event.key === "Tab" && drawerOpen() && !document.querySelector(".modal.is-active")) {
+      const panel = drawerEl().querySelector(".ad-drawer-panel");
+      const focusable = [...panel.querySelectorAll("a[href], button:not([disabled]), input, select, textarea, summary, [tabindex]:not([tabindex='-1'])")].filter((node) => node.offsetParent !== null);
+      if (!focusable.length) { event.preventDefault(); panel.focus(); return; }
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === panel)) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey || isTyping(event.target) || document.querySelector(".modal.is-active") || drawerOpen()) return;
     if (event.key === "n" && document.getElementById("new-task-modal")) { event.preventDefault(); openModal("new-task-modal"); }
     else if (event.key === "/") { const search = document.getElementById("task-search"); if (search) { event.preventDefault(); search.focus(); search.select(); } }
   });
@@ -616,9 +654,11 @@ document.addEventListener("DOMContentLoaded", () => {
     link.addEventListener("click", (event) => {
       if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
-      openTaskModal(link.getAttribute("data-task-link"));
+      openTaskDrawer(link.getAttribute("data-task-link"));
     });
   });
+  const initialTask = drawerTaskFromUrl();
+  if (initialTask && drawerEl()) openTaskDrawer(initialTask, { push: false });
 
   const viewKey = "aidlc-view";
   const applyView = (view) => {
@@ -710,8 +750,8 @@ const renderDaemonPill = (root: string): string => {
 };
 
 const renderHeader = (root: string): string => `<header class="ad-header">
-  <div class="container ad-header-inner">
-    <a class="ad-brand" href="/"><span class="ad-logo" aria-hidden="true">AI</span>AI-DLC Loop</a>
+  <div class="container is-fluid ad-header-inner">
+    <a class="ad-brand" href="/" title="Loop · AI-DLC dashboard"><span class="ad-logo" aria-hidden="true">L</span>Loop</a>
     ${renderDaemonPill(root)}
     <div class="ad-header-actions">
       <button class="button is-small" data-open="settings-modal" title="Settings">⚙<span class="ad-hide-mobile ml-1">Settings</span></button>
@@ -845,19 +885,16 @@ const renderModals = (): string => `
     </footer>
   </div>
 </div>
-<div id="task-modal" class="modal" role="dialog" aria-modal="true" aria-label="Task detail">
-  <div class="modal-background" data-close></div>
-  <div class="modal-card is-wide">
-    <header class="modal-card-head">
-      <p class="modal-card-title">Task</p>
-      <button class="delete" aria-label="close" data-close></button>
+<div id="task-drawer" class="ad-drawer" role="dialog" aria-modal="true" aria-labelledby="task-drawer-title" hidden>
+  <div class="ad-drawer-backdrop" data-drawer-close></div>
+  <aside class="ad-drawer-panel" tabindex="-1">
+    <header class="ad-drawer-head">
+      <code id="task-drawer-title" class="ad-drawer-id">Task</code>
+      <a id="task-drawer-open" class="button is-small" href="#" target="_blank" rel="noopener">Open full page ↗</a>
+      <button type="button" class="delete" aria-label="Close task panel" data-drawer-close></button>
     </header>
-    <section class="modal-card-body" id="task-modal-body"><p class="has-text-grey">Loading…</p></section>
-    <footer class="modal-card-foot">
-      <button class="button is-small" data-close>Close</button>
-      <a id="task-modal-open" class="button is-small is-link" href="#" target="_blank" rel="noopener">Open full page ↗</a>
-    </footer>
-  </div>
+    <div class="ad-drawer-body" id="task-drawer-body"><p class="has-text-grey">Loading…</p></div>
+  </aside>
 </div>
 <div id="toasts" class="ad-toasts" aria-live="polite"></div>`;
 
@@ -894,14 +931,14 @@ const renderDashboard = (options: UiOptions): string => {
       <button class="button is-primary" data-open="new-task-modal">＋ New task</button>
     </div>`;
 
-  return `${pageHead("AI-DLC Loop")}
+  return `${pageHead("Loop")}
 ${renderHeader(options.root)}
 <main class="section ad-main">
-  <div class="container">
+  <div class="container is-fluid">
     ${renderStats(items, handedOff)}
     ${renderReviewQueue(items, handedOff)}
     ${board}
-    <p class="ad-help">Click a task to open a quick view; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. Gate approval stays available on the detail page and on the trusted terminal (<code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close.</p>
+    <p class="ad-help">Click a task to open it in the side panel; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. Gate approval stays available on the detail page and on the trusted terminal (<code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close panel or dialog.</p>
   </div>
 </main>
 ${renderModals()}
@@ -911,7 +948,7 @@ ${sharedScript}
 };
 
 /* ---------------------------------------------------------------------------
- * Task detail (page and modal fragment share the same body).
+ * Task detail (page and side-panel fragment share the same body).
  * ------------------------------------------------------------------------- */
 
 /** The artifact a reviewer most likely needs at each gate opens by default. */
@@ -925,7 +962,7 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
   const task = loadTask(options.root, id, state);
   if (!task) {
     const body = `<p class="has-text-danger">Task not found: ${escapeHtml(id)}</p>`;
-    return fragment ? body : `${pageHead("Task not found")}${renderHeader(options.root)}<main class="section ad-main"><div class="container"><div class="ad-empty"><div class="ad-empty-icon" aria-hidden="true">🔍</div><h2>Task not found</h2><p><code>${escapeHtml(id)}</code> is not in the local canonical state.</p><a class="button" href="/">← Back to dashboard</a></div></div></main>${renderModals()}${sharedScript}</body></html>`;
+    return fragment ? body : `${pageHead("Task not found · Loop")}${renderHeader(options.root)}<main class="section ad-main"><div class="container is-fluid"><div class="ad-empty"><div class="ad-empty-icon" aria-hidden="true">🔍</div><h2>Task not found</h2><p><code>${escapeHtml(id)}</code> is not in the local canonical state.</p><a class="button" href="/">← Back to dashboard</a></div></div></main>${renderModals()}${sharedScript}</body></html>`;
   }
 
   const waiting = task.status === "blocked_on_user" && task.gate !== "none";
@@ -976,15 +1013,6 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
     return `<details class="ad-artifact"${name === openArtifact ? " open" : ""}><summary>${escapeHtml(name)}<code>${escapeHtml(artifactPath)}</code></summary>${content}</details>`;
   }).join("\n");
 
-  let loopStatus: string;
-  try {
-    loopStatus = `<div class="ad-kv">${jsonToHtml(await loopStatusJson(options.root, id))}</div>`;
-  } catch (error) {
-    const message = childError(error);
-    const summary = message.split("\n").map((line) => line.trim()).find((line) => /error/i.test(line)) ?? message.split("\n")[0] ?? "";
-    loopStatus = `<p class="help is-danger m-0">Loop status unavailable: ${escapeHtml(summary.slice(0, 240))}</p>${message.length > summary.length ? `<details class="mt-2 is-size-7"><summary class="has-text-grey">details</summary><pre class="mt-2" style="white-space:pre-wrap">${escapeHtml(message)}</pre></details>` : ""}`;
-  }
-
   const table = (head: string[], rows: string[], empty: string): string => rows.length
     ? `<table class="table ad-table is-fullwidth"><thead><tr>${head.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("\n")}</tbody></table>`
     : `<p class="ad-empty-line">${escapeHtml(empty)}</p>`;
@@ -1027,6 +1055,7 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
 
   const body = `<h1 class="ad-page-title">${escapeHtml(task.title)}</h1>
 <div class="ad-page-sub"><code>${escapeHtml(task.id)}</code>${statusPill(task.status, Boolean(task.handoff))}${gatePill(task.gate)}${riskPill(task.risk)}</div>
+${phaseStepper(task.phase, task.gate, task.status)}
 <div class="columns is-desktop">
   <div class="column is-8-desktop">
     ${handoff}
@@ -1040,9 +1069,7 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
   </div>
   <aside class="column is-4-desktop">
     <div class="ad-sticky">
-      ${panel("Progress", phaseTimeline(task.phase, task.gate, task.status))}
       ${panel("Details", meta)}
-      ${panel("Loop status", loopStatus)}
     </div>
   </aside>
 </div>`;
@@ -1126,10 +1153,10 @@ document.getElementById("approve-button")?.addEventListener("click", (event) => 
 })();
 </script>`;
 
-  return `${pageHead(`${task.title} · ${id}`)}
+  return `${pageHead(`${task.title} · Loop`)}
 ${renderHeader(options.root)}
 <main class="section ad-main">
-  <div class="container">
+  <div class="container is-fluid">
     <a class="ad-breadcrumb" href="/">← Dashboard</a>
     ${body}
   </div>

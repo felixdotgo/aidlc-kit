@@ -245,27 +245,29 @@ capped at 10 minutes) and `loop_stopped`. Every event of a run carries its `task
 
 ```sh
 # via npx:
-npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit ui --root .
+npx --package @felixdotgo/aidlc-kit@0.1.1 aidlc-kit ui .
 
 # or from source:
-node dist/src/cli.js ui --root .
+node dist/src/cli.js ui .
 ```
 
-Binds `127.0.0.1:4173` by default and prints a **one-time approve token** to the terminal.
+The dashboard is branded **Loop**. It binds `127.0.0.1:4173` by default and prints a **one-time approve token** to the terminal.
 Open the dashboard and paste that token into **⚙ Settings → Save** before using any
 mutating action (new task, resume, gate approve); it is stored in `localStorage`. The header
 shows whether the daemon is running. The page follows the system light/dark preference
-automatically (Bulma plus the `assets/ui/dashboard.css` theme layer); results of actions
-appear as toasts in the bottom-right corner. Shortcuts: <kbd>N</kbd> new task, <kbd>/</kbd>
-search, <kbd>Esc</kbd> close a dialog.
+automatically (Bulma plus the flat `assets/ui/dashboard.css` theme layer) and uses the full
+window width; results of actions appear as toasts in the bottom-right corner. Shortcuts:
+<kbd>N</kbd> new task, <kbd>/</kbd> search, <kbd>Esc</kbd> close the side panel or a dialog.
 
 Where things live (this is the #1 source of confusion):
 
 - **Gate approval button is only on the full task detail page** (`/tasks/<task-id>`), **not
   on the dashboard**. Tasks waiting at a gate are listed under **Needs your review** at the
   top of the dashboard; **Open review →** jumps to their detail page. Otherwise click a task to
-  open the quick view and press **Open full page ↗**, or ctrl/cmd-click / middle-click the task
-  link. On the detail page the **Approve · `<review step>`** panel (approval note + green
+  open it in the **side panel** (it slides in from the right and adds `?task=<task-id>` to the
+  URL, so refresh or a shared link reopens it and Back closes it) and press **Open full page ↗**,
+  or ctrl/cmd-click / middle-click the task link. Both the side panel and the detail page show a
+  horizontal **progress** stepper (clarify → plan → build → wrap → done) above the artifacts. On the detail page the **Approve · `<review step>`** panel (approval note + green
   **✓ Approve** button) appears only while the task is `blocked_on_user`. If the gate's
   structural checks no longer pass, the page lists the failing checks instead of the gate view.
 - **New task → Create task** runs loop intake (§5.2) and starts the daemon only if none is
