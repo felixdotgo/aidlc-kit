@@ -101,6 +101,16 @@ kbd, .ad-kbd {
 .button.ad-soft:hover { filter: brightness(0.96); }
 @media (prefers-color-scheme: dark) { .button.ad-soft:hover { filter: brightness(1.2); } }
 
+/* ---------- Live regions (morphed in place; never a layout box) ---------- */
+.ad-live { display: contents; }
+#live-status { animation: ad-pulse 1.8s ease-in-out infinite; }
+a.ad-pill:hover { filter: brightness(0.96); }
+
+/* ---------- Kanban / list view (html[data-view] is set before first paint) ---------- */
+#list-view { display: none; }
+html[data-view="list"] #list-view { display: block; }
+html[data-view="list"] #kanban-view { display: none; }
+
 /* ---------- Header notifications (tasks waiting at a gate) ---------- */
 .ad-notify { position: relative; }
 .ad-notify-toggle { position: relative; }
@@ -130,6 +140,11 @@ kbd, .ad-kbd {
 .ad-notify-time { margin-left: auto; font-size: 0.72rem; color: var(--ad-muted); }
 .ad-notify-title { font-weight: 600; color: var(--bulma-text-strong); font-size: 0.875rem; overflow-wrap: anywhere; }
 .ad-notify-id { font-size: 0.72rem; color: var(--ad-muted); background: transparent; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-notify-more {
+  display: block; width: 100%; padding: 0.6rem 0.9rem; border: 0; border-top: 1px solid var(--bulma-border-weak);
+  background: transparent; color: var(--bulma-link); font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer; text-align: center;
+}
+.ad-notify-more:hover { background: var(--ad-subtle); }
 .ad-notify-empty { padding: 1rem 0.9rem; font-size: 0.85rem; color: var(--ad-muted); }
 
 /* ---------- Toolbar ---------- */
@@ -409,3 +424,15 @@ kbd, .ad-kbd {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- Collapsed kanban column ---------- */
+.ad-column-more {
+  display: block; width: 100%; margin-top: 0.25rem; padding: 0.45rem; border: 1px dashed var(--bulma-border); border-radius: var(--ad-radius);
+  background: transparent; color: var(--ad-muted); font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer;
+}
+.ad-column-more:hover { color: var(--bulma-link); border-color: var(--bulma-link); }
+
+/* ---------- Side-panel call to action (open the full page for gate actions) ---------- */
+.ad-drawer-cta { margin: 0 0 1rem; align-items: center; flex-wrap: wrap; }
+.ad-drawer-cta .button { margin-left: auto; }
+.ad-callout.is-danger { background: var(--bulma-danger-soft); color: var(--bulma-danger-bold); }

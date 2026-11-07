@@ -72,7 +72,7 @@ test("dashboard keeps archived done tasks after a reload, alongside active tasks
     assert.match(html, /data-task-id="task-a"|\/tasks\/task-a/);
     assert.match(html, /Finished task/);
     assert.match(html, /data-status="done"/);
-    assert.match(html, /data-phase-column="done">\s*<header[^>]*>.*?data-column-count>1</s);
+    assert.match(html, /data-phase-column="done"[^>]*>\s*<header[^>]*>.*?data-column-count>1</s);
   } finally {
     await fixture.close();
   }
@@ -245,9 +245,9 @@ test("gate detail page offers feedback before approve, and approve only opens a 
     assert.match(detail, /id="approve-confirm"[^>]*>✓ Confirm approve</);
     assert.match(detail, /openModal\("approve-modal"\)/, "the approve button opens the dialog");
     // Only the dialog's confirm handler posts the approval.
-    const confirmHandler = detail.slice(detail.indexOf('getElementById("approve-confirm")'));
-    assert.match(confirmHandler, /post\("\/api\/gate\/approve"/);
-    const approveHandler = detail.slice(detail.indexOf('getElementById("approve-button")'), detail.indexOf('getElementById("approve-confirm")'));
+    const confirmHandler = detail.slice(detail.indexOf("const onApproveConfirm"), detail.indexOf('document.addEventListener("click"', detail.indexOf("const onApproveConfirm")));
+    assert.match(confirmHandler, /post\("\/api\/gate\/approve", \{ taskId: detailTask\(\), gate, source/);
+    const approveHandler = detail.slice(detail.indexOf("const onApproveOpen"), detail.indexOf("const onApproveConfirm"));
     assert.doesNotMatch(approveHandler, /post\("\/api\/gate\/approve"/);
     assert.doesNotMatch(detail, /feedback pending/);
 
@@ -359,7 +359,8 @@ test("dashboard renders kanban as the default view with phase columns, modals, a
     const containers = html.match(/class="container[^"]*"/g) ?? [];
     assert.ok(containers.length >= 2);
     assert.ok(containers.every((value) => value.includes("is-fluid")), "every dashboard container is full-width");
-    assert.match(html, /id="list-view" style="display:none"/);
+    assert.match(html, /<div id="list-view">/, "the list view is hidden by CSS (html[data-view]), not inline style that live updates would reset");
+    assert.match(html, /document\.documentElement\.setAttribute\("data-view"/, "the saved view applies before first paint");
     assert.match(html, /New task/);
     assert.match(html, /Settings/);
     assert.match(html, />clarify</);
@@ -727,6 +728,184 @@ test("dashboard drops the stat cards and lists gate reviews as header notificati
   }
 });
 
+/* ---- Reactive live regions ---- */
+
+const liveHashes = (html: string, names: string[]): string =>
+  names.map((name) => `${name}:${new RegExp(`data-live="${name}" data-live-hash="([^"]*)"`).exec(html)?.[1] ?? "missing"}`).join(",");
+
+test("live endpoint returns only changed regions and reflects daemon-side state changes without a reload", async () => {
+  const { loadState, saveState } = await import("../../src/state.js");
+  const fixture = await startFixture(makeTask({ status: "active", phase: "plan", gate: "G1_review" }), true);
+  try {
+    const home = await (await fetch(`${fixture.base}/`)).text();
+    assert.doesNotMatch(home, /location\.reload/, "actions refresh regions in place, never the whole page");
+    const known = liveHashes(home, ["notify", "daemon", "board"]);
+    assert.doesNotMatch(known, /missing/, "every dashboard region carries a hash");
+    const live = async (query: string): Promise<any> => (await fetch(`${fixture.base}/api/live?${query}`)).json();
+
+    const quiet = await live(`known=${encodeURIComponent(known)}`);
+    assert.deepEqual(quiet.regions, {}, "nothing changed, nothing sent");
+    assert.equal(quiet.reviews.count, 0);
+    assert.deepEqual((await live("known=bogus:x")).regions, {}, "unknown regions are ignored");
+
+    // The daemon moves the task to its gate: the bell and the board change, the daemon pill does not.
+    const state = loadState(fixture.root);
+    state.tasks["task-a"]!.status = "blocked_on_user";
+    saveState(fixture.root, state);
+    const changed = await live(`known=${encodeURIComponent(known)}`);
+    assert.deepEqual(Object.keys(changed.regions).sort(), ["board", "notify"]);
+    assert.match(changed.regions.notify.html, /data-review-item="task-a"/);
+    assert.match(changed.regions.board.html, /data-status="blocked_on_user"/);
+    assert.deepEqual(changed.reviews, { count: 1, items: [{ id: "task-a", title: "Task A", gate: "Approve plan" }] });
+
+    // Detail page: the region re-renders with the gate controls; the live log is client-owned.
+    const detail = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    assert.match(detail, /<body data-task="task-a">/);
+    assert.match(detail, /id="live-log" data-live-ignore/);
+    assert.match(detail, /id="approve-modal"[^>]*data-live-preserve="class"/, "an open dialog survives a live update");
+    const detailKnown = liveHashes(detail, ["notify", "detail"]);
+    assert.deepEqual((await live(`task=task-a&known=${encodeURIComponent(detailKnown)}`)).regions, {});
+    const later = loadState(fixture.root);
+    later.tasks["task-a"]!.status = "active";
+    saveState(fixture.root, later);
+    const moved = await live(`task=task-a&known=${encodeURIComponent(detailKnown)}`);
+    assert.doesNotMatch(moved.regions.detail.html, /id="feedback-panel"|id="approve-panel"/, "gate controls disappear once the task leaves the gate");
+    assert.match(moved.regions.notify.html, /class="ad-notify-empty"/);
+
+    // Side panel: rendered only when the client says it is open, echoing which task it is for.
+    const drawer = await live("drawer=task-a&known=drawer:");
+    assert.equal(drawer.drawer, "task-a");
+    assert.match(drawer.regions.drawer.html, /<h1 class="ad-page-title">Task A<\/h1>/);
+    assert.doesNotMatch(drawer.regions.drawer.html, /id="live-log"|id="approve-modal"/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("notifications show a fixed page of reviews with load more", async () => {
+  const { loadState, saveState } = await import("../../src/state.js");
+  const fixture = await startFixture(makeTask({ status: "blocked_on_user", updatedAt: "2026-11-01T00:00:00.000Z" }));
+  try {
+    const state = loadState(fixture.root);
+    for (let index = 1; index <= 6; index += 1) {
+      const id = `task-r${index}`;
+      state.tasks[id] = makeTask({ id, title: `Review ${index}`, status: "blocked_on_user", artifacts: {}, updatedAt: `2026-11-0${index + 1}T00:00:00.000Z` });
+    }
+    saveState(fixture.root, state);
+    const html = await (await fetch(`${fixture.base}/`)).text();
+    const header = html.slice(0, html.indexOf("<main"));
+    assert.equal((header.match(/data-review-item=/g) ?? []).length, 5, "first page only");
+    assert.match(header, /data-review-item="task-r6"/, "newest first");
+    assert.doesNotMatch(header, /data-review-item="task-a"/);
+    assert.match(header, /data-notify-more>Load more <span class="has-text-grey">\(2 more\)<\/span>/);
+    assert.match(header, /data-review-count="7">7</);
+
+    const more = await (await fetch(`${fixture.base}/api/live?notify=10&known=notify:`)).json();
+    assert.equal((more.regions.notify.html.match(/data-review-item=/g) ?? []).length, 7);
+    assert.doesNotMatch(more.regions.notify.html, /data-notify-more/);
+    const clamped = await (await fetch(`${fixture.base}/api/live?notify=-3&known=notify:`)).json();
+    assert.equal((clamped.regions.notify.html.match(/data-review-item=/g) ?? []).length, 5, "invalid limits fall back to one page");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("daemon health keeps turn and poll errors open until resolved", async () => {
+  const { daemonHealth } = await import("../../src/task-ui.js");
+  const root = mkdtempSync(join(tmpdir(), "aidlc-ui-health-"));
+  try {
+    assert.deepEqual(daemonHealth(root), [], "no event log, no errors");
+    const dir = join(root, ".agents", "data", "loop");
+    mkdirSync(dir, { recursive: true });
+    const log = join(dir, "ui-events.jsonl");
+    const write = (...events: object[]): void => appendFileSync(log, events.map((event) => `${JSON.stringify({ at: "2026-11-07T00:00:00.000Z", ...event })}\n`).join(""));
+    write(
+      { type: "daemon_turn_error", taskId: "task-old", message: "before restart" },
+      { type: "daemon_start", pid: 1 },
+      { type: "daemon_turn_error", taskId: "task-a", message: "agent crashed", failures: 2, retryInMs: 30000 },
+      { type: "daemon_turn_error", taskId: "task-b", message: "transient" },
+      { type: "daemon_turn", taskId: "task-b", status: "progress" },
+      { type: "daemon_turn_error", taskId: "task-c", message: "no longer actionable" },
+      { type: "daemon_poll", actionable: ["task-a"] },
+      { type: "daemon_poll_error", message: "service unreachable" },
+    );
+    const errors = daemonHealth(root);
+    assert.deepEqual(errors.map((error) => error.taskId ?? "poll"), ["poll", "task-a"]);
+    assert.equal(errors[1]?.retryInMs, 30000);
+    write({ type: "daemon_poll", actionable: ["task-a"] });
+    assert.deepEqual(daemonHealth(root).map((error) => error.taskId), ["task-a"], "a successful poll clears the poll error");
+    write({ type: "daemon_start", pid: 2 });
+    assert.deepEqual(daemonHealth(root), [], "a restarted daemon starts clean");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("header daemon pill shows unresolved errors while the daemon runs", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const dir = join(fixture.root, ".agents", "data", "loop");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "daemon.lock"), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+    assert.match(await (await fetch(`${fixture.base}/`)).text(), /data-daemon="running"/);
+    appendFileSync(join(dir, "ui-events.jsonl"), `${JSON.stringify({ type: "daemon_turn_error", taskId: "task-a", message: "agent <crashed>", retryInMs: 4000 })}\n`);
+    const html = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(html, /<a class="ad-pill is-warning is-live" data-daemon="error" href="\/tasks\/task-a" title="daemon running · pid \d+\ntask-a: agent &lt;crashed&gt; \(retry in 4s\)">/);
+    assert.match(html, /daemon · 1 error</);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("side panel points at the full page when a gate or handoff needs the human", async () => {
+  const waiting = await startFixture(makeTask({ status: "blocked_on_user" }), true);
+  try {
+    const fragment = await (await fetch(`${waiting.base}/partial/tasks/task-a`)).text();
+    assert.match(fragment, /^<div class="ad-callout ad-drawer-cta"/, "the call to action leads the panel");
+    assert.match(fragment, /Waiting at <strong>Confirm requirements<\/strong>/);
+    assert.match(fragment, /<a class="button is-small is-warning" href="\/tasks\/task-a" data-review-cta>Open review →<\/a>/);
+  } finally {
+    await waiting.close();
+  }
+  const active = await startFixture(makeTask(), true);
+  try {
+    assert.doesNotMatch(await (await fetch(`${active.base}/partial/tasks/task-a`)).text(), /ad-drawer-cta/);
+  } finally {
+    await active.close();
+  }
+});
+
+test("approve refuses a gate the task has already moved past", async () => {
+  const fixture = await startFixture(makeTask({ status: "blocked_on_user" }), true);
+  try {
+    const response = await fetch(`${fixture.base}/api/gate/approve`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": fixture.token }, body: JSON.stringify({ taskId: "task-a", gate: "G1_review", source: "looked at the plan" }) });
+    assert.equal(response.status, 409);
+    assert.match(((await response.json()) as { error: string }).error, /now waits at Confirm requirements \(G0_confirm\), not G1_review/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("the done column collapses past its limit with a show-more control", async () => {
+  const { loadState, saveState } = await import("../../src/state.js");
+  const fixture = await startFixture(makeTask());
+  try {
+    const state = loadState(fixture.root);
+    for (let index = 1; index <= 10; index += 1) {
+      const id = `task-d${index}`;
+      state.tasks[id] = makeTask({ id, title: `Done ${index}`, phase: "done", gate: "none", status: "done", artifacts: {} });
+    }
+    saveState(fixture.root, state);
+    const html = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(html, /data-phase-column="done" data-collapse="8"/);
+    assert.match(html, /<button type="button" class="ad-column-more" data-column-more>Show 2 more<\/button>/);
+    assert.match(html, /data-key="card:task-d1"/, "cards are keyed so live updates morph them in place");
+    assert.equal((html.match(/<button[^>]*data-column-more/g) ?? []).length, 1, "only the done column collapses");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("dashboard escapes task data in card markup and search attributes", async () => {
   const fixture = await startFixture(makeTask({ title: "<img src=x onerror=alert(1)> \"quoted\"" }));
   try {
@@ -752,7 +931,7 @@ test("task detail renders a horizontal progress stepper before artifacts, no loo
     assert.ok((page.match(/class="container[^"]*"/g) ?? []).every((value) => value.includes("is-fluid")));
     assert.match(page, /waiting at Confirm requirements/);
     assert.match(page, /<h2>Details<\/h2>/);
-    assert.match(page, /<details class="ad-artifact" open><summary>intent/, "the gate's artifact opens by default");
+    assert.match(page, /<details class="ad-artifact" data-key="artifact:intent" open><summary>intent/, "the gate's artifact opens by default");
   } finally {
     await fixture.close();
   }

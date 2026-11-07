@@ -246,6 +246,57 @@ export const daemonStatus = (root: string): DaemonStatus => {
   }
 };
 
+export interface DaemonError { taskId?: string; message: string; at?: string; failures?: number; retryInMs?: number }
+/** How much of the event-log tail the daemon health check scans. */
+const HEALTH_TAIL_BYTES = 64 * 1024;
+
+/**
+ * Unresolved daemon errors from the tail of the event-log sidecar: a task's
+ * `daemon_turn_error` stays open until a later `daemon_turn` for that task, a
+ * poll that no longer lists it as actionable, or a daemon restart; a
+ * `daemon_poll_error` stays open until the next successful poll.
+ */
+export const daemonHealth = (root: string): DaemonError[] => {
+  const path = eventsLogPath(root);
+  let text = "";
+  try {
+    const size = statSync(path).size;
+    const start = Math.max(0, size - HEALTH_TAIL_BYTES);
+    text = readRange(path, start, size).toString("utf8");
+    if (start > 0) text = text.slice(text.indexOf("\n") + 1);
+  } catch { return []; }
+  const turnErrors = new Map<string, DaemonError>();
+  let pollError: DaemonError | null = null;
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    let event: Record<string, unknown>;
+    try { event = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+    if (!event || typeof event !== "object") continue;
+    const taskId = typeof event.taskId === "string" ? event.taskId : undefined;
+    const record = (): DaemonError => ({
+      ...(taskId ? { taskId } : {}),
+      message: typeof event.message === "string" ? event.message : "error",
+      ...(typeof event.at === "string" ? { at: event.at } : {}),
+      ...(typeof event.failures === "number" ? { failures: event.failures } : {}),
+      ...(typeof event.retryInMs === "number" ? { retryInMs: event.retryInMs } : {}),
+    });
+    switch (event.type) {
+      case "daemon_start": turnErrors.clear(); pollError = null; break;
+      case "daemon_poll_error": pollError = record(); break;
+      case "daemon_poll": {
+        pollError = null;
+        const actionable = Array.isArray(event.actionable) ? event.actionable : [];
+        for (const id of [...turnErrors.keys()]) if (!actionable.includes(id)) turnErrors.delete(id);
+        break;
+      }
+      case "daemon_turn": if (taskId) turnErrors.delete(taskId); break;
+      case "daemon_turn_error": if (taskId) turnErrors.set(taskId, record()); break;
+      default: break;
+    }
+  }
+  return [...(pollError ? [pollError] : []), ...turnErrors.values()];
+};
+
 /** Starts the local daemon unless a live one already holds the singleton lock.
  * The daemon's stderr goes to `daemon.log` so start-up failures are visible. */
 const ensureDaemon = (root: string): { pid: number | null; started: boolean } => {
@@ -310,20 +361,38 @@ const pendingFeedback = (task: Pick<TaskState, "evidence">): Array<{ gate: strin
   return pending;
 };
 
+/* Fleet reads spawn `loop-entry.mjs`; live polling (every ~1.5s per open tab)
+ * shares one in-flight or recent result per key instead of spawning per request. */
+const fleetReads = new Map<string, { at: number; value: Promise<unknown> }>();
+const sharedFleetRead = <T>(key: string, maxAgeMs: number, read: () => Promise<T>): Promise<T> => {
+  if (maxAgeMs <= 0) return read();
+  const now = Date.now();
+  const cached = fleetReads.get(key);
+  if (cached && now - cached.at < maxAgeMs) return cached.value as Promise<T>;
+  const value = read();
+  fleetReads.set(key, { at: now, value });
+  value.catch(() => { if (fleetReads.get(key)?.value === value) fleetReads.delete(key); });
+  return value;
+};
+/** How stale a fleet read on the live-update path may be. Mutations always read fresh. */
+const LIVE_FLEET_MAX_AGE_MS = 1000;
+
 /* Authority-neutral read model: local reads canonical state in-process; fleet asks
  * `loop-entry.mjs` (the only place that speaks to the coordination service). */
-const readUiState = async (options: UiOptions): Promise<WorkflowState> => {
+const readUiState = async (options: UiOptions, maxAgeMs = 0): Promise<WorkflowState> => {
   if (uiMode(options) === "local") return loadState(options.root);
-  const parsed = JSON.parse(await runNode(options.root, loopArgs(options.root, "tasks"), { timeout: 15000 })) as { tasks?: TaskState[] };
-  if (!Array.isArray(parsed.tasks)) throw new Error("Fleet task list is unavailable");
-  return { schemaVersion: 4, tasks: Object.fromEntries(parsed.tasks.map((task) => [task.id, task])), archive: {} } as WorkflowState;
+  return sharedFleetRead(`${options.root}\0tasks`, maxAgeMs, async () => {
+    const parsed = JSON.parse(await runNode(options.root, loopArgs(options.root, "tasks"), { timeout: 15000 })) as { tasks?: TaskState[] };
+    if (!Array.isArray(parsed.tasks)) throw new Error("Fleet task list is unavailable");
+    return { schemaVersion: 4, tasks: Object.fromEntries(parsed.tasks.map((task) => [task.id, task])), archive: {} } as WorkflowState;
+  });
 };
 const readUiTask = (options: UiOptions, id: string, state: WorkflowState): TaskState | undefined =>
   uiMode(options) === "local" ? loadTask(options.root, id, state) : state.tasks[id];
 
 interface FleetGate { ok?: boolean; gate?: string; status?: string; checkpoint?: { snapshotId?: string; status?: string } | null; snapshot?: { id?: string; reviewText?: string; integrationCommit?: string | null } | null }
-const fleetGate = async (options: UiOptions, id: string): Promise<FleetGate> =>
-  JSON.parse(await runNode(options.root, loopArgs(options.root, "gate", id), { timeout: 15000 })) as FleetGate;
+const fleetGate = (options: UiOptions, id: string, maxAgeMs = 0): Promise<FleetGate> =>
+  sharedFleetRead(`${options.root}\0gate\0${id}`, maxAgeMs, async () => JSON.parse(await runNode(options.root, loopArgs(options.root, "gate", id), { timeout: 15000 })) as FleetGate);
 
 const childError = (error: unknown): string => {
   if (error && typeof error === "object" && "stderr" in error) {
@@ -334,13 +403,13 @@ const childError = (error: unknown): string => {
   return error instanceof Error ? error.message : String(error);
 };
 
-const taskGatePayload = async (options: UiOptions, id: string): Promise<{ ok: boolean; error?: string; gate?: string; view?: unknown; snapshot?: FleetGate["snapshot"] }> => {
-  const state = await readUiState(options);
+const taskGatePayload = async (options: UiOptions, id: string, known?: WorkflowState, maxAgeMs = 0): Promise<{ ok: boolean; error?: string; gate?: string; view?: unknown; snapshot?: FleetGate["snapshot"] }> => {
+  const state = known ?? await readUiState(options, maxAgeMs);
   const task = readUiTask(options, id, state);
   if (!task) return { ok: false, error: `Task not found: ${id}` };
   if (task.status !== "blocked_on_user" || task.gate === "none") return { ok: false, error: "Task is not waiting at a human gate" };
   if (uiMode(options) === "fleet") {
-    const gate = await fleetGate(options, id);
+    const gate = await fleetGate(options, id, maxAgeMs);
     return gate.snapshot ? { ok: true, gate: task.gate, snapshot: gate.snapshot } : { ok: false, error: "No current review snapshot for this gate yet" };
   }
   const diagnostics = checkGate(options.root, state, id, task.gate);
@@ -360,7 +429,9 @@ const artifactPayload = (root: string, id: string, name: string, task: TaskState
   }
 };
 
-const pageHead = (title: string): string => `<!doctype html>
+/** `task` marks a task detail page: live updates refresh that task's regions. The
+ * inline head script applies the saved kanban/list view before first paint. */
+const pageHead = (title: string, task = ""): string => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -369,8 +440,22 @@ const pageHead = (title: string): string => `<!doctype html>
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="/assets/bulma.css">
 <link rel="stylesheet" href="/assets/dashboard.css">
+<script>try { document.documentElement.setAttribute("data-view", localStorage.getItem("aidlc-view") === "list" ? "list" : "kanban"); } catch (error) { /* storage disabled */ }</script>
 </head>
-<body>`;
+<body${task ? ` data-task="${escapeHtml(task)}"` : ""}>`;
+
+/* ---------------------------------------------------------------------------
+ * Live regions: server-rendered fragments the client polls and morphs in place.
+ * Each region carries a content hash; `/api/live` returns only regions whose
+ * hash differs from the one the client already shows.
+ * ------------------------------------------------------------------------- */
+
+/** Region names `/api/live` can render; anything else in `known` is ignored. */
+const LIVE_REGIONS = ["notify", "daemon", "board", "detail", "drawer"] as const;
+type LiveRegion = (typeof LIVE_REGIONS)[number];
+const regionHash = (html: string): string => createHash("sha1").update(html).digest("base64url").slice(0, 16);
+/** Wrapper is `display: contents`, so it never affects layout (e.g. header flex items). */
+const liveRegion = (name: LiveRegion, html: string): string => `<div class="ad-live" data-live="${name}" data-live-hash="${regionHash(html)}">${html}</div>`;
 
 /* ---------------------------------------------------------------------------
  * Markdown renderer (minimal, escaping-first, no runtime dependency).
@@ -585,7 +670,7 @@ const renderGateViewHtml = (view: unknown): string => {
   const diagnostics = v.diagnostics ?? [];
   const levelTone = (level?: string): string => level === "ERROR" ? "is-danger" : level === "WARN" ? "is-warning" : "is-info";
   const cell = (label: string, value: string): string => `<div class="ad-gate-cell"><small>${escapeHtml(label)}</small><span>${value}</span></div>`;
-  return `<section class="ad-panel is-warning">
+  return `<section class="ad-panel is-warning" data-key="gate-view">
     <header class="ad-panel-head"><span aria-hidden="true">${escapeHtml(String(v.icon ?? ""))}</span><h2>${escapeHtml(String(v.title ?? ""))}</h2><span class="ad-pill is-warning ad-panel-tools" title="gate">${escapeHtml(String(v.gate ?? ""))}</span></header>
     <div class="ad-panel-body">
       <div class="ad-gate-grid">
@@ -607,7 +692,8 @@ const renderGateViewHtml = (view: unknown): string => {
 
 /* ---------------------------------------------------------------------------
  * Client script shared across dashboard and detail page.
- * All dynamic text is written with textContent; never innerHTML of user data.
+ * Client-built text (toasts, log lines) uses textContent. HTML only ever comes
+ * from the server's own escaping renderers (live regions, side-panel fragment).
  * ------------------------------------------------------------------------- */
 
 const sharedScript = `<script>
@@ -619,7 +705,8 @@ const post = async (url, body) => {
   try { parsed = await response.json(); } catch (error) { parsed = { error: "Unexpected response (" + response.status + ")" }; }
   return { status: response.status, body: parsed };
 };
-const toast = (message, kind = "info", detail = "") => {
+// Toasts; an optional same-origin href turns the message into a link.
+const toast = (message, kind = "info", detail = "", href = "") => {
   const stack = document.getElementById("toasts");
   if (!stack) return;
   const icons = { success: "✓", danger: "!", warning: "!", info: "i" };
@@ -631,7 +718,8 @@ const toast = (message, kind = "info", detail = "") => {
   icon.textContent = icons[kind] || "i";
   const body = document.createElement("div");
   body.className = "ad-toast-body";
-  body.textContent = message;
+  if (href && href.startsWith("/")) { const link = document.createElement("a"); link.href = href; link.textContent = message; body.appendChild(link); }
+  else body.textContent = message;
   if (detail) { const small = document.createElement("small"); small.textContent = detail; body.appendChild(small); }
   const close = document.createElement("button");
   close.className = "ad-toast-close";
@@ -641,7 +729,7 @@ const toast = (message, kind = "info", detail = "") => {
   close.addEventListener("click", dismiss);
   item.append(icon, body, close);
   stack.appendChild(item);
-  setTimeout(dismiss, kind === "danger" ? 9000 : 4500);
+  setTimeout(dismiss, kind === "danger" ? 9000 : href ? 8000 : 4500);
 };
 const failureToast = (res, fallback) => {
   const message = (res.body && res.body.error) || fallback;
@@ -663,9 +751,143 @@ const openModal = (id) => {
 };
 const closeModal = (id) => { const el = document.getElementById(id); if (el) el.classList.remove("is-active"); if (!document.querySelector(".modal.is-active")) document.documentElement.classList.remove("is-clipped"); };
 const closeAllModals = () => { document.querySelectorAll(".modal").forEach((m) => m.classList.remove("is-active")); document.documentElement.classList.remove("is-clipped"); };
+
+/* ---- Reactive regions -------------------------------------------------------
+ * The server renders each region ([data-live]) to HTML; the client polls
+ * /api/live with the hash it shows per region, gets back only changed regions,
+ * and morphs them into the DOM in place (keyed by id / data-key) instead of
+ * reloading the page. Morphing keeps focus, typed input, open <details>, and
+ * client state named in data-live-preserve; [data-live-ignore] subtrees (the
+ * live log) are never touched. Hooks re-apply view state (filters, collapsed
+ * columns) after every update. */
+const LIVE_INTERVAL_MS = 1500;
+const NOTIFY_PAGE = 5;
+const live = { notify: NOTIFY_PAGE, timer: 0, inflight: null, again: false, failures: 0, reviews: null, hooks: [] };
+const keyOf = (node) => node.nodeType === 1 ? (node.id || node.getAttribute("data-key") || "") : "";
+const sameNode = (a, b) => a.nodeType === b.nodeType && a.nodeName === b.nodeName && keyOf(a) === keyOf(b);
+const preservedAttrs = (el) => {
+  const names = (el.getAttribute("data-live-preserve") || "").split(/\\s+/).filter(Boolean);
+  if (el.tagName === "DETAILS") names.push("open");
+  return names;
+};
+const syncAttrs = (from, to) => {
+  const keep = preservedAttrs(from);
+  for (const { name } of [...from.attributes]) if (!keep.includes(name) && !to.hasAttribute(name)) from.removeAttribute(name);
+  for (const { name, value } of [...to.attributes]) if (!keep.includes(name) && from.getAttribute(name) !== value) from.setAttribute(name, value);
+};
+const morphNode = (from, to) => {
+  if (from.nodeType === 3 || from.nodeType === 8) { if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue; return; }
+  if (from.nodeType !== 1 || from.hasAttribute("data-live-ignore")) return;
+  syncAttrs(from, to);
+  // Form controls keep what the user typed or picked.
+  if (from.tagName === "INPUT" || from.tagName === "TEXTAREA" || from.tagName === "SELECT") return;
+  morphChildren(from, to);
+};
+const morphChildren = (from, to) => {
+  const keyed = new Map();
+  for (const child of from.children) { const key = keyOf(child); if (key) keyed.set(key, child); }
+  let cursor = from.firstChild;
+  for (const next of [...to.childNodes]) {
+    const key = keyOf(next);
+    let match = null;
+    if (key) { const found = keyed.get(key); if (found && sameNode(found, next)) { match = found; keyed.delete(key); } }
+    else if (cursor && !keyOf(cursor) && sameNode(cursor, next)) match = cursor;
+    if (match) {
+      if (match === cursor) cursor = cursor.nextSibling; else from.insertBefore(match, cursor);
+      morphNode(match, next);
+    } else from.insertBefore(next, cursor);
+  }
+  while (cursor) { const after = cursor.nextSibling; cursor.remove(); cursor = after; }
+};
+const applyRegion = (name, html, hash) => {
+  const el = document.querySelector("[data-live='" + name + "']");
+  if (!el) return false;
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  morphChildren(el, template.content);
+  el.setAttribute("data-live-hash", hash);
+  return true;
+};
+let drawerTask = "";
+const liveQuery = () => {
+  const params = new URLSearchParams();
+  const task = document.body.getAttribute("data-task");
+  if (task) params.set("task", task);
+  const known = [];
+  document.querySelectorAll("[data-live]").forEach((el) => {
+    const name = el.getAttribute("data-live");
+    if (name === "drawer" && !(drawerOpen() && drawerTask)) return;
+    known.push(name + ":" + (el.getAttribute("data-live-hash") || ""));
+  });
+  if (drawerOpen() && drawerTask) params.set("drawer", drawerTask);
+  params.set("notify", String(live.notify));
+  params.set("known", known.join(","));
+  return params.toString();
+};
+const setLiveStatus = (ok) => { const el = document.getElementById("live-status"); if (el) el.hidden = ok; };
+const baseTitle = document.title.replace(/^\\(\\d+\\) /, "");
+const onReviews = (reviews) => {
+  if (!reviews) return;
+  document.title = reviews.count ? "(" + reviews.count + ") " + baseTitle : baseTitle;
+  const ids = new Set(reviews.items.map((item) => item.id));
+  // The first poll only seeds the set: toast reviews that arrive while the page is open.
+  if (live.reviews) for (const item of reviews.items) {
+    if (!live.reviews.has(item.id)) toast("Review needed: " + item.title, "warning", item.gate + " · " + item.id, "/tasks/" + encodeURIComponent(item.id));
+  }
+  live.reviews = ids;
+};
+const liveRefresh = async () => {
+  if (live.inflight) { live.again = true; return live.inflight; }
+  live.inflight = (async () => {
+    try {
+      const requestedDrawer = drawerOpen() ? drawerTask : "";
+      const response = await fetch("/api/live?" + liveQuery(), { cache: "no-store" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const data = await response.json();
+      const changed = [];
+      for (const [name, region] of Object.entries(data.regions || {})) {
+        // A drawer answer for a task the user has since switched away from is stale.
+        if (name === "drawer" && (!drawerOpen() || drawerTask !== requestedDrawer || data.drawer !== drawerTask)) continue;
+        if (applyRegion(name, region.html, region.hash)) changed.push(name);
+      }
+      if (changed.length) live.hooks.forEach((hook) => hook(changed));
+      onReviews(data.reviews);
+      live.failures = 0;
+      setLiveStatus(true);
+    } catch (error) {
+      live.failures += 1;
+      setLiveStatus(false);
+    } finally { live.inflight = null; }
+  })();
+  await live.inflight;
+  if (live.again) { live.again = false; await liveRefresh(); }
+};
+// Polls every 1.5s; backs off to 12s while the server is unreachable.
+const scheduleLive = () => {
+  clearTimeout(live.timer);
+  const delay = live.failures ? Math.min(12000, LIVE_INTERVAL_MS * 2 ** Math.min(live.failures, 3)) : LIVE_INTERVAL_MS;
+  live.timer = setTimeout(async () => { await liveRefresh(); scheduleLive(); }, delay);
+};
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { liveRefresh().then(scheduleLive); } });
+
+// Header notifications: the bell toggles a dropdown of tasks waiting at a gate;
+// each item is a plain link to the task detail page.
+const notifyToggle = () => document.getElementById("notify-toggle");
+const notifyOpen = () => { const panel = document.getElementById("notify-panel"); return !!panel && !panel.hidden; };
+const setNotify = (open, options = {}) => {
+  const button = notifyToggle();
+  const panel = document.getElementById("notify-panel");
+  if (!button || !panel) return;
+  panel.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  if (open) { const first = panel.querySelector("a[href]"); if (first && options.focus) first.focus(); }
+  else if (options.restore) button.focus();
+};
+
 // Task side panel (drawer): slides in from the right, mirrors ?task=<id> in the
 // URL so refresh/share reopens it and Back closes it. Only the newest fetch
-// may write the body when the user switches tasks quickly.
+// may write the body when the user switches tasks quickly; live updates then
+// morph it like any other region.
 let drawerRequest = 0;
 let drawerReturnFocus = null;
 const drawerEl = () => document.getElementById("task-drawer");
@@ -692,7 +914,9 @@ const openTaskDrawer = async (id, options = {}) => {
   }
   if (options.push !== false && drawerTaskFromUrl() !== id) history.pushState({ task: id }, "", "?task=" + encodeURIComponent(id));
   const request = ++drawerRequest;
-  if (body) body.innerHTML = "<p class='has-text-grey'>Loading…</p>";
+  const switching = drawerTask !== id;
+  drawerTask = id;
+  if (body && switching) { body.innerHTML = "<p class='has-text-grey'>Loading…</p>"; body.setAttribute("data-live-hash", ""); }
   let html;
   try {
     const response = await fetch("/partial/tasks/" + encodeURIComponent(id));
@@ -700,7 +924,11 @@ const openTaskDrawer = async (id, options = {}) => {
   } catch (error) {
     html = "<p class='has-text-danger'>Failed to load task detail.</p>";
   }
-  if (request === drawerRequest && body) { body.innerHTML = html; body.scrollTop = 0; }
+  if (request === drawerRequest && body) {
+    if (switching) { body.innerHTML = html; body.scrollTop = 0; }
+    else { const template = document.createElement("template"); template.innerHTML = html; morphChildren(body, template.content); }
+    body.setAttribute("data-live-hash", "");
+  }
 };
 const closeTaskDrawer = (options = {}) => {
   const el = drawerEl();
@@ -719,19 +947,6 @@ window.addEventListener("popstate", () => {
   const id = drawerTaskFromUrl();
   if (id) openTaskDrawer(id, { push: false }); else closeTaskDrawer({ push: false });
 });
-// Header notifications: the bell toggles a dropdown of tasks waiting at a gate;
-// each item is a plain link to the task detail page.
-const notifyToggle = () => document.getElementById("notify-toggle");
-const notifyOpen = () => { const panel = document.getElementById("notify-panel"); return !!panel && !panel.hidden; };
-const setNotify = (open, options = {}) => {
-  const button = notifyToggle();
-  const panel = document.getElementById("notify-panel");
-  if (!button || !panel) return;
-  panel.hidden = !open;
-  button.setAttribute("aria-expanded", String(open));
-  if (open) { const first = panel.querySelector("a[href]"); if (first && options.focus) first.focus(); }
-  else if (options.restore) button.focus();
-};
 const isTyping = (target) => !!target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 const REQUIREMENT_LIMIT = 8192;
 // Login link: \`aidlc-kit ui\` prints /#token=<token>. Store it and drop it from the address bar
@@ -742,18 +957,114 @@ const REQUIREMENT_LIMIT = 8192;
   try { setStoredToken(decodeURIComponent(match[1])); } catch (error) { /* malformed link */ }
   history.replaceState(history.state, "", location.pathname + location.search);
 })();
+
+/* ---- Dashboard view state (re-applied after every live update) ---- */
+const viewKey = "aidlc-view";
+const applyView = (view) => {
+  document.documentElement.setAttribute("data-view", view === "list" ? "list" : "kanban");
+  document.querySelectorAll("[data-view-toggle]").forEach((el) => {
+    const active = el.getAttribute("data-view-toggle") === view;
+    el.classList.toggle("is-active", active);
+    el.setAttribute("aria-pressed", String(active));
+  });
+};
+const currentView = () => (localStorage.getItem(viewKey) === "list" ? "list" : "kanban");
+const expandedColumns = new Set();
+// Client-side filtering over server-rendered cards and rows (no extra API calls).
+// Columns with data-collapse show that many cards unless expanded or filtering.
+const applyFilter = () => {
+  const search = document.getElementById("task-search");
+  const statusFilter = document.getElementById("filter-status");
+  const riskFilter = document.getElementById("filter-risk");
+  const resultCount = document.getElementById("result-count");
+  const terms = (search ? search.value : "").toLowerCase().split(/\\s+/).filter(Boolean);
+  const status = statusFilter ? statusFilter.value : "";
+  const risk = riskFilter ? riskFilter.value : "";
+  const filtered = !!(terms.length || status || risk);
+  const matches = (el) => (!status || el.getAttribute("data-status") === status) && (!risk || el.getAttribute("data-risk") === risk) && terms.every((term) => (el.getAttribute("data-search") || "").includes(term));
+  let visible = 0;
+  document.querySelectorAll("#kanban-view [data-task-item]").forEach((el) => { const show = matches(el); el.hidden = !show; if (show) visible += 1; });
+  document.querySelectorAll("#list-view [data-task-item]").forEach((el) => { el.hidden = !matches(el); });
+  document.querySelectorAll("[data-phase-column]").forEach((column) => {
+    const shown = [...column.querySelectorAll("[data-task-item]")].filter((el) => !el.hidden);
+    const limit = Number(column.getAttribute("data-collapse") || 0);
+    const expanded = expandedColumns.has(column.getAttribute("data-phase-column"));
+    const extra = limit && !filtered ? Math.max(0, shown.length - limit) : 0;
+    if (extra && !expanded) shown.slice(limit).forEach((el) => { el.hidden = true; });
+    const more = column.querySelector("[data-column-more]");
+    if (more) { more.hidden = extra === 0; more.textContent = expanded ? "Show less" : "Show " + extra + " more"; more.setAttribute("aria-expanded", String(expanded)); }
+    const badge = column.querySelector("[data-column-count]");
+    if (badge) badge.textContent = String(shown.length);
+    const empty = column.querySelector("[data-column-empty]");
+    if (empty) empty.hidden = shown.length > 0;
+  });
+  const total = document.querySelectorAll("#kanban-view [data-task-item]").length;
+  if (resultCount) resultCount.textContent = filtered ? visible + " of " + total + " tasks" : total + (total === 1 ? " task" : " tasks");
+  document.querySelectorAll("[data-no-match]").forEach((el) => el.classList.toggle("is-visible", filtered && visible === 0));
+};
+const clearFilters = () => {
+  ["task-search", "filter-status", "filter-risk"].forEach((id) => { const el = document.getElementById(id); if (el) el.value = ""; });
+  applyFilter();
+};
+live.hooks.push(() => { applyView(currentView()); applyFilter(); });
+
+/* ---- Delegated events: controls inside live regions are re-rendered, so no
+ * handler is bound to an individual element. ---- */
+document.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+  if (notifyOpen() && !target.closest("[data-notify]")) setNotify(false);
+  const bell = target.closest("#notify-toggle");
+  if (bell) { setNotify(!notifyOpen(), { focus: event.detail === 0 }); return; }
+  if (target.closest("[data-notify-more]")) {
+    live.notify += NOTIFY_PAGE;
+    liveRefresh();
+    return;
+  }
+  const opener = target.closest("[data-open]");
+  if (opener) { openModal(opener.getAttribute("data-open")); return; }
+  if (target.closest("[data-close]")) { closeAllModals(); return; }
+  if (target.closest("[data-drawer-close]")) { closeTaskDrawer(); return; }
+  const taskLink = target.closest("[data-task-link]");
+  if (taskLink) {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    openTaskDrawer(taskLink.getAttribute("data-task-link"));
+    return;
+  }
+  const viewToggle = target.closest("[data-view-toggle]");
+  if (viewToggle) { const view = viewToggle.getAttribute("data-view-toggle"); localStorage.setItem(viewKey, view); applyView(view); return; }
+  const columnMore = target.closest("[data-column-more]");
+  if (columnMore) {
+    const column = columnMore.closest("[data-phase-column]");
+    const name = column ? column.getAttribute("data-phase-column") : "";
+    if (expandedColumns.has(name)) expandedColumns.delete(name); else expandedColumns.add(name);
+    applyFilter();
+    return;
+  }
+  if (target.closest("#filter-clear")) { clearFilters(); return; }
+  const resume = target.closest("[data-resume]");
+  if (resume) {
+    event.preventDefault();
+    const taskId = resume.getAttribute("data-resume");
+    withLoading(resume, async () => {
+      const res = await post("/api/loop/resume", { taskId });
+      if (res.status >= 200 && res.status < 300) { toast("Resumed " + taskId, "success", "The daemon will pick it up on its next poll"); await liveRefresh(); }
+      else failureToast(res, "Could not resume " + taskId);
+    });
+  }
+});
+document.addEventListener("input", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (target && target.matches("#task-search, #filter-status, #filter-risk")) applyFilter();
+});
+
 document.addEventListener("DOMContentLoaded", () => {
   const tokenInput = document.getElementById("settings-token-input");
   if (tokenInput) tokenInput.value = storedToken();
   const tokenState = document.getElementById("settings-token-state");
   const renderTokenState = () => { if (tokenState) tokenState.textContent = storedToken() ? "Token saved in this browser" : "No token saved"; };
   renderTokenState();
-  document.querySelectorAll("[data-open]").forEach((el) => el.addEventListener("click", () => openModal(el.getAttribute("data-open"))));
-  document.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", () => closeAllModals()));
-  document.querySelectorAll("[data-drawer-close]").forEach((el) => el.addEventListener("click", () => closeTaskDrawer()));
-  const bell = notifyToggle();
-  if (bell) bell.addEventListener("click", (event) => { event.stopPropagation(); setNotify(!notifyOpen(), { focus: event.detail === 0 }); });
-  document.addEventListener("click", (event) => { if (notifyOpen() && !event.target.closest("[data-notify]")) setNotify(false); });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") { if (notifyOpen()) setNotify(false, { restore: true }); else if (document.querySelector(".modal.is-active")) closeAllModals(); else closeTaskDrawer(); return; }
     if (event.key === "Tab" && drawerOpen() && !document.querySelector(".modal.is-active")) {
@@ -794,77 +1105,18 @@ document.addEventListener("DOMContentLoaded", () => {
     const res = await post("/api/loop/start", { requirement: value });
     if (res.status >= 200 && res.status < 300) {
       const daemon = res.body.daemon || {};
-      toast("Task " + res.body.taskId + " created", "success", daemon.started ? "Started the loop daemon (pid " + daemon.pid + ")" : "Picked up by the running daemon");
+      toast("Task " + res.body.taskId + " created", "success", daemon.started ? "Started the loop daemon (pid " + daemon.pid + ")" : "Picked up by the running daemon", "/tasks/" + encodeURIComponent(res.body.taskId));
       closeAllModals();
-      setTimeout(() => location.reload(), 1200);
+      if (requirement) { requirement.value = ""; updateCounter(); }
+      await liveRefresh();
     } else failureToast(res, "Could not create the task");
   }));
 
-  document.querySelectorAll("[data-task-link]").forEach((link) => {
-    link.addEventListener("click", (event) => {
-      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-      event.preventDefault();
-      openTaskDrawer(link.getAttribute("data-task-link"));
-    });
-  });
   const initialTask = drawerTaskFromUrl();
   if (initialTask && drawerEl()) openTaskDrawer(initialTask, { push: false });
-
-  const viewKey = "aidlc-view";
-  const applyView = (view) => {
-    const kanban = document.getElementById("kanban-view");
-    const list = document.getElementById("list-view");
-    if (kanban) kanban.style.display = view === "kanban" ? "" : "none";
-    if (list) list.style.display = view === "list" ? "" : "none";
-    document.querySelectorAll("[data-view-toggle]").forEach((el) => {
-      const active = el.getAttribute("data-view-toggle") === view;
-      el.classList.toggle("is-active", active);
-      el.setAttribute("aria-pressed", String(active));
-    });
-  };
-  document.querySelectorAll("[data-view-toggle]").forEach((el) => el.addEventListener("click", () => { const v = el.getAttribute("data-view-toggle"); localStorage.setItem(viewKey, v); applyView(v); }));
-  applyView(localStorage.getItem(viewKey) || "kanban");
-
-  // Client-side filtering over server-rendered cards and rows (no extra API calls).
-  const search = document.getElementById("task-search");
-  const statusFilter = document.getElementById("filter-status");
-  const riskFilter = document.getElementById("filter-risk");
-  const resultCount = document.getElementById("result-count");
-  const applyFilter = () => {
-    const terms = (search ? search.value : "").toLowerCase().split(/\\s+/).filter(Boolean);
-    const status = statusFilter ? statusFilter.value : "";
-    const risk = riskFilter ? riskFilter.value : "";
-    const matches = (el) => (!status || el.getAttribute("data-status") === status) && (!risk || el.getAttribute("data-risk") === risk) && terms.every((term) => (el.getAttribute("data-search") || "").includes(term));
-    let visible = 0;
-    document.querySelectorAll("#kanban-view [data-task-item]").forEach((el) => { const show = matches(el); el.hidden = !show; if (show) visible += 1; });
-    document.querySelectorAll("#list-view [data-task-item]").forEach((el) => { el.hidden = !matches(el); });
-    document.querySelectorAll("[data-phase-column]").forEach((column) => {
-      const count = column.querySelectorAll("[data-task-item]:not([hidden])").length;
-      const badge = column.querySelector("[data-column-count]");
-      if (badge) badge.textContent = String(count);
-      const empty = column.querySelector("[data-column-empty]");
-      if (empty) empty.hidden = count > 0;
-    });
-    const total = document.querySelectorAll("#kanban-view [data-task-item]").length;
-    const filtered = terms.length || status || risk;
-    if (resultCount) resultCount.textContent = filtered ? visible + " of " + total + " tasks" : total + (total === 1 ? " task" : " tasks");
-    document.querySelectorAll("[data-no-match]").forEach((el) => el.classList.toggle("is-visible", !!filtered && visible === 0));
-  };
-  [search, statusFilter, riskFilter].forEach((el) => { if (el) el.addEventListener("input", applyFilter); });
-  const clearFilters = document.getElementById("filter-clear");
-  if (clearFilters) clearFilters.addEventListener("click", () => { if (search) search.value = ""; if (statusFilter) statusFilter.value = ""; if (riskFilter) riskFilter.value = ""; applyFilter(); });
-  if (search || statusFilter) applyFilter();
-});
-document.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-resume]");
-  if (!button) return;
-  event.preventDefault();
-  const taskId = button.getAttribute("data-resume");
-  withLoading(button, async () => {
-    const res = await post("/api/loop/resume", { taskId });
-    if (res.status >= 200 && res.status < 300) { toast("Resumed " + taskId, "success", "The daemon will pick it up on its next poll"); setTimeout(() => location.reload(), 1200); }
-    else failureToast(res, "Could not resume " + taskId);
-  });
+  applyView(currentView());
+  applyFilter();
+  liveRefresh().then(scheduleLive);
 });
 </script>`;
 
@@ -883,11 +1135,20 @@ const taskAction = (task: { id: string; status: string }, handedOff = false): st
   return "";
 };
 
+/** Daemon state for the header: running/stopped, plus unresolved turn or poll
+ * errors (from the event log) while it runs, so failures are not buried in logs. */
 const renderDaemonPill = (root: string): string => {
   const daemon = daemonStatus(root);
-  return daemon.running
-    ? `<span class="ad-pill is-success is-live" title="started ${escapeHtml(daemon.startedAt ?? "")}"><span class="ad-dot"></span>daemon running · pid ${daemon.pid}</span>`
-    : `<span class="ad-pill is-ghost" title="start it with: aidlc-kit loop start (or New task)"><span class="ad-dot"></span>daemon stopped</span>`;
+  if (!daemon.running) return `<span class="ad-pill is-ghost" data-daemon="stopped" title="start it with: aidlc-kit loop start (or New task)"><span class="ad-dot"></span>daemon stopped</span>`;
+  const errors = daemonHealth(root);
+  if (!errors.length) return `<span class="ad-pill is-success is-live" data-daemon="running" title="started ${escapeHtml(daemon.startedAt ?? "")}"><span class="ad-dot"></span>daemon running · pid ${daemon.pid}</span>`;
+  const describe = (error: DaemonError): string => `${error.taskId ? `${error.taskId}: ` : "poll: "}${error.message}${error.retryInMs ? ` (retry in ${Math.round(error.retryInMs / 1000)}s)` : ""}`;
+  const title = `daemon running · pid ${daemon.pid}\n${errors.map(describe).join("\n")}`;
+  const label = `<span class="ad-dot"></span>daemon · ${errors.length} error${errors.length === 1 ? "" : "s"}`;
+  const only = errors.length === 1 ? errors[0]?.taskId : undefined;
+  return only
+    ? `<a class="ad-pill is-warning is-live" data-daemon="error" href="/tasks/${encodeURIComponent(only)}" title="${escapeHtml(title)}">${label}</a>`
+    : `<span class="ad-pill is-warning is-live" data-daemon="error" title="${escapeHtml(title)}">${label}</span>`;
 };
 
 /** A task waiting at a human gate (not handed off): shown as a header notification. */
@@ -901,24 +1162,36 @@ const reviewQueue = (state: WorkflowState): ReviewItem[] =>
     .map((task) => ({ id: task.id, title: task.title, gate: task.gate, updatedAt: task.updatedAt, feedbackPending: pendingFeedback(task).length }))
     .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
 
+/** Notifications shown at first; "Load more" adds this many at a time. */
+export const NOTIFY_PAGE = 5;
+const NOTIFY_MAX = 100;
+const notifyLimit = (raw: string | null): number => {
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? Math.min(NOTIFY_MAX, Math.max(NOTIFY_PAGE, value)) : NOTIFY_PAGE;
+};
+
 /** Header bell: a count badge plus a dropdown whose items open the task detail
- * page (where gate feedback and approval live). */
-const renderNotifications = (reviews: ReviewItem[], currentTask = ""): string => {
+ * page (where gate feedback and approval live). Shows `limit` items and a
+ * "Load more" button for the rest. The panel's `hidden` and the toggle's
+ * `aria-expanded` are client state that live updates preserve. */
+const renderNotifications = (reviews: ReviewItem[], currentTask = "", limit = NOTIFY_PAGE): string => {
   const count = reviews.length;
+  const shown = reviews.slice(0, limit);
+  const remaining = count - shown.length;
   const label = count ? `${count} task${count === 1 ? "" : "s"} waiting for your review` : "Nothing waiting for your review";
   const items = count
-    ? `<ul class="ad-notify-list">${reviews.map((task) => `<li><a class="ad-notify-item" href="/tasks/${encodeURIComponent(task.id)}" data-review-item="${escapeHtml(task.id)}"${task.id === currentTask ? ' aria-current="page"' : ""}>
+    ? `<ul class="ad-notify-list">${shown.map((task) => `<li data-key="review:${escapeHtml(task.id)}"><a class="ad-notify-item" href="/tasks/${encodeURIComponent(task.id)}" data-review-item="${escapeHtml(task.id)}"${task.id === currentTask ? ' aria-current="page"' : ""}>
         <span class="ad-notify-row">${pill(gateLabel(task.gate), "is-warning", `gate: ${task.gate}`, false)}${task.feedbackPending ? feedbackPill(task.feedbackPending) : ""}<span class="ad-notify-time">${relativeTime(task.updatedAt)}</span></span>
         <span class="ad-notify-title">${escapeHtml(task.title)}</span>
         <code class="ad-notify-id">${escapeHtml(task.id)}</code>
-      </a></li>`).join("")}</ul>`
+      </a></li>`).join("")}</ul>${remaining > 0 ? `<button type="button" class="ad-notify-more" data-notify-more>Load more <span class="has-text-grey">(${remaining} more)</span></button>` : ""}`
     : '<p class="ad-notify-empty">Nothing waiting for your review.</p>';
   return `<div class="ad-notify" data-notify>
-      <button type="button" class="button is-small ad-notify-toggle${count ? " has-reviews" : ""}" id="notify-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="notify-panel" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
+      <button type="button" class="button is-small ad-notify-toggle${count ? " has-reviews" : ""}" id="notify-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="notify-panel" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}" data-live-preserve="aria-expanded">
         <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8a5 5 0 0 1 10 0c0 4 1.5 5.5 1.5 5.5h-13S5 12 5 8Z"/><path d="M8.5 16.5a1.6 1.6 0 0 0 3 0"/></svg>
         ${count ? `<span class="ad-notify-badge" data-review-count="${count}">${count}</span>` : ""}
       </button>
-      <div class="ad-notify-panel" id="notify-panel" role="region" aria-label="Needs your review" hidden>
+      <div class="ad-notify-panel" id="notify-panel" role="region" aria-label="Needs your review" hidden data-live-preserve="hidden">
         <header class="ad-notify-head"><strong>Needs your review</strong><span class="ad-count">${count}</span></header>
         ${items}
       </div>
@@ -929,9 +1202,10 @@ const renderHeader = (root: string, mode: UiAuthorityMode = "local", reviews: Re
   <div class="container is-fluid ad-header-inner">
     <a class="ad-brand" href="/" title="Loop · AI-DLC dashboard"><span class="ad-logo" aria-hidden="true">L</span>Loop</a>
     <span class="ad-pill ${mode === "fleet" ? "is-link" : "is-ghost"}" data-authority="${mode}" title="${mode === "fleet" ? "Canonical state lives in the coordination service" : "Canonical state lives in this checkout"}">authority · ${mode}</span>
-    ${renderDaemonPill(root)}
+    ${liveRegion("daemon", renderDaemonPill(root))}
+    <span id="live-status" class="ad-pill is-warning" role="status" title="Live updates paused: the dashboard server is unreachable; retrying" hidden><span class="ad-dot"></span>reconnecting…</span>
     <div class="ad-header-actions">
-      ${renderNotifications(reviews, currentTask)}
+      ${liveRegion("notify", renderNotifications(reviews, currentTask))}
       <button class="button is-small" data-open="settings-modal" title="Settings">⚙<span class="ad-hide-mobile ml-1">Settings</span></button>
       <button class="button is-small is-primary" data-open="new-task-modal">＋ New task<kbd class="ad-hide-mobile">N</kbd></button>
     </div>
@@ -943,12 +1217,12 @@ const searchText = (task: CardTask): string =>
   [task.id, task.title, task.phase, task.gate, gateLabel(task.gate), task.status, STATUS_META[task.status]?.label ?? "", task.risk, ...task.areas].join(" ").toLowerCase();
 
 const itemAttrs = (task: CardTask, handedOff: boolean): string =>
-  `data-task-item data-status="${escapeHtml(task.status)}" data-risk="${escapeHtml(task.risk)}"${handedOff ? ' data-handoff="true"' : ""} data-search="${escapeHtml(searchText(task))}"`;
+  `data-task-item data-task-id="${escapeHtml(task.id)}" data-status="${escapeHtml(task.status)}" data-risk="${escapeHtml(task.risk)}"${handedOff ? ' data-handoff="true"' : ""} data-search="${escapeHtml(searchText(task))}"`;
 
 const renderTaskCard = (task: CardTask, handedOff = false): string => {
   const href = `/tasks/${encodeURIComponent(task.id)}`;
   const attention = task.status === "blocked_on_user" && !handedOff;
-  return `<article class="ad-card${attention ? " is-attention" : ""}" ${itemAttrs(task, handedOff)}>
+  return `<article class="ad-card${attention ? " is-attention" : ""}" data-key="card:${escapeHtml(task.id)}" ${itemAttrs(task, handedOff)}>
     <div class="ad-card-top"><a class="ad-card-id" href="${href}" data-task-link="${escapeHtml(task.id)}" title="${escapeHtml(task.id)}">${escapeHtml(task.id)}</a>${statusPill(task.status, handedOff)}</div>
     <div class="ad-card-title"><a href="${href}" data-task-link="${escapeHtml(task.id)}">${escapeHtml(task.title)}</a></div>
     ${phaseSteps(task.phase)}
@@ -957,7 +1231,7 @@ const renderTaskCard = (task: CardTask, handedOff = false): string => {
   </article>`;
 };
 
-const renderListRow = (task: CardTask, handedOff: boolean): string => `<tr ${itemAttrs(task, handedOff)}>
+const renderListRow = (task: CardTask, handedOff: boolean): string => `<tr data-key="row:${escapeHtml(task.id)}" ${itemAttrs(task, handedOff)}>
   <td><a href="/tasks/${encodeURIComponent(task.id)}" data-task-link="${escapeHtml(task.id)}"><code>${escapeHtml(task.id)}</code></a></td>
   <td class="has-text-weight-semibold">${escapeHtml(task.title)}</td>
   <td><div class="is-size-7 mb-1">${escapeHtml(task.phase)}</div>${phaseSteps(task.phase)}</td>
@@ -1043,13 +1317,16 @@ const renderModals = (): string => `
       <a id="task-drawer-open" class="button is-small" href="#" target="_blank" rel="noopener">Open full page ↗</a>
       <button type="button" class="delete" aria-label="Close task panel" data-drawer-close></button>
     </header>
-    <div class="ad-drawer-body" id="task-drawer-body"><p class="has-text-grey">Loading…</p></div>
+    <div class="ad-drawer-body" id="task-drawer-body" data-live="drawer" data-live-hash=""><p class="has-text-grey">Loading…</p></div>
   </aside>
 </div>
 <div id="toasts" class="ad-toasts" aria-live="polite"></div>`;
 
-const renderDashboard = async (options: UiOptions): Promise<string> => {
-  const state = await readUiState(options);
+/** The done column shows this many cards until "Show more" (or a filter) reveals the rest. */
+export const DONE_COLUMN_LIMIT = 8;
+
+/** Toolbar, kanban, and list (or the empty state): the dashboard's `board` live region. */
+const renderBoard = (state: WorkflowState): string => {
   /* Terminal tasks (done/closed/superseded) are moved to the archive catalog on
    * save; list them too so they survive a reload. Active tasks keep priority
    * within the display limit; archived ones fill the remaining room. */
@@ -1063,40 +1340,46 @@ const renderDashboard = async (options: UiOptions): Promise<string> => {
   });
   const handedOff = new Set(Object.values(state.tasks).filter((task) => task.handoff).map((task) => task.id));
 
-  const kanban = PHASES.map((phase, index) => {
-    const tasks = items.filter((task) => task.phase === phase);
-    const cards = tasks.map((task) => renderTaskCard(task, handedOff.has(task.id))).join("\n");
-    return `<section class="ad-column" data-phase-column="${phase}">
-      <header class="ad-column-head"><span class="ad-step-index">${index + 1}</span><span class="ad-column-title">${escapeHtml(phase)}</span><span class="ad-count" data-column-count>${tasks.length}</span></header>
-      <div class="ad-column-body">${cards}<p class="ad-column-empty" data-column-empty${tasks.length ? " hidden" : ""}>No tasks</p></div>
-    </section>`;
-  }).join("\n");
-
-  const rows = items.map((task) => renderListRow(task, handedOff.has(task.id))).join("\n");
-
-  const board = items.length
-    ? `${renderToolbar()}
-    <div id="kanban-view"><div class="ad-board">${kanban}</div></div>
-    <div id="list-view" style="display:none">
-      <div class="ad-table-wrap"><table class="table ad-table is-fullwidth">
-        <thead><tr><th>id</th><th>title</th><th>phase</th><th>gate</th><th>status</th><th>risk</th><th>areas</th><th>updated</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>
-    </div>
-    <p class="ad-no-match" data-no-match>No tasks match the current filters. <button type="button" id="filter-clear" class="button is-small is-text">Clear filters</button></p>`
-    : `<div class="ad-empty">
+  if (!items.length) return `<div class="ad-empty">
       <div class="ad-empty-icon" aria-hidden="true">🌱</div>
       <h2>No tasks yet</h2>
       <p>Describe a requirement and the loop will create the task and drive it through clarify → plan → build → wrap.</p>
       <button class="button is-primary" data-open="new-task-modal">＋ New task</button>
     </div>`;
 
+  const kanban = PHASES.map((phase, index) => {
+    const tasks = items.filter((task) => task.phase === phase);
+    const cards = tasks.map((task) => renderTaskCard(task, handedOff.has(task.id))).join("\n");
+    // The client hides cards past the limit (unless expanded or filtering) and labels the button.
+    const collapse = phase === "done" ? ` data-collapse="${DONE_COLUMN_LIMIT}"` : "";
+    const more = phase === "done" ? `<button type="button" class="ad-column-more" data-column-more${tasks.length > DONE_COLUMN_LIMIT ? "" : " hidden"}>Show ${Math.max(0, tasks.length - DONE_COLUMN_LIMIT)} more</button>` : "";
+    return `<section class="ad-column" data-key="column:${phase}" data-phase-column="${phase}"${collapse}>
+      <header class="ad-column-head"><span class="ad-step-index">${index + 1}</span><span class="ad-column-title">${escapeHtml(phase)}</span><span class="ad-count" data-column-count>${tasks.length}</span></header>
+      <div class="ad-column-body">${cards}<p class="ad-column-empty" data-column-empty${tasks.length ? " hidden" : ""}>No tasks</p>${more}</div>
+    </section>`;
+  }).join("\n");
+
+  const rows = items.map((task) => renderListRow(task, handedOff.has(task.id))).join("\n");
+
+  return `${renderToolbar()}
+    <div id="kanban-view"><div class="ad-board">${kanban}</div></div>
+    <div id="list-view">
+      <div class="ad-table-wrap"><table class="table ad-table is-fullwidth">
+        <thead><tr><th>id</th><th>title</th><th>phase</th><th>gate</th><th>status</th><th>risk</th><th>areas</th><th>updated</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </div>
+    <p class="ad-no-match" data-no-match>No tasks match the current filters. <button type="button" id="filter-clear" class="button is-small is-text">Clear filters</button></p>`;
+};
+
+const renderDashboard = async (options: UiOptions): Promise<string> => {
+  const state = await readUiState(options);
   return `${pageHead("Loop")}
 ${renderHeader(options.root, uiMode(options), reviewQueue(state))}
 <main class="section ad-main">
   <div class="container is-fluid">
-    ${board}
-    <p class="ad-help">Click a task to open it in the side panel; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. The bell in the header lists tasks waiting at a human gate; pick one to open its detail page, where gate feedback and approval live (also on the trusted terminal <code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close panel or dialog.</p>
+    ${liveRegion("board", renderBoard(state))}
+    <p class="ad-help">Click a task to open it in the side panel; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. The bell in the header lists tasks waiting at a human gate; pick one to open its detail page, where gate feedback and approval live (also on the trusted terminal <code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). The page updates itself as the loop advances. Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close panel or dialog.</p>
   </div>
 </main>
 ${renderModals()}
@@ -1113,16 +1396,18 @@ ${sharedScript}
 const GATE_ARTIFACT: Record<string, string> = { G0_confirm: "intent", G1_review: "design", G2_codereview: "workplan" };
 
 const panel = (title: string, body: string, extra = "", flush = false): string =>
-  `<section class="ad-panel"><header class="ad-panel-head"><h2>${escapeHtml(title)}</h2>${extra}</header><div class="ad-panel-body${flush ? " is-flush" : ""}">${body}</div></section>`;
+  `<section class="ad-panel" data-key="panel:${escapeHtml(title)}"><header class="ad-panel-head"><h2>${escapeHtml(title)}</h2>${extra}</header><div class="ad-panel-body${flush ? " is-flush" : ""}">${body}</div></section>`;
 
-const renderTaskDetail = async (options: UiOptions, id: string, fragment = false): Promise<string> => {
-  const state = await readUiState(options);
+/**
+ * Task detail body shared by the full page (`detail` live region), the side
+ * panel (`fragment`, `drawer` live region), and `/api/live`. Undefined when the
+ * task does not exist. Keyed panels (`id`/`data-key`) let the client morph them
+ * in place: open artifacts, typed feedback, and the live log survive updates.
+ */
+const renderTaskBody = async (options: UiOptions, state: WorkflowState, id: string, fragment: boolean, maxAgeMs = 0): Promise<{ task: TaskState; html: string } | undefined> => {
   const task = readUiTask(options, id, state);
   const fleet = uiMode(options) === "fleet";
-  if (!task) {
-    const body = `<p class="has-text-danger">Task not found: ${escapeHtml(id)}</p>`;
-    return fragment ? body : `${pageHead("Task not found · Loop")}${renderHeader(options.root, uiMode(options), reviewQueue(state))}<main class="section ad-main"><div class="container is-fluid"><div class="ad-empty"><div class="ad-empty-icon" aria-hidden="true">🔍</div><h2>Task not found</h2><p><code>${escapeHtml(id)}</code> is not in the ${uiMode(options) === "fleet" ? "fleet" : "local"} canonical state.</p><a class="button" href="/">← Back to dashboard</a></div></div></main>${renderModals()}${sharedScript}</body></html>`;
-  }
+  if (!task) return undefined;
 
   const waiting = task.status === "blocked_on_user" && task.gate !== "none";
   // A gate whose structural checks now fail (e.g. an artifact edited after the
@@ -1130,13 +1415,13 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
   let gateBlock = "";
   if (waiting) {
     try {
-      const gate = await taskGatePayload(options, id);
+      const gate = await taskGatePayload(options, id, state, maxAgeMs);
       if (gate.ok && gate.view) gateBlock = renderGateViewHtml(gate.view);
-      else if (gate.ok && gate.snapshot) gateBlock = `<section class="ad-panel is-warning"><header class="ad-panel-head"><h2>${escapeHtml(gateLabel(task.gate))} · review snapshot</h2><span class="ad-pill is-ghost ad-panel-tools">${escapeHtml(gate.snapshot.id ?? "")}</span></header><div class="ad-panel-body"><div class="content artifact">${markdownToHtml(gate.snapshot.reviewText ?? "")}</div></div></section>`;
-      else if (fleet) gateBlock = `<section class="ad-panel is-warning"><header class="ad-panel-head"><h2>${escapeHtml(gateLabel(task.gate))}</h2></header><div class="ad-panel-body"><p>${escapeHtml(gate.error ?? "No review snapshot yet")}</p></div></section>`;
+      else if (gate.ok && gate.snapshot) gateBlock = `<section class="ad-panel is-warning" data-key="gate-view"><header class="ad-panel-head"><h2>${escapeHtml(gateLabel(task.gate))} · review snapshot</h2><span class="ad-pill is-ghost ad-panel-tools">${escapeHtml(gate.snapshot.id ?? "")}</span></header><div class="ad-panel-body"><div class="content artifact">${markdownToHtml(gate.snapshot.reviewText ?? "")}</div></div></section>`;
+      else if (fleet) gateBlock = `<section class="ad-panel is-warning" data-key="gate-view"><header class="ad-panel-head"><h2>${escapeHtml(gateLabel(task.gate))}</h2></header><div class="ad-panel-body"><p>${escapeHtml(gate.error ?? "No review snapshot yet")}</p></div></section>`;
     } catch (error) {
       const problems = (error instanceof Error ? error.message : String(error)).split("; ").filter(Boolean);
-      gateBlock = `<section class="ad-panel is-danger">
+      gateBlock = `<section class="ad-panel is-danger" data-key="gate-view">
         <header class="ad-panel-head"><span aria-hidden="true">⚠</span><h2>${escapeHtml(gateLabel(task.gate))} · gate check failing</h2><span class="ad-pill is-danger ad-panel-tools">${escapeHtml(task.gate)}</span></header>
         <div class="ad-panel-body">
           <p class="mb-3">The task waits at this gate, but its structural checks no longer pass. Approval will be rejected until these are fixed:</p>
@@ -1166,7 +1451,7 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
   /* Feedback never needs the fleet reviewer credential (it never approves), so
    * the block renders in both modes whenever the task waits at a gate. */
   const feedbackBlock = !fragment && waiting
-    ? `<section class="ad-panel is-info" id="feedback-panel">
+    ? `<section class="ad-panel is-info" id="feedback-panel" data-gate="${escapeHtml(task.gate)}" data-gate-label="${escapeHtml(gateLabel(task.gate))}">
         <header class="ad-panel-head"><h2>Feedback · ${escapeHtml(gateLabel(task.gate))}</h2><span class="ad-pill is-ghost ad-panel-tools">stays at this gate</span></header>
         <div class="ad-panel-body">
           <p class="mb-2">Not ready to approve? Send guidance back to the loop. The task stays at <strong>${escapeHtml(gateLabel(task.gate))}</strong>; the lead revises the review artifact and re-presents this gate.</p>
@@ -1192,7 +1477,7 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
         </div>
       </section>`
     : !fragment && waiting
-    ? `<section class="ad-panel is-success" id="approve-panel">
+    ? `<section class="ad-panel is-success" id="approve-panel" data-gate="${escapeHtml(task.gate)}" data-gate-label="${escapeHtml(gateLabel(task.gate))}">
         <header class="ad-panel-head"><h2>Approve · ${escapeHtml(gateLabel(task.gate))}</h2><span class="ad-pill is-ghost ad-panel-tools">${escapeHtml(task.gate)}</span></header>
         <div class="ad-panel-body">
           <p class="mb-2">Approving moves the task to the next phase. To request changes instead, use <strong>Feedback</strong> above — the note below is provenance only, not guidance for the loop.</p>
@@ -1211,7 +1496,7 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
 
   /* Confirmation dialog: the only control that sends the approve request. */
   const approveModal = !fragment && waiting && !(fleet && !options.reviewerToken)
-    ? `<div id="approve-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="approve-modal-title">
+    ? `<div id="approve-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="approve-modal-title" data-live-preserve="class">
   <div class="modal-background" data-close></div>
   <div class="modal-card">
     <header class="modal-card-head">
@@ -1240,7 +1525,7 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
     const content = payload.ok && payload.content !== undefined
       ? `<div class="content artifact">${markdownToHtml(payload.content)}</div>`
       : `<p class="help is-danger px-5 pb-4">${escapeHtml(payload.error ?? "unavailable")}</p>`;
-    return `<details class="ad-artifact"${name === openArtifact ? " open" : ""}><summary>${escapeHtml(name)}<code>${escapeHtml(artifactPath)}</code></summary>${content}</details>`;
+    return `<details class="ad-artifact" data-key="artifact:${name}"${name === openArtifact ? " open" : ""}><summary>${escapeHtml(name)}<code>${escapeHtml(artifactPath)}</code></summary>${content}</details>`;
   }).join("\n");
 
   const table = (head: string[], rows: string[], empty: string): string => rows.length
@@ -1261,7 +1546,7 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
     `<tr><td><strong>${escapeHtml(entry.kind)}</strong>${entry.area ? `<div class="is-size-7 has-text-grey">${escapeHtml(entry.area)}</div>` : ""}</td><td>${pill(entry.result, RESULT_TONE[entry.result] ?? "")}</td><td class="is-size-7">${escapeHtml(entry.gate ?? "")}</td><td class="is-size-7">${escapeHtml(entry.source ?? "")}${entry.detail ? `<div class="has-text-grey mt-1">${escapeHtml(entry.detail)}</div>` : ""}</td><td class="is-size-7 has-text-grey">${relativeTime(entry.recordedAt)}</td></tr>`), "No verification evidence yet");
 
   const handoff = task.handoff
-    ? `<section class="ad-panel" style="box-shadow:0 0 0 1px var(--bulma-danger)"><header class="ad-panel-head"><h2>Handed off · ${escapeHtml(task.handoff.kind)}</h2></header><div class="ad-panel-body"><p>${escapeHtml(task.handoff.reason)}</p><p class="is-size-7 has-text-grey mt-2">Follow the handoff actions from <code>node .agents/aidlc/scripts/state.mjs task next ${escapeHtml(task.id)}</code>.</p></div></section>`
+    ? `<section class="ad-panel" data-key="handoff" style="box-shadow:0 0 0 1px var(--bulma-danger)"><header class="ad-panel-head"><h2>Handed off · ${escapeHtml(task.handoff.kind)}</h2></header><div class="ad-panel-body"><p>${escapeHtml(task.handoff.reason)}</p><p class="is-size-7 has-text-grey mt-2">Follow the handoff actions from <code>node .agents/aidlc/scripts/state.mjs task next ${escapeHtml(task.id)}</code>.</p></div></section>`
     : "";
 
   const meta = `<dl class="ad-meta">
@@ -1276,14 +1561,25 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
     <dt>Updated</dt><dd>${relativeTime(task.updatedAt)}</dd>
   </dl>`;
 
-  const liveLog = fragment ? "" : `<section class="ad-terminal">
+  // Client-owned (SSE lines): live updates never morph inside it.
+  const liveLog = fragment ? "" : `<section class="ad-terminal" id="live-log" data-live-ignore>
     <div class="ad-terminal-head"><span class="ad-lights" aria-hidden="true"><span></span><span></span><span></span></span><strong>Live log</strong><span id="log-state">connecting…</span>
       <div class="ad-terminal-tools"><button type="button" id="log-follow" aria-pressed="true">Follow</button><button type="button" id="log-clear">Clear</button></div>
     </div>
     <div id="log" class="log-panel" role="log" aria-live="off"><span class="ad-log-muted">connecting…</span></div>
   </section>`;
 
-  const body = `<h1 class="ad-page-title">${escapeHtml(task.title)}</h1>
+  /* The side panel stays read-only; when a human action is due, point at the
+   * full page that hosts it right at the top. */
+  const href = `/tasks/${encodeURIComponent(task.id)}`;
+  const drawerCta = !fragment ? ""
+    : task.handoff
+      ? `<div class="ad-callout is-danger ad-drawer-cta" data-key="drawer-cta"><span>Handed off · ${escapeHtml(task.handoff.kind)} — follow the handoff actions on the full page.</span><a class="button is-small is-danger" href="${href}">Open task →</a></div>`
+      : waiting
+        ? `<div class="ad-callout ad-drawer-cta" data-key="drawer-cta"><span>Waiting at <strong>${escapeHtml(gateLabel(task.gate))}</strong>${pending.length ? ` · ${pending.length} feedback pending` : ""} — send feedback or approve on the full page.</span><a class="button is-small is-warning" href="${href}" data-review-cta>Open review →</a></div>`
+        : "";
+
+  const body = `${drawerCta}<h1 class="ad-page-title">${escapeHtml(task.title)}</h1>
 <div class="ad-page-sub"><code>${escapeHtml(task.id)}</code>${statusPill(task.status, Boolean(task.handoff))}${gatePill(task.gate)}${riskPill(task.risk)}${feedbackPill(pending.length)}</div>
 ${phaseStepper(task.phase, task.gate, task.status)}
 <div class="columns is-desktop">
@@ -1306,49 +1602,73 @@ ${phaseStepper(task.phase, task.gate, task.status)}
   </aside>
 </div>`;
 
-  if (fragment) return body;
+  return { task, html: fragment ? body : `${body}${approveModal}` };
+};
 
-  const detailScript = `<script>
+const taskNotFound = (options: UiOptions, id: string): string =>
+  `<div class="ad-empty"><div class="ad-empty-icon" aria-hidden="true">🔍</div><h2>Task not found</h2><p><code>${escapeHtml(id)}</code> is not in the ${uiMode(options) === "fleet" ? "fleet" : "local"} canonical state.</p><a class="button" href="/">← Back to dashboard</a></div>`;
+const drawerNotFound = (id: string): string => `<p class="has-text-danger">Task not found: ${escapeHtml(id)}</p>`;
+
+/* Detail-page behaviour. Handlers are delegated (the controls are re-rendered by
+ * live updates) and read the task and gate from the current DOM, never from
+ * values baked in at page load. */
+const detailScript = `<script>
+const detailTask = () => document.body.getAttribute("data-task") || "";
 // Feedback: keeps the task at this gate; the lead revises and re-presents it.
-document.getElementById("feedback-button")?.addEventListener("click", (event) => {
-  const button = event.currentTarget;
+const onFeedbackSend = (button) => {
+  const panel = document.getElementById("feedback-panel");
   const field = document.getElementById("feedback");
   const result = document.getElementById("feedback-result");
+  if (!panel || !field) return;
   if (result) result.textContent = "";
   if (!field.value.trim()) { toast("Write the feedback first", "warning", "It is sent to the loop lead as guidance; the task stays at this gate."); field.focus(); return; }
+  const label = panel.getAttribute("data-gate-label") || "";
   withLoading(button, async () => {
-    const res = await post("/api/gate/feedback", { taskId: ${JSON.stringify(id)}, feedback: field.value });
+    const res = await post("/api/gate/feedback", { taskId: detailTask(), feedback: field.value });
     if (res.status >= 200 && res.status < 300) {
-      toast(${JSON.stringify(`Feedback sent — task stays at ${gateLabel(task.gate)}`)}, "success", "The lead will revise the review artifact and re-present this gate.");
-      if (result) result.textContent = "Feedback recorded — reloading…";
-      setTimeout(() => location.reload(), 1500);
+      field.value = "";
+      toast("Feedback sent — task stays at " + label, "success", "The lead will revise the review artifact and re-present this gate.");
+      await liveRefresh();
     } else failureToast(res, "Feedback failed");
   });
-});
+};
 // Approve: the button only opens the confirmation dialog; "Confirm approve" sends.
-document.getElementById("approve-button")?.addEventListener("click", () => {
+const onApproveOpen = () => {
   const note = document.getElementById("source");
   const result = document.getElementById("approve-result");
+  if (!note) return;
   if (result) result.textContent = "";
   if (!note.value.trim()) { toast("Add an approval note first", "warning", "It is recorded as the approval source. To request changes, use Feedback instead."); note.focus(); return; }
   const quote = document.getElementById("approve-modal-note");
   if (quote) quote.textContent = note.value.trim();
   openModal("approve-modal");
-});
-document.getElementById("approve-confirm")?.addEventListener("click", (event) => {
-  const button = event.currentTarget;
+};
+const onApproveConfirm = (button) => {
+  const panel = document.getElementById("approve-panel");
   const note = document.getElementById("source");
-  const result = document.getElementById("approve-result");
+  if (!panel || !note) return;
+  const gate = panel.getAttribute("data-gate") || "";
+  const label = panel.getAttribute("data-gate-label") || gate;
   withLoading(button, async () => {
-    const res = await post("/api/gate/approve", { taskId: ${JSON.stringify(id)}, gate: ${JSON.stringify(task.gate)}, source: note.value });
+    // The gate shown is sent along; the server refuses if the task has moved on since.
+    const res = await post("/api/gate/approve", { taskId: detailTask(), gate, source: note.value });
     closeAllModals();
     if (res.status >= 200 && res.status < 300) {
       const next = res.body && res.body.result && res.body.result.nextAction;
-      toast(${JSON.stringify(`Approved ${gateLabel(task.gate)}`)}, "success", next && next.classification ? "Next: " + next.classification + (next.phase ? " · " + next.phase : "") : "");
-      if (result) result.textContent = "Approved — reloading…";
-      setTimeout(() => location.reload(), 1500);
+      note.value = "";
+      toast("Approved " + label, "success", next && next.classification ? "Next: " + next.classification + (next.phase ? " · " + next.phase : "") : "");
+      await liveRefresh();
     } else failureToast(res, "Approval failed");
   });
+};
+document.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+  const feedback = target.closest("#feedback-button");
+  if (feedback) { onFeedbackSend(feedback); return; }
+  if (target.closest("#approve-button")) { onApproveOpen(); return; }
+  const confirm = target.closest("#approve-confirm");
+  if (confirm) onApproveConfirm(confirm);
 });
 (() => {
   const logEl = document.getElementById("log");
@@ -1383,6 +1703,9 @@ document.getElementById("approve-confirm")?.addEventListener("click", (event) =>
     }
   };
   const tone = (type) => /error|fail/.test(type) ? "is-error" : /stop|wait|gate|blocked/.test(type) ? "is-warn" : /integrated|done|complete|end/.test(type) ? "is-ok" : /^agent/.test(type) ? "is-agent" : "";
+  // Events that usually mean the canonical task changed: refresh the page regions now
+  // instead of waiting for the next poll.
+  const STATE_EVENTS = new Set(["turn_end", "lifecycle_command", "gate", "waiting", "daemon_turn", "daemon_turn_error", "loop_stopped"]);
   const append = (raw) => {
     if (!started) { logEl.textContent = ""; started = true; if (stateEl) stateEl.textContent = "streaming"; }
     const line = document.createElement("div");
@@ -1396,6 +1719,7 @@ document.getElementById("approve-confirm")?.addEventListener("click", (event) =>
       const type = document.createElement("span"); type.className = "ad-log-type"; type.textContent = event.type;
       const text = document.createElement("span"); text.className = "ad-log-text"; text.textContent = describe(event);
       line.append(time, type, text);
+      if (STATE_EVENTS.has(event.type)) liveRefresh();
     } else {
       line.textContent = raw;
     }
@@ -1403,27 +1727,67 @@ document.getElementById("approve-confirm")?.addEventListener("click", (event) =>
     while (logEl.childElementCount > MAX_LINES) logEl.firstElementChild.remove();
     if (follow) logEl.scrollTop = logEl.scrollHeight;
   };
-  const events = new EventSource("/api/events?task-id=" + encodeURIComponent(${JSON.stringify(id)}));
+  const events = new EventSource("/api/events?task-id=" + encodeURIComponent(detailTask()));
   events.onopen = () => { if (!started && stateEl) stateEl.textContent = "connected · waiting for events"; if (!started) logEl.innerHTML = "<span class='ad-log-muted'>No events for this task yet.</span>"; };
   events.onmessage = (message) => append(message.data);
   events.onerror = () => { if (stateEl) stateEl.textContent = started ? "reconnecting…" : "unavailable"; if (!started) logEl.innerHTML = "<span class='ad-log-muted'>Log stream unavailable (loop not running or sidecar missing).</span>"; };
 })();
 </script>`;
 
-  return `${pageHead(`${task.title} · Loop`)}
-${renderHeader(options.root, uiMode(options), reviewQueue(state), task.id)}
+const renderTaskDetail = async (options: UiOptions, id: string, fragment = false): Promise<string> => {
+  const state = await readUiState(options);
+  const rendered = await renderTaskBody(options, state, id, fragment);
+  if (fragment) return rendered ? rendered.html : drawerNotFound(id);
+  const reviews = reviewQueue(state);
+  if (!rendered) return `${pageHead("Task not found · Loop")}${renderHeader(options.root, uiMode(options), reviews)}<main class="section ad-main"><div class="container is-fluid">${taskNotFound(options, id)}</div></main>${renderModals()}${sharedScript}</body></html>`;
+  return `${pageHead(`${rendered.task.title} · Loop`, rendered.task.id)}
+${renderHeader(options.root, uiMode(options), reviews, rendered.task.id)}
 <main class="section ad-main">
   <div class="container is-fluid">
     <a class="ad-breadcrumb" href="/">← Dashboard</a>
-    ${body}
+    ${liveRegion("detail", rendered.html)}
   </div>
 </main>
 ${renderModals()}
-${approveModal}
 ${sharedScript}
 ${detailScript}
 </body>
 </html>`;
+};
+
+/** `/api/live`: re-renders the regions the client lists in `known` (name:hash)
+ * from one state read and returns only those whose hash changed, plus the full
+ * review list for the tab title and new-review toasts. */
+const livePayload = async (options: UiOptions, url: URL): Promise<unknown> => {
+  const known = new Map<string, string>();
+  for (const entry of (url.searchParams.get("known") ?? "").split(",")) {
+    const at = entry.indexOf(":");
+    const name = at < 0 ? entry : entry.slice(0, at);
+    if ((LIVE_REGIONS as readonly string[]).includes(name)) known.set(name, at < 0 ? "" : entry.slice(at + 1));
+  }
+  const maxAgeMs = uiMode(options) === "fleet" ? LIVE_FLEET_MAX_AGE_MS : 0;
+  const state = await readUiState(options, maxAgeMs);
+  const task = url.searchParams.get("task") ?? "";
+  const drawer = url.searchParams.get("drawer") ?? "";
+  const reviews = reviewQueue(state);
+  const render = async (name: LiveRegion): Promise<string | undefined> => {
+    switch (name) {
+      case "notify": return renderNotifications(reviews, task, notifyLimit(url.searchParams.get("notify")));
+      case "daemon": return renderDaemonPill(options.root);
+      case "board": return renderBoard(state);
+      case "detail": return task ? (await renderTaskBody(options, state, task, false, maxAgeMs))?.html ?? taskNotFound(options, task) : undefined;
+      case "drawer": return drawer ? (await renderTaskBody(options, state, drawer, true, maxAgeMs))?.html ?? drawerNotFound(drawer) : undefined;
+      default: return undefined;
+    }
+  };
+  const regions: Record<string, { hash: string; html: string }> = {};
+  for (const [name, hash] of known) {
+    const html = await render(name as LiveRegion);
+    if (html === undefined) continue;
+    const next = regionHash(html);
+    if (next !== hash) regions[name] = { hash: next, html };
+  }
+  return { ok: true, ...(drawer ? { drawer } : {}), regions, reviews: { count: reviews.length, items: reviews.map((item) => ({ id: item.id, title: item.title, gate: gateLabel(item.gate) })) } };
 };
 
 /** On a fresh connection the SSE stream replays at most this many lines. */
@@ -1546,6 +1910,7 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           if (css !== undefined) return sendCss(res, css);
         }
         if (method === "GET" && path === "/") return sendHtml(res, await renderDashboard(options));
+        if (method === "GET" && path === "/api/live") return sendJson(res, 200, await livePayload(options, url));
         if (method === "GET" && path.startsWith("/partial/tasks/")) {
           const id = decodeURIComponent(path.slice("/partial/tasks/".length));
           if (!id) return sendJson(res, 404, { ok: false, error: "Not found" });
@@ -1653,6 +2018,8 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           const task = readUiTask(options, taskId, await readUiState(options));
           if (!task) return sendJson(res, 404, { ok: false, error: `Task not found: ${taskId}` });
           if (task.status !== "blocked_on_user" || task.gate === "none") return sendJson(res, 409, { ok: false, error: "Task is not waiting at a human gate" });
+          const shownGate = (fields["gate"] ?? "").trim();
+          if (shownGate && shownGate !== task.gate) return sendJson(res, 409, { ok: false, error: `The task moved on: it now waits at ${gateLabel(task.gate)} (${task.gate}), not ${shownGate}. Review it again before approving.` });
           if (uiMode(options) === "fleet" && !options.reviewerToken) return sendJson(res, 403, { ok: false, error: "Fleet approval needs the reviewer credential; restart aidlc-kit ui with AIDLC_FLEET_REVIEWER_TOKEN or --reviewer-token-file, or approve from a reviewer terminal" });
           try {
             // Fleet: the reviewer credential reaches only this single approve child process.

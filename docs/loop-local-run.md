@@ -275,19 +275,32 @@ every start; use `--token-file ~/.aidlc-ui-token` (outside the project, mode `60
 if missing) to keep the browser signed in across restarts. **⚙ Settings** still
 accepts a pasted token. Requests from another origin or with a foreign `Host` header are
 rejected `403` (see [Command reference](./command-reference.md#dashboard-authentication)).
-The header shows the authority (`authority · local`), whether the daemon is running, and a bell listing tasks that need your review. The page follows the system light/dark preference
+The header shows the authority (`authority · local`), the daemon state, and a bell listing tasks that need your review. The daemon pill turns amber (**daemon · N errors**) while a task turn or a poll keeps failing; hover it for the messages, and with a single failing task it links to that task. The page follows the system light/dark preference
 automatically (Bulma plus the flat `assets/ui/dashboard.css` theme layer) and uses the full
-window width; results of actions appear as toasts in the bottom-right corner. Shortcuts:
+window width; results of actions appear as toasts in the bottom-right corner.
+
+**The dashboard updates itself.** Every open page polls the server about every 1.5 s and
+patches only the parts that changed (board, bell, daemon pill, task detail, side panel); it
+never reloads the whole page, so what you typed, open dialogs, the open bell dropdown,
+collapsed artifacts, filters, and the live log stay as they are. On the detail page a
+loop event (turn end, gate, lifecycle command) triggers an update right away. When the
+loop reaches a new gate, the bell count, the browser tab title (`(2) Loop`), and a
+**Review needed** toast (a link to the task) update without any action; nothing asks for
+browser notification permission. If the server is unreachable a **reconnecting…** pill
+appears in the header and polling backs off until it answers again. Shortcuts:
 <kbd>N</kbd> new task, <kbd>/</kbd> search, <kbd>Esc</kbd> close the side panel or a dialog.
 
 Where things live (this is the #1 source of confusion):
 
 - **Gate approval button is only on the full task detail page** (`/tasks/<task-id>`), **not
   on the dashboard**. Tasks waiting at a gate appear under the **bell** in the header (on every
-  page; the badge shows how many); click an entry to jump to its detail page. Otherwise click a task to
+  page; the badge shows how many). The dropdown lists the 5 newest; **Load more** shows 5 more at
+  a time. Click an entry to jump to its detail page. Otherwise click a task to
   open it in the **side panel** (it slides in from the right and adds `?task=<task-id>` to the
   URL, so refresh or a shared link reopens it and Back closes it) and press **Open full page ↗**,
-  or ctrl/cmd-click / middle-click the task link. Both the side panel and the detail page show a
+  or ctrl/cmd-click / middle-click the task link. While the task waits at a gate the side panel
+  starts with an **Open review →** button to the detail page (a handed-off task shows **Open task →**).
+  Both the side panel and the detail page show a
   horizontal **progress** stepper (clarify → plan → build → wrap → done) above the artifacts. On the detail page the **`<review step>`** panel appears only while the task is
   `blocked_on_user` and has two blocks, in this order:
   - **Feedback** (textarea + **Send feedback (stay at gate)**): records
@@ -297,7 +310,8 @@ Where things live (this is the #1 source of confusion):
   - **Approve** (required approval note + green **✓ Approve**): clicking the button opens a
     **confirmation popup** showing the review step and your note; only **Confirm approve** in
     that popup sends the request. The note is audit provenance, not feedback — text typed
-    there does not reach the loop.
+    there does not reach the loop. If the task moved to another gate since the page showed
+    it, the approval is refused (`409`) and the page shows the current gate instead.
   While feedback has been sent and that gate has not been approved since, the task card and
   the detail page show a **feedback pending** pill with the pending feedback, and the Approve
   block shows a warning (approval is still allowed). If the gate's
@@ -305,8 +319,9 @@ Where things live (this is the #1 source of confusion):
 - **New task → Create task** runs loop intake (§5.2) and starts the daemon only if none is
   running (its stderr goes to `.agents/data/loop/daemon.log`). A toast shows the new task id,
   or the real intake error (for example an actionable interactive task).
-- **Stat cards, search, and the status/risk filters** narrow the Kanban and List views in the
-  browser only; they never call the API or change state.
+- **Search and the status/risk filters** narrow the Kanban and List views in the browser only;
+  they never call the API or change state. The **done** column shows the 8 most recent tasks;
+  **Show N more** expands it (filters always search every task).
 - **Task buttons follow the status:** a `paused` task shows **resume** (sets it back to
   `active`); a `blocked_on_user` task shows **review**, which opens the detail page (where
   both feedback and approve live).
@@ -498,7 +513,7 @@ gate; raise `loop.limits.maxTurns` if the phase legitimately needs more turns. T
 - **resume** only applies to a `paused` task; on any other status it returns `409` with the
   reason (a gate wait must be approved instead). A resumed task runs only if it is
   loop-owned and a daemon is running (§5.2).
-- If approve does *literally nothing* (no inline result, no error, no reload) and you are on
+- If approve does *literally nothing* (no toast, no error, no update) and you are on
   an old build: open the browser DevTools console and look for
   `SyntaxError: Identifier 'post' has already been declared`. That was a UI bug (the detail
   page declared `const post` twice, silently disabling the approve handler) fixed in source —
