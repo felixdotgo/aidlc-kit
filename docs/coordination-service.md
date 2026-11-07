@@ -1,54 +1,72 @@
 # AI-DLC Coordination service
 
-> [!WARNING]
-> The coordination service and the **fleet** end-to-end loop are **experimental and still under active development**: they contain known bugs and rough edges. The package is pre-1.0 (`0.x`), so setup flags, `mcp.*`/`loop.*` configuration, endpoints, environment variables, and storage behaviour can change incompatibly in any release before `1.0.0`. Do not treat it as a stable dependency yet.
+The optional, Docker-deployable authority for a workflow workspace: remote canonical state for a team, or the fleet loop across machines ([runbook](./loop-runbook.md#fleet-multi-machine)). Disabled by default: without an enabled `mcp` block, installed lifecycle scripts stay local and make no network calls.
 
-The optional AI-DLC Coordination service is a separate Docker-deployable authority for a workflow workspace. It is disabled by default: without an enabled `mcp` block, installed lifecycle scripts remain local and make no network calls.
+> [!WARNING]
+> Experimental, pre-1.0. See [Status and stability](./loop-runbook.md#status-and-stability).
 
 ## Safe setup
 
-Preview a configuration first. Outside an interactive terminal, provide all four selection flags.
+Preview first; outside an interactive terminal, provide all four selection flags:
 
 ```sh
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit mcp setup . --dry-run \
   --deployment docker --storage sqlite --bind localhost --workspace engineering
 ```
 
-This command uses the npm package at version `0.2.0`. To run from a source checkout instead, see the [development guide](./development.md).
-
-Remove `--dry-run` and confirm to create `.agents/aidlc-coordination/` and update `.agents/config.json`. Setup does not start Docker. Copy `.env.example` to a secret-managed `.env`, review it, then start explicitly:
+Remove `--dry-run` and confirm to create `.agents/aidlc-coordination/` and update `.agents/config.json`. Setup does not start Docker. Copy `.env.example` to a secret-managed `.env`, review it, then start:
 
 ```sh
 docker compose --env-file .agents/aidlc-coordination/.env -f .agents/aidlc-coordination/compose.yaml up -d
 ```
 
-Use SQLite only on the local Docker volume. Use PostgreSQL for multiple hosts. A network bind requires `MCP_STATE_AUTH_TOKEN` and TLS/reverse-proxy termination; never commit either the `.env` file or provider credentials.
+- SQLite only on the local Docker volume; PostgreSQL for multiple hosts.
+- A network bind requires `MCP_STATE_AUTH_TOKEN` and TLS/reverse-proxy termination. Never commit `.env` or provider credentials.
+- Source checkout: [development guide](./development.md).
 
 ## State and synchronization contract
 
-When enabled, the remote workspace is canonical. Import/export is an explicit recovery or migration action; there is no background dual-write or local fallback during an outage. Clients pull a revision or poll `state_events_since`; the service provides neither realtime subscriptions nor push notifications.
+- When enabled, the remote workspace is canonical. Import/export is an explicit recovery or migration action; there is no background dual-write or local fallback during an outage.
+- Clients pull a revision or poll `state_events_since`; there are no realtime subscriptions or push notifications.
 
 ## Multi-machine loop deployment
 
-The fleet service supports both approved storage backends: SQLite through one coordination service on one host with the database on a local volume (set `MCP_STATE_DATABASE=sqlite`, the default, and `MCP_STATE_SQLITE_PATH`), and PostgreSQL for deployments spanning multiple hosts or service instances. Each deployment keeps its chosen backend; there is no implicit fallback or migration between them. SQLite limits availability and write concurrency to that single host. Do not switch an existing authority automatically; follow the supported deployment below.
+Storage backends, with no implicit fallback or migration between them (never switch an existing authority automatically):
 
-Fleet mode is separate from the default local service profile. The source checkout keeps its deployment template in `services/aidlc-coordination/`; human-run `mcp setup` copies it into the target project's `.agents/aidlc-coordination/`. Copy that directory's `.env.fleet.example` to a private `.env`, set the database choice and three distinct credential classes (`MCP_FLEET_LEAD_TOKEN`, `MCP_FLEET_REVIEWER_TOKEN`, and the worker-ID-to-token JSON map `MCP_FLEET_WORKER_TOKENS`), then start the fleet profile. From a source checkout:
+- **SQLite**: one service on one host, database on a local volume (`MCP_STATE_DATABASE=sqlite`, the default, plus `MCP_STATE_SQLITE_PATH`). Availability and write concurrency are limited to that host.
+- **PostgreSQL**: multiple hosts or service instances.
+
+Fleet mode is a separate compose profile. The source checkout keeps the template in `services/aidlc-coordination/`; human-run `mcp setup` copies it to `.agents/aidlc-coordination/`. Copy `.env.fleet.example` to a private `.env`, set the database and three distinct credential classes (`MCP_FLEET_LEAD_TOKEN`, `MCP_FLEET_REVIEWER_TOKEN`, and the worker-ID-to-token JSON map `MCP_FLEET_WORKER_TOKENS`), then start:
 
 ```sh
 docker compose --env-file .env --profile fleet -f services/aidlc-coordination/compose.yaml up -d fleet-coordination
+# installed project: -f .agents/aidlc-coordination/compose.yaml
 ```
 
-For an installed project, use `-f .agents/aidlc-coordination/compose.yaml` instead.
+- Default binding `127.0.0.1:8788`; for workers on other machines, expose `POST /mcp` through a TLS reverse proxy and set the binding deliberately.
+- Requires the chosen database backend and a shared Git remote. Each worker gets an isolated worktree, a scoped branch, and its own credential.
+- A process supervisor must restart the supervisor, lead, and workers; after restart they reacquire fenced leases and reconcile reported or uncertain Git results before retrying.
 
-The default host binding is `127.0.0.1:8788`. For workers on other machines, expose `POST /mcp` through a TLS reverse proxy and set the binding deliberately. Fleet mode requires the chosen database backend and a shared Git remote. Give each worker an isolated worktree, a scoped branch, and its own worker credential. A process supervisor must restart the supervisor, lead, and workers; after restart they reacquire fenced leases and reconcile reported or uncertain Git results before retrying.
+**Vocabulary.** Three kinds of fenced ownership, each with its own epoch counter:
 
-**Vocabulary.** The service uses three kinds of fenced ownership, each with its own epoch counter: the **supervisor lease** (`supervisor_*`, one `loop start` supervising a task), the **lead lease** (`run_claim`, the lead epoch that every lifecycle mutation must present), and **job claims** (`job_*`, a worker's ownership of one item, with a job epoch). The client calls these "lead lease" and "job claim" in messages and in `aidlc-kit loop leases`. It shows the supervisor epoch only when it differs from the lead epoch. A lease/claim `FleetConflict` (for example `stale or expired lead claim`) is reported as `Fleet conflict: <explanation>. Inspect: node .agents/aidlc/scripts/loop-entry.mjs leases (<original message>)`. The service semantics, API, and schema are unchanged; local leases, locks, and claims are described in [Troubleshooting](./troubleshooting.md#loop-leases-locks-and-claims).
+- **supervisor lease** (`supervisor_*`): one `loop start` supervising a task;
+- **lead lease** (`run_claim`): the lead epoch every lifecycle mutation must present;
+- **job claims** (`job_*`): a worker's ownership of one item, with a job epoch.
 
-The lead credential can advance lifecycle state only while holding the current task epoch. Worker credentials can claim, checkpoint, and report assigned jobs but cannot mutate lifecycle state or approve gates. The reviewer credential can read pending gate snapshots and record a later explicit human approval against the snapshot and current revision. When the database, Git remote, or reviewer is unavailable, the run waits or fails closed; it does not fall back to local state.
+`aidlc-kit loop leases` shows the supervisor epoch only when it differs from the lead epoch. A `FleetConflict` (for example `stale or expired lead claim`) is reported as `Fleet conflict: <explanation>. Inspect: node .agents/aidlc/scripts/loop-entry.mjs leases (<original message>)`. Local leases: [Troubleshooting](./troubleshooting.md#loop-leases-locks-and-claims).
 
-The installed remote lifecycle client needs `AIDLC_FLEET_URL` (the full HTTPS `/mcp` URL), `AIDLC_FLEET_WORKSPACE`, and `AIDLC_FLEET_PROJECT_ROOT` (absolute). Lead mutations also need `AIDLC_FLEET_TOKEN` and the current `AIDLC_FLEET_LEAD_EPOCH` from its claim.
+**Roles.**
 
-Create the task records before the remote feature manifest. For each task, claim a lead epoch, export the returned `epoch`, then create it with the feature ID; repeat for sibling tasks. Once both records exist, create and link the manifest:
+- Lead credential: advances lifecycle state only while holding the current task epoch.
+- Worker credentials: claim, checkpoint, and report assigned jobs; never mutate lifecycle state or approve gates.
+- Reviewer credential: reads pending gate snapshots and records a later explicit human approval against the snapshot and current revision.
+- When the database, Git remote, or reviewer is unavailable, the run waits or fails closed; never a local fallback.
+
+The remote lifecycle client needs `AIDLC_FLEET_URL` (full HTTPS `/mcp` URL), `AIDLC_FLEET_WORKSPACE`, and `AIDLC_FLEET_PROJECT_ROOT` (absolute); lead mutations also `AIDLC_FLEET_TOKEN` and the current `AIDLC_FLEET_LEAD_EPOCH` from its claim.
+
+### Create tasks and a feature manifest
+
+Create task records before the manifest: claim a lead epoch, export it, create the task with the feature ID, release; repeat per task; then create and link the manifest:
 
 ```sh
 node .agents/aidlc/scripts/remote-state.mjs run claim checkout-api
@@ -61,52 +79,81 @@ node .agents/aidlc/scripts/remote-state.mjs feature link checkout checkout-integ
 node .agents/aidlc/scripts/remote-state.mjs feature ready checkout
 ```
 
-The service checks that every manifest member has a canonical task record with the matching feature ID. A partially created task stays fail-closed until the manifest is completed. The lead epoch is task-specific and must be refreshed after release or expiry.
+Every manifest member must have a canonical task record with the matching feature ID; a partially created task stays fail-closed until the manifest is complete. The lead epoch is task-specific; refresh it after release or expiry.
 
-In a connected reviewer conversation, configure `AIDLC_FLEET_REVIEWER_TOKEN`, inspect the pending packet, and only after the human replies approving that packet run:
+### Approve gates as the reviewer
+
+In a connected reviewer conversation with `AIDLC_FLEET_REVIEWER_TOKEN`, inspect the pending packet; only after the human approves it, run:
 
 ```sh
 node .agents/aidlc/scripts/remote-state.mjs gate inbox
 node .agents/aidlc/scripts/remote-state.mjs gate approve <task-id> --snapshot <snapshot-id> --source "<explicit user approval>"
 ```
 
-The second command checks that the snapshot remains current and uses the reviewer-only service operation. At G2 it also verifies that the snapshot's integration commit still matches the live remote branch. Protect the integration branch against writes outside the lead so it cannot change between verification and approval. The review message is the source provenance; the token authenticates the reviewer client, while the client operator remains responsible for using the user's actual later reply.
+- `gate approve` checks the snapshot is still current and uses the reviewer-only operation; at G2 it also verifies the snapshot's integration commit matches the live remote branch (protect that branch against writes outside the lead).
+- `--source` is the review message as provenance; the token authenticates the client, and the operator is responsible for using the user's actual reply.
 
-Run the packaged fleet process on a lead machine and worker machines under a process supervisor. Point every process to the same `AIDLC_FLEET_URL` and workspace, but give each its own role token. On the lead, set `AIDLC_FLEET_WORKER_IDS` (comma-separated), `AIDLC_FLEET_INTEGRATION_BRANCH`, and optionally `AIDLC_FLEET_AGENT` (`codex`, `claude`, or `opencode`); `AIDLC_FLEET_WORKER_PROVIDERS` can override the provider per worker. The `job_schedule` tool accepts the same three agent values, and worker containers run all of them, including `opencode` (authenticated from the environment key matching the `AIDLC_OPENCODE_MODEL` prefix: `openai/` → `OPENAI_API_KEY`, `anthropic/` → `ANTHROPIC_API_KEY`, otherwise `OPENCODE_API_KEY`). On each worker, set its matching `AIDLC_FLEET_WORKER_ID`, `AIDLC_FLEET_WORKTREES_ROOT`, and `AIDLC_FLEET_PROJECT_ROOT`. The worker's provider comes from `AIDLC_FLEET_WORKER_AGENT` (or `AIDLC_FLEET_AGENT`, or its entry in `AIDLC_FLEET_WORKER_PROVIDERS`); a worker with a provider rejects jobs for another provider. `AIDLC_WORKER_DOCKER_IMAGE` is optional when the provider is known: the image is then `loop.workerImage[provider]` from the project config or the default `aidlc-worker-<provider>:local`, built from the packaged Dockerfile when missing. Either way it is resolved to its immutable `sha256:` image id before any job runs:
+### Run the fleet processes
+
+Run the packaged fleet process on the lead and each worker machine under a process supervisor, same `AIDLC_FLEET_URL` and workspace, own role token each. Environment variables: runbook [lead](./loop-runbook.md#step-2--set-lead-machine-environment) and [worker](./loop-runbook.md#step-4--run-a-worker-on-each-worker-machine) tables; `AIDLC_FLEET_AGENT` selects the lead provider for the direct runner (default `codex`; `aidlc-kit loop` sets it from `loop.agents.lead`) and is the per-worker fallback; `AIDLC_FLEET_WORKER_PROVIDERS` overrides it per worker. `job_schedule` accepts `codex`, `claude`, or `opencode`; worker containers run all three, only the isolated lead container does not support OpenCode ([credentials](./configuration.md#provider-credentials-and-opencode)). The worker image is resolved to its immutable `sha256:` id before any job runs.
 
 ```sh
 node dist/services/aidlc-coordination/src/fleet-run.mjs feature <feature-id>
 node dist/services/aidlc-coordination/src/fleet-run.mjs worker
+# installed project: node .agents/aidlc-coordination/src/fleet-run.mjs …
 ```
 
-`coordinator <task-id>` runs one task. `--once` processes a bounded polling pass for supervision or diagnostics. Defaults are four worker jobs per feature, five-minute leases with one-minute heartbeat, 12 turns per phase or assignment, 10 minutes per turn, and two consecutive stalls. Set `AIDLC_FLEET_MAX_WORKERS`, `AIDLC_FLEET_LEASE_MS`, `AIDLC_FLEET_HEARTBEAT_MS`, `AIDLC_FLEET_MAX_TURNS`, `AIDLC_FLEET_TURN_TIMEOUT_MS`, and `AIDLC_FLEET_MAX_STALL_TURNS` to change them. Feature mode dispatches dependency-ready tasks in order from one integration checkout; independent items within the active task can use several machines concurrently. The coordinator never dispatches two items whose owned paths overlap by path segment (`src` overlaps `src/a.ts`, not `srcx`) at the same time; the later item waits for a following pass. With `MCP_FLEET_ENABLED=1`, the service also refuses to approve the Approve plan gate for a plan with such overlaps or with unscoped open items (`PARTITION_OVERLAP`, `PARTITION_SCOPE` are errors). After a lost worker report, the lead checks remote Git state and stops for reconciliation if the outcome is ambiguous. Set `AIDLC_FLEET_CODE_ONLY_RETRY=1` to permit an automatic retry only after the prior turn's timeout window has elapsed and Git confirms that no branch was published.
+- `coordinator <task-id>` runs one task; `--once` runs a bounded polling pass.
+- Defaults: four worker jobs per feature, five-minute leases with one-minute heartbeat, 12 turns per phase or assignment, 10 minutes per turn, two consecutive stalls. Override: `AIDLC_FLEET_MAX_WORKERS`, `AIDLC_FLEET_LEASE_MS`, `AIDLC_FLEET_HEARTBEAT_MS`, `AIDLC_FLEET_MAX_TURNS`, `AIDLC_FLEET_TURN_TIMEOUT_MS`, `AIDLC_FLEET_MAX_STALL_TURNS`.
+- Feature mode dispatches dependency-ready tasks in order from one integration checkout; independent items of the active task can run on several machines.
+- The coordinator never dispatches two items whose owned paths overlap by path segment (`src` overlaps `src/a.ts`, not `srcx`); the later item waits. With `MCP_FLEET_ENABLED=1` the service also refuses to approve the Approve plan gate for such overlaps or unscoped open items (`PARTITION_OVERLAP`, `PARTITION_SCOPE`).
+- After a lost worker report the lead checks remote Git state and stops for reconciliation if ambiguous. `AIDLC_FLEET_CODE_ONLY_RETRY=1` permits an automatic retry only after the prior turn's timeout window elapsed and Git confirms no branch was published.
+- The coordinator and feature commands return at a human gate (feature mode dispatches no further tasks); restart after the reviewer acts.
+- Command events and failure diagnostics report status and exit code, never command text or output. Worker progress observes file content changes as well as paths.
 
-The coordinator and feature commands return when a task reaches a human gate; feature mode stops before dispatching further tasks. After the reviewer acts, restart the command to continue.
+### Unattended operation with the loop daemon
 
-For unattended operation on the lead machine, use the shared loop daemon instead of a hand-run supervisor: `aidlc-kit loop start --mode fleet` preflights the service and the remote integration branch, then runs the supervisor for each fleet loop-owned task (created with `aidlc-kit loop intake --mode fleet` or the dashboard **New task**) until its next gate, releases the supervisor lease, and re-claims the task on a later poll once the reviewer has approved. The daemon takes `loop.limits` and `loop.pollMs` from `.agents/config.json` as defaults for the `AIDLC_FLEET_*` limits, and never passes `AIDLC_FLEET_REVIEWER_TOKEN` to a lead or worker process. See the [loop runbook](./loop-runbook.md#fleet-multi-machine). Command events and command-failure diagnostics report status and exit code without the command text or its output. Worker progress observes changes to file content as well as paths.
+`aidlc-kit loop start --mode fleet` on the lead machine replaces a hand-run supervisor: it runs each fleet loop-owned task until its next gate, releases the supervisor lease, and re-claims after reviewer approval. It takes `loop.limits` and `loop.pollMs` as defaults for the `AIDLC_FLEET_*` limits and never passes `AIDLC_FLEET_REVIEWER_TOKEN` to a lead or worker process. Steps: [loop runbook](./loop-runbook.md#fleet-multi-machine).
 
 ## Shared coordination board
 
-The opt-in service also provides a small workspace-scoped Kanban board that is separate from lifecycle state. Board tasks may link to an AI-DLC task ID or artifact, but board writes, comments, and claims cannot mutate lifecycle state, approve a gate, or rewrite project files.
+A small workspace-scoped Kanban board, separate from lifecycle state. Board tasks may link to an AI-DLC task ID or artifact, but board writes, comments, and claims cannot mutate lifecycle state, approve a gate, or rewrite project files.
 
-`board_get`, `board_apply`, `task_thread_get`, `task_comment_add`, `task_claim`, and `coordination_events_since` are bounded MCP tools. Tasks use `backlog`, `ready`, `in_progress`, `blocked`, `done`, or `cancelled`, plus priority, labels, assignees, and renewable one-minute-to-one-hour claims. Mutations require an expected board revision, idempotency key, actor ID, and role. A conflicting live claim is rejected.
+- Bounded MCP tools: `board_get`, `board_apply`, `task_thread_get`, `task_comment_add`, `task_claim`, `coordination_events_since`.
+- Status `backlog`, `ready`, `in_progress`, `blocked`, `done`, or `cancelled`, plus priority, labels, assignees, and renewable one-minute-to-one-hour claims.
+- Mutations require an expected board revision, idempotency key, actor ID, and role; a conflicting live claim is rejected.
+- Threads: short append-only comments with author type, optional mentions, and `question`, `status`, `handoff`, or `decision` intent; never credentials, hidden reasoning, chat, or gate approvals.
+- Clients poll compact cursor events, coalesce them, and read details only for assignment, mention, watched-task, explicit-user, or claim-expiry activity, always after a fresh revision check.
 
-Threads are short append-only comments with author type, optional mentions, and `question`, `status`, `handoff`, or `decision` intent. They never carry credentials, hidden reasoning, general chat, or gate approvals. Clients poll compact cursor events, coalesce and debounce them, then read details only for assignment, mention, watched-task, explicit-user, or claim-expiry activity. A notice always requires a fresh revision check before action.
+### `state_apply` contract
 
-Every `state_apply` write needs an `expectedRevision`, an `idempotencyKey`, and an absolute `clientProjectRoot`. The root is used only to format portable `nextActions` with absolute script paths and an explicit `--root`; it does not grant the server filesystem access or authority over that path. A stale revision returns the current projection for pull/rebase, and a retry with the same idempotency key returns the original committed result. Successful responses include `nextActions` for touched tasks so remote callers follow the same item loop and stop classifications as the local CLI.
+- Every write needs an `expectedRevision`, an `idempotencyKey`, and an absolute `clientProjectRoot`. The root only formats portable `nextActions` (absolute script paths, explicit `--root`); it grants no filesystem access or authority.
+- A stale revision returns the current projection for pull/rebase; a retry with the same idempotency key returns the original committed result.
+- Responses include `nextActions` for touched tasks, so remote callers follow the same item loop and stop classifications as the local CLI.
+- SQLite uses an immediate transaction and busy timeout; PostgreSQL locks the workspace row in a transaction.
 
-The service checks lifecycle invariants across the whole before/after snapshot, not only touched task IDs. Existing evidence is append-only: the prior evidence array must remain an exact structural prefix (compared field-wise, so re-serialization key order does not matter, while record order still does). A validated `blocked_on_user` wait cannot be deleted, and while a task waits its readiness-bearing state (items, decisions, artifacts, and every other non-evidence field) is frozen; only evidence may be appended. Leaving a wait requires, in the same mutation, one of: a passing approval for that exact gate, gate-bound cancellation diagnostic evidence with a non-empty source, or a sourced closure/handoff record (`closed`/`superseded` with closure metadata, or `paused` with handoff metadata). The one compatibility recovery mirrors the local CLI: an invalid wait at the gateless wrap phase may return to `active` with no appended evidence; it is not a human approval. A snapshot that requests or holds `blocked_on_user` while shared lifecycle predicates still require planning, items, verification, review, or an unexhausted repair bound is rejected. The `legacyG2Wait` repair-bound exemption marker is migration-owned: the service stamps it only when upgrading a stored pre-v4 row, and rejects any client mutation that creates or changes it. SQLite uses an immediate transaction and busy timeout; PostgreSQL locks the workspace row in a transaction.
+Lifecycle invariants are checked across the whole before/after snapshot, not only touched task IDs:
 
-In default shared-token mode, these guards keep remote history tamper-evident but do not authenticate approvals: `source` remains provenance supplied by a client. Fleet mode binds separate lead, worker, and reviewer credentials to server-side roles, and only a reviewer credential can call the atomic gate approval tool. The service cannot inspect client project artifacts, so the lead must run local artifact checks before publishing a review snapshot; the service enforces structural gate readiness and snapshot revision at approval.
+- Evidence is append-only: the prior evidence array must remain an exact structural prefix (field-wise; key order is free, record order is not).
+- A validated `blocked_on_user` wait cannot be deleted; while a task waits, every non-evidence field (items, decisions, artifacts, …) is frozen.
+- Leaving a wait requires, in the same mutation, one of: a passing approval for that exact gate; gate-bound cancellation evidence with a non-empty source; or a sourced closure/handoff record (`closed`/`superseded` with closure metadata, `paused` with handoff metadata). One compatibility recovery mirrors the local CLI: an invalid wait at the gateless wrap phase may return to `active` with no appended evidence; it is not a human approval.
+- A snapshot that requests or holds `blocked_on_user` while shared predicates still require planning, items, verification, review, or an unexhausted repair bound is rejected.
+- The `legacyG2Wait` repair-bound exemption marker is migration-owned: stamped only when upgrading a stored pre-v4 row; client mutations creating or changing it are rejected.
 
-`work_item_request` is intentionally only a credential-free preflight for Jira, Trello, or GitHub Issues. It reports the required environment variable names and never returns a reusable token, Authorization header, or token-bearing URL. External updates remain opt-in and must be made outside the lifecycle transaction.
+In default shared-token mode these guards keep history tamper-evident but do not authenticate approvals: `source` is client-supplied provenance. Fleet mode binds lead, worker, and reviewer credentials to server-side roles; only a reviewer credential can call the atomic gate approval tool. The service cannot inspect client artifacts: the lead runs local artifact checks before publishing a review snapshot; the service enforces structural gate readiness and snapshot revision at approval.
+
+`work_item_request` is only a credential-free preflight for Jira, Trello, or GitHub Issues: it reports the required environment variable names and never returns a reusable token, Authorization header, or token-bearing URL. External updates are opt-in, outside the lifecycle transaction.
 
 ## Service health, logging, and image
 
-The service exposes an unauthenticated, static `GET /healthz` that returns `200 {"ok":true}` without reading state, version, or workspace data. It is registered before the auth middleware and is used by the container `HEALTHCHECK` and compose healthchecks.
+- `GET /healthz`: unauthenticated, static `200 {"ok":true}`, reads no state, version, or workspace data; registered before the auth middleware; used by the container `HEALTHCHECK` and compose healthchecks.
+- Each request logs one JSON line to stderr: `{"ts":...,"method":...,"path":...,"status":...,"principal":...,"ms":...}` (`principal` omitted when absent). Never headers, bodies, or tokens.
+- McpServer version: the `version` field of the `package.json` next to the service root (`new URL("../package.json", import.meta.url)`), fallback `"0.0.0-dev"` (source checkouts); the bundled image gets it by build-time injection.
+- Image: two stages, both `node:24-bookworm-slim` (matching `better-sqlite3` ABI), non-root `node` user, `HEALTHCHECK` against `/healthz`; the compose `aidlc-coordination` and `fleet-coordination` services define matching healthchecks.
 
-Every request emits one compact JSON line to stderr on response finish, of the form `{"ts":...,"method":...,"path":...,"status":...,"principal":...,"ms":...}` (principal is the fleet principal id when present, otherwise omitted). Logging never includes headers, request bodies, Authorization headers, or tokens.
+## Related
 
-The McpServer version is read from the `version` field of the `package.json` next to the service root (`new URL("../package.json", import.meta.url)`), falling back to `"0.0.0-dev"` when missing or unreadable. In source checkouts the service package has no version field, so the fallback applies; the bundled image receives the package version through build-time injection.
-
-The container image is now built in two stages (both `node:24-bookworm-slim`, so the `better-sqlite3` ABI matches), installs dependencies in the build stage, and runs as the non-root `node` user with a `HEALTHCHECK` against `/healthz`. The compose `aidlc-coordination` and `fleet-coordination` services also define matching healthchecks.
+- [Loop setup runbook](./loop-runbook.md#fleet-multi-machine) — step-by-step fleet loop setup.
+- [Configuration](./configuration.md) — the `mcp` and `loop` config blocks.
+- [Command reference](./command-reference.md) — `mcp setup`, `loop`, and environment variables.
+- [Troubleshooting](./troubleshooting.md#loop-leases-locks-and-claims) — leases, claims, and fleet conflicts.

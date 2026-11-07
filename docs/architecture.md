@@ -1,6 +1,6 @@
 # Architecture
 
-`aidlc-kit` is a single Node.js/TypeScript package that installs static AI-DLC workflow assets into another project. The package CLI is used for installation and human-authorised maintenance; an installed project runs the dependency-free workflow scripts locally.
+One Node.js/TypeScript package: the CLI installs and maintains static AI-DLC workflow assets; installed projects run dependency-free scripts locally.
 
 ## Source-to-consumer flow
 
@@ -14,57 +14,103 @@ dist/assets/.agents/ + dist/src/
 consumer project: .agents/aidlc/ + .agents/skills/ + project-owned .agents/data/
 ```
 
-The distinction matters:
-
-- **Source layout** is this repository's editable `assets/aidlc/` and `skills/` tree.
-- **Bundle layout** is generated under `dist/assets/.agents/` for package publication.
-- **Installed layout** is written under a consumer project's `.agents/` directory.
-
-`dist/` is generated. Source assets and installed assets must remain behaviourally aligned through the bundle and package-smoke tests.
+Layouts: **source** (editable `assets/aidlc/`, `skills/`), **bundle** (generated `dist/assets/.agents/`, never hand-edited), **installed** (consumer `.agents/`); bundle and package-smoke tests keep them aligned.
 
 ## Module boundaries
 
 | Boundary | Modules | Responsibility |
 | --- | --- | --- |
-| CLI and installation | `src/cli.ts` + `src/cli/` (`argv`, `options`, `prompt`, `commands` registry), `src/installer.ts`, `src/workflow.ts`, `src/adapters.ts`, `src/mcp-setup.ts` | Parse commands, select adapters, plan deterministic writes, install managed assets (including the coordination-service template), and expose local status/doctor checks. |
-| Shared planning core | `src/managed-planning.ts` | Single manifest reading, inventory-key handling, and the managed-file planning ladder (create/skip/update/conflict) with explicit init vs upgrade policies; consumed by installation and migration. |
-| Lifecycle domain | `src/model/` (barrel `src/model.ts`), `src/state/` (barrel `src/state.ts`: `io`, `paths`, `domain`, `guards`, `archive-record`, `items`, `commands`, `transitions`, `validate`, `store`, `memory`, `lessons`, `lifecycle`, `render`, `migrate`, `lock`), `src/gate.ts`, `src/context.ts` | Validate canonical state, calculate transitions and gate readiness, classify next actions, and build bounded phase packets. |
-| Profiles and project integration | `src/profiles.ts` | Resolve project configuration/profiles, validate config (incl. the config-only `tracker` section — no runtime tracker consumer ships today), and expand effective rules. |
-| Migration | `src/upgrade.ts`, `src/project-migration.ts`, `src/legacy.ts`, `src/upgrade-board.ts` | Plan and apply safe legacy-data and version-layout migration (incl. legacy `BOARD.md` parsing) with audit backups. |
-| Web dashboard | `src/task-ui.ts` (barrel) over `src/ui/`: `server` (route table, `startUiServer`), `security` (Host/Origin/token checks), `options`, `http`, `assets` (whitelisted static CSS/JS from `assets/ui/`), `daemon` (status, health, spawned script actions), `data` (local/fleet reads), `changes` (task diffs via Git), `live` (`/api/live` regions), `sse` (`/api/events`), `markdown`, and `views/` (`layout`, `components`, `board`, `task`, `changes`); browser code is plain scripts in `assets/ui/*.js` (`common`, `dashboard`, `detail`, `live-log`, `changes`) | Serve the `aidlc-kit ui` dashboard without extra dependencies. Mutations only spawn the installed lifecycle scripts; the UI never writes lifecycle state. Add a page by adding a route to `ROUTES` in `src/ui/server.ts` and a view under `src/ui/views/`. |
-| Shared file semantics | `src/project-path.ts`, `src/managed-content.ts` | Keep all paths inside the project, reject unsafe symlinks, and own the managed-block marker format as its single definition. |
-| Development evaluator | `dev/evaluator/` | Run repository-only evaluation; never expose evaluator assets through the published package CLI. |
+| CLI and installation | `src/cli.ts` + `src/cli/` (`argv`, `options`, `prompt`, `commands`), `src/installer.ts`, `src/workflow.ts`, `src/adapters.ts`, `src/mcp-setup.ts` | Parse commands, select adapters, plan deterministic writes, install managed assets (incl. coordination-service template), status/doctor. |
+| Shared planning core | `src/managed-planning.ts` | Manifest reading, inventory keys, managed-file planning ladder (create/skip/update/conflict), init vs upgrade policies. |
+| Lifecycle domain | `src/model/` (barrel `src/model.ts`), `src/state/` (barrel `src/state.ts`), `src/gate.ts`, `src/context.ts` | Validate state, compute transitions and gate readiness, classify next actions, build phase packets. |
+| Profiles | `src/profiles.ts` | Resolve and validate config/profiles (incl. schema-only `tracker`), expand effective rules. |
+| Migration | `src/upgrade.ts`, `src/project-migration.ts`, `src/legacy.ts`, `src/upgrade-board.ts` | Legacy-data and version-layout migration (incl. legacy `BOARD.md`) with audit backups. |
+| Web dashboard | `src/task-ui.ts` (barrel) over `src/ui/`; browser scripts `assets/ui/*.js` | Serve `aidlc-kit ui` dependency-free; mutations only spawn installed scripts, never write state. |
+| Shared file semantics | `src/project-path.ts`, `src/managed-content.ts` | Path containment, unsafe-symlink rejection, managed-block marker format. |
+| Development evaluator | `dev/evaluator/` | Repository-only; never in the published CLI. |
 
-Dependencies flow inward: CLI, installation, and migration depend on the shared planning core, lifecycle, and shared helpers; the planning core depends only on lifecycle/config/shared modules (`model`, `workflow`, `managed-content`, `profiles`) — never on the CLI, installer, or upgrade. Migration does not import installation (`upgrade.ts` consumes `managed-planning.ts` directly); the remaining one-directional `installer.ts` → `project-migration.ts` edge supports init-time legacy-layout planning. Lifecycle does not depend on installation; evaluator may provision an installation but is not part of published runtime behaviour. `src/ledger.ts` and `src/tracker.ts` were removed as runtime-dead code; the `tracker` config section remains schema-only (`TrackerConfig`).
+`src/state/`: `io`, `paths`, `domain`, `guards`, `archive-record`, `items`, `commands`, `transitions`, `validate`, `store`, `memory`, `lessons`, `lifecycle`, `render`, `migrate`, `lock`.
+
+### Web dashboard modules
+
+- `src/ui/server`: route table (`ROUTES`) and `startUiServer`.
+- `src/ui/security`: Host, Origin, token checks.
+- `src/ui/options`, `src/ui/http`: option parsing, HTTP helpers.
+- `src/ui/assets`: whitelisted static CSS/JS from `assets/ui/`.
+- `src/ui/daemon`: daemon status, health, spawned script actions.
+- `src/ui/data`: local and fleet reads.
+- `src/ui/changes`: task diffs via Git.
+- `src/ui/live`, `src/ui/sse`: `/api/live` regions and `/api/events`.
+- `src/ui/markdown`: Markdown rendering.
+- `src/ui/docs`: read-only packaged `docs/*.md` via the fixed `DOC_PAGES` whitelist.
+- `src/ui/files`: byte-range file reads, optionally refusing symlinks.
+- `src/ui/views/`: `layout`, `components`, `board`, `task`, `changes`, `docs`.
+- `assets/ui/*.js`: plain browser scripts `common`, `dashboard`, `detail`, `live-log`, `changes`.
+
+New page: route in `ROUTES` (`src/ui/server.ts`) + view in `src/ui/views/`.
+
+### Dependency direction
+
+- Inward only: CLI, installation, migration depend on planning core, lifecycle, shared helpers.
+- Planning core depends only on `model`, `workflow`, `managed-content`, `profiles`; never on CLI, installer, or upgrade.
+- Migration never imports installation (`upgrade.ts` uses `managed-planning.ts` directly); the only `installer.ts` → `project-migration.ts` edge is init-time legacy-layout planning.
+- Lifecycle never depends on installation; the evaluator may provision one but is not published runtime.
+- `src/ledger.ts` and `src/tracker.ts` were removed as dead code; `tracker` config is schema-only (`TrackerConfig`).
 
 ## Installed workflow runtime
 
-The installed kernel consists of contracts, templates, schemas, profiles, and dependency-free scripts under `.agents/aidlc/`. Thin adapter instructions connect a selected coding tool to that kernel. Project customisation belongs outside the kernel:
+Kernel: contracts, templates, schemas, profiles, dependency-free scripts in `.agents/aidlc/`, reached via thin adapter instructions. Customisation stays outside:
 
 | Location | Ownership | Purpose |
 | --- | --- | --- |
-| `.agents/aidlc/` | Package managed | Lifecycle contracts, schemas, and scripts. |
-| `.agents/data/` | Project owned | Canonical state, task artifacts, derived indexes, memory, and evidence. |
-| `.agents/project/` | Project owned | Local profiles, rules, and evaluation material. |
+| `.agents/aidlc/` | Package managed | Lifecycle contracts, schemas, scripts. |
+| `.agents/data/` | Project owned | Canonical state, task artifacts, derived indexes, memory, evidence. |
+| `.agents/project/` | Project owned | Local profiles, rules, evaluation material. |
 
-The state machine enforces the lifecycle; gates require explicit human approval; evidence is append-only. Installed scripts remain usable without an `aidlc-kit` executable or a duplicate board file.
+State machine enforces the lifecycle; gates need human approval; evidence is append-only; no `aidlc-kit` executable or duplicate board file needed.
+
+### Loop runtime
 
 > [!WARNING]
-> The **local/interactive loop is usable** today; the end-to-end **fleet** coordinator described below is **still under active development**. Both are **experimental** — because the package is still pre-1.0 (`0.x`), their command surface, configuration fields, and state layout can change incompatibly in any release before `1.0.0`.
+> Experimental, pre-1.0. See [Status and stability](./loop-runbook.md#status-and-stability).
 
-The interactive loop runs inside the current Codex, Claude Code, or OpenCode conversation. Native workers use local assignment records under `.agents/data/loop/`; those records hold claims and checkpoints while `.agents/data/state/` remains lifecycle authority. Local loop ownership uses one holder-file primitive (`lib/loop-holder.mjs`) with three meanings: a **lock** is a short mutex around a file write (assignment records), a **lease** is process ownership (the singleton daemon, a task's loop run), and a **claim** is a worker's ownership of an item and its paths. Every lease/lock file has the same format (`kind`, `scope`, `pid`, `host`, `command`, `activity`, `startedAt`, `heartbeatAt`, `expiresAt`). It is live while unexpired and, on the same host, while its pid runs. Leases renew every 15 s against a 60 s TTL. Reclaim, renewal, and release are serialized by a `<file>.guard`. One task lease per task replaces the former separate runner and supervisor leases. Its `activity` (`waiting` or `turn`) decides whether gate approval is allowed. `aidlc-kit loop leases` reports all of them. The optional headless fleet runner uses the coordination service's PostgreSQL state, fenced lead and worker claims, and Git commit handoff. Its assignment records are operational metadata; task phase, evidence, and gates stay in the canonical lifecycle state. All hosts derive dispatch from task `nextAction` and dependency-ready work.
+Dispatch derives from task `nextAction` and dependency-ready work; assignment records are operational metadata; phase, evidence, gates stay canonical. Selecting a mode only configures; `loop start` (or `loop up`) runs.
 
-Installed entry points share a strict dependency-free argv parser. Parsing and command-shape validation precede root discovery, lock acquisition, and state reads. Explicit roots are validated project directories; implicit roots use nearest-ancestor `.agents/aidlc/` discovery and never fall back to writing beneath an arbitrary working directory.
+| Variant | Authority | How it runs |
+| --- | --- | --- |
+| Interactive | Local `.agents/data/state/` | In the current agent conversation; native workers claim and checkpoint via assignment records in `.agents/data/loop/`. |
+| Local | Local `.agents/data/state/` | Singleton daemon (`loop start` or `loop.sh up`): host-executed lead, Docker-isolated workers; gate approval only via trusted host terminal or dashboard. |
+| Fleet | Coordination service | Service owns supervisor leases, gate checkpoints, reviewer approval; Docker workers hold own credentials; Git uses fenced lead/worker claims with commit handoff. SQLite single-host, PostgreSQL multi-host. |
+
+**Agent support.**
+
+- Host-executed lead turns: Codex, Claude Code, OpenCode.
+- Container-isolated lead turns: Codex, Claude Code; OpenCode rejected with a diagnostic (file-based credentials; `lib/loop-lead-sandbox.mjs`).
+- Docker workers (local and fleet): all three; OpenCode uses environment credentials, XDG roots redirected into the ephemeral worker HOME (`lib/loop-worker-docker.mjs`).
+
+**Leases, locks, and claims.** One holder-file primitive (`lib/loop-holder.mjs`), three meanings:
+
+- **Lock:** short mutex around a file write (assignment records).
+- **Lease:** process ownership of the singleton daemon or one task's loop run (replacing separate runner and supervisor leases); its `activity` (`waiting` or `turn`) gates approval.
+- **Claim:** a worker's ownership of an item and its paths.
+
+One file format and liveness rule; 15 s renewal, 60 s TTL; a `<file>.guard` serializes reclaim, renewal, release. `aidlc-kit loop leases` lists them; details: [Troubleshooting](./troubleshooting.md#loop-leases-locks-and-claims).
+
+### Installed entry points
+
+A shared strict argv parser validates command shape before root discovery, lock acquisition, and state reads. Explicit roots must be validated project directories; implicit roots use nearest-ancestor `.agents/aidlc/` discovery, never an arbitrary cwd.
 
 ## Trust and safety boundaries
 
-- Workflow assets are local package assets. The manifest records `remoteUpdates: false`; status and doctor do not consult a registry.
-- Install/upgrade plans are conflict-first, path-contained, and reject unsafe symlink traversal.
-- Human-only upgrade is an intentional boundary: interactive confirmation is required and agents must not run or discover upgrades.
-- Codex, Claude Code, and OpenCode adapters are installed. Codex uses trusted project-scoped `.codex/config.toml` and `.codex/rules/aidlc.rules`; Claude Code scopes lifecycle-script permission through its local settings and phase skills. OpenCode gets an owner-scoped `AGENTS.md` block only, and `.opencode/` is read solely for detection, so no OpenCode configuration, MCP, or permission file is overridden.
-- Project commands are configured as executable-and-argument arrays rather than opaque shell strings.
-- Canonical state, terminal records, and rendered workplans reject symlink traversal and use same-directory atomic replacement. Lock acquisition is guard-serialized, while release verifies the owner token directly so a contended guard cannot strand the owner's main lock. The lifecycle state lock keeps its own implementation (stale when its pid is gone and it is at least 30 s old); loop leases and locks use `lib/loop-holder.mjs`, where reclaim re-reads the holder token under the guard, so a reclaimer never deletes a newer holder.
-- The compact master catalog remains archive authority. Recovery can replace only a valid, unreferenced terminal orphan tied by `id` and `createdAt` to the still-active catalog task; referenced, malformed, and identity-conflicting records fail closed.
+- Assets are local (manifest `remoteUpdates: false`); status/doctor never consult a registry.
+- Install/upgrade plans: conflict-first, path-contained, no unsafe symlink traversal.
+- Upgrade is human-only (interactive confirmation); agents never run or discover upgrades.
+- Codex: project-scoped `.codex/config.toml`, `.codex/rules/aidlc.rules`. Claude Code: lifecycle-script permission via local settings and phase skills. OpenCode: owner-scoped `AGENTS.md` block only; `.opencode/` read for detection only.
+- Project commands: executable-and-argument arrays, never shell strings.
+- Canonical state, terminal records, and rendered workplans reject symlink traversal; writes are same-directory atomic replaces.
+- State lock: guard-serialized; release verifies the owner token directly, so a contended guard cannot strand it; stale when its pid is gone and it is 30 s old.
+- Loop holders (`lib/loop-holder.mjs`) re-read the token under the guard on reclaim, so a reclaimer never deletes a newer holder.
+- The compact master catalog is archive authority; recovery replaces only a valid, unreferenced terminal orphan matching the active catalog task by `id` and `createdAt`; referenced, malformed, or identity-conflicting records fail closed.
 
 ## Change impact guide
 
@@ -72,11 +118,13 @@ Installed entry points share a strict dependency-free argv parser. Parsing and c
 | --- | --- |
 | A lifecycle/state rule | Installed scripts, schemas, gate/context rendering, runtime parity tests. |
 | An asset or adapter | Asset builder, package inventory, installer, adapter tests, tarball smoke test. |
-| A configuration/profile field | Validator, schema, effective-profile behaviour, documentation, and tests. |
-| Migration semantics | Upgrade plan/apply logic, path safety, transaction rollback, and migration tests. |
-| A public command | CLI parsing, README/setup guidance, command reference, and package tests. |
+| A configuration/profile field | Validator, schema, effective-profile behaviour, docs, tests. |
+| Migration semantics | Upgrade plan/apply logic, path safety, transaction rollback, migration tests. |
+| A public command | CLI parsing, README/setup guidance, command reference, package tests. |
 
-Use this guide with [Development](./development.md) and [Testing and release](./testing-and-release.md) before changing a cross-cutting boundary.
+## Related
 
-
-The optional end-to-end loop coordinator is implemented for both authorities. Local mode runs a foreground supervisor over the canonical local state: a host-executed lead, Docker-isolated workers, and gate approval only through the trusted host terminal. Fleet mode runs the same loop against a coordination service: the service owns supervisor leases, gate checkpoints, and reviewer approval, workers execute in Docker with their own credentials, and Git integration is fenced per backend (SQLite on one host with a local volume, or PostgreSQL across hosts). Selecting a mode configures the loop; only an explicit `loop start` runs it. Host-executed lead turns accept Codex, Claude Code, or OpenCode; container-isolated lead turns accept Codex and Claude Code only and reject OpenCode with an explicit diagnostic because its credentials are file-based. Local Docker worker batches accept Codex, Claude Code, or OpenCode (OpenCode workers authenticate from environment credentials with their XDG roots redirected into the ephemeral worker HOME); fleet worker containers reject OpenCode. See [Coordination service](./coordination-service.md) for deployment and recovery constraints.
+- [Development guide](./development.md)
+- [Testing and release](./testing-and-release.md)
+- [Design decisions](./design-decisions.md)
+- [Coordination service](./coordination-service.md)

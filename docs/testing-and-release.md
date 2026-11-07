@@ -1,8 +1,6 @@
 # Testing and release
 
-Loop changes should run the focused client assignment, graph, Git, remote-state, and `loop-*.test` fixtures, then lifecycle gate/conformance tests and package smoke. Verify in-conversation gate stop, later client resume, concurrent worker claims, lease expiry, exact-session recovery, Git scope checks, remote reviewer approval, and run bounds before aggregate `npm test` and `npm run lint`. Fleet persistence needs PostgreSQL integration coverage as well as in-memory/SQLite fixtures.
-
-Use the smallest relevant verification while developing, then complete the repository checks before a release review.
+Verifying changes, then preparing and publishing releases.
 
 ## Standard verification
 
@@ -12,28 +10,35 @@ npm run lint
 npm test
 ```
 
-`npm test` rebuilds the package before running compiled unit tests. The tests cover CLI and installer behaviour, state and gate transitions, migration safety, managed content, profiles/context, evaluator logic, and installed-runtime parity.
-
-If a test depends on child processes and a sandbox returns `EPERM`, rerun it in an appropriate local environment before deciding that the product failed.
+`npm test` rebuilds first. If a child-process test fails with `EPERM` in a sandbox, rerun locally before calling it a product failure.
 
 ## Lifecycle core sync
 
-The TypeScript core (`src/state.ts`) and the dependency-free installed/runtime core (`assets/aidlc/scripts/lib/store.mjs`, mirrored to `services/aidlc-coordination/src/lifecycle-core.mjs`) must stay byte-identical. After editing `assets/aidlc/scripts/lib/store.mjs`, run `npm run sync-core` to copy it into the coordination service, then commit both files together. The byte-identity conformance test (`test/unit/lifecycle-core-conformance.test.ts`) enforces this link.
+- After editing `assets/aidlc/scripts/lib/store.mjs`, run `npm run sync-core` and commit it with `services/aidlc-coordination/src/lifecycle-core.mjs`.
+- `test/unit/lifecycle-core-conformance.test.ts` enforces byte identity and parity with `src/state.ts`.
 
 ## Focused tests
-
-Build first, then invoke a compiled test file directly:
 
 ```sh
 npm run build
 node --test dist/test/unit/installer.test.js
 ```
 
-Choose the test closest to the changed boundary. For example, use installer tests for package inventory or documentation assertions, upgrade tests for migration semantics, and lifecycle-runtime tests when touching installed scripts. Continuation changes must also run `continuation-guard`, multi-item lifecycle runtime, context, and local/MCP lifecycle conformance coverage.
+Pick the nearest test: installer (package inventory, docs assertions), upgrade (migration semantics), lifecycle-runtime (installed scripts). Continuation changes also run `continuation-guard`, multi-item lifecycle runtime, context, and local/MCP lifecycle conformance.
 
 ## Loop, Docker, and PostgreSQL verification
 
-Loop orchestration tests are part of `npm test`. The ones that exercise real container isolation gate on fixture images plus environment flags; build the fixtures once with a local Docker daemon:
+> [!WARNING]
+> Experimental, pre-1.0. See [Status and stability](./loop-runbook.md#status-and-stability).
+
+Loop changes:
+
+- Run the client assignment, graph, Git, remote-state, and `loop-*.test` fixtures, then lifecycle gate/conformance tests and the [package smoke test](#package-smoke-test).
+- Verify in-conversation gate stop, client resume, concurrent worker claims, lease expiry, exact-session recovery, Git scope checks, remote reviewer approval, and run bounds.
+- Cover fleet persistence with the PostgreSQL suite below, not only SQLite.
+- Finish with `npm test` and `npm run lint`.
+
+Container-isolation tests skip without fixture images and flags, so plain `npm test` is not isolation verification. Build the fixtures once:
 
 ```sh
 docker build -q -t aidlc-worker-isolation-test:local test/fixtures/docker/worker-isolation
@@ -48,16 +53,16 @@ AIDLC_WORKER_DOCKER_IMAGE=aidlc-worker-fleet-e2e-test:local \
 npm test
 ```
 
-- `AIDLC_TEST_DOCKER=1` builds and runs the adversarial lead-boundary container: the isolated lead must not write source or see lifecycle state, the Docker socket, host HOME, or reviewer credentials.
-- `AIDLC_TEST_WORKER_IMAGE` and `AIDLC_TEST_DOCKER_IMAGE` run the isolated Docker worker through the local batch dispatcher and the fleet Git handoff.
-- `AIDLC_TEST_MULTITURN_IMAGE` runs the multi-turn session HOME fixture against the turn limit.
-- `AIDLC_WORKER_DOCKER_IMAGE` is required on Linux for the real fleet end-to-end test (coordinator dispatch, isolated worker, Git integration, canonical completion, and G2 publication). Without it that test fails closed instead of skipping.
+| Variable | Enables |
+| --- | --- |
+| `AIDLC_TEST_DOCKER=1` | Adversarial lead-boundary container: isolated lead must not write source or see lifecycle state, Docker socket, host HOME, or reviewer credentials. |
+| `AIDLC_TEST_WORKER_IMAGE`, `AIDLC_TEST_DOCKER_IMAGE` | Isolated Docker worker via the local batch dispatcher and fleet Git handoff. |
+| `AIDLC_TEST_MULTITURN_IMAGE` | Multi-turn session HOME fixture against the turn limit. |
+| `AIDLC_WORKER_DOCKER_IMAGE` | Real fleet e2e on Linux (coordinator dispatch, isolated worker, Git integration, canonical completion, G2 publication). The CLI e2e test skips without it; the loop-daemon e2e test fails closed. |
 
-Each fixture image contains only a fake provider CLI that emits the Codex JSONL protocol; no real Codex, Claude Code, or OpenCode credentials or accounts are used, and the fake refuses to run when it can see `.git`, lifecycle state, or the Docker socket.
+Fixture images hold only a fake provider CLI speaking the Codex JSONL protocol (no real credentials); it refuses to run if it can see `.git`, lifecycle state, or the Docker socket.
 
-Without these variables the Docker-gated tests skip, so a plain `npm test` is not loop-isolation verification.
-
-PostgreSQL fleet coverage runs against a real database and is not part of `npm test`:
+PostgreSQL fleet coverage is outside `npm test` and skips without `TEST_POSTGRES_URL` (SQLite still runs). Run it whenever `services/aidlc-coordination/` changes:
 
 ```sh
 docker run -d --rm --name aidlc-pg-test -e POSTGRES_PASSWORD=test -p 127.0.0.1:5433:5432 postgres:16-alpine
@@ -67,12 +72,9 @@ TEST_POSTGRES_URL=postgres://postgres:test@127.0.0.1:5433/postgres \
 docker stop aidlc-pg-test
 ```
 
-Without `TEST_POSTGRES_URL` the PostgreSQL tests skip with SQLite coverage still running; run the coordination service suites separately whenever `services/aidlc-coordination/` changes.
-
-
 ## Package smoke test
 
-Release verification must exercise the tarball rather than the source tree. From the repository root, build and pack locally, extract the archive, then run the extracted CLI against a clean temporary consumer project.
+Release verification exercises the tarball, not the source tree.
 
 ```sh
 AIDLC_PACK_DIR="$(mktemp -d /tmp/aidlc-pack.XXXXXX)"
@@ -88,13 +90,12 @@ node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" status "$AIDLC_TEST_PROJECT"
 node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" doctor "$AIDLC_TEST_PROJECT" --strict
 ```
 
-Keep the printed temporary paths until inspection is complete. Remove them manually afterwards. Do not reuse a smoke-test project for a different package version; the installer intentionally refuses implicit upgrades.
-
-Check that the tarball contains the public CLI, bundled assets, and documentation, but not `dist/dev/`, evaluator runners, evaluator schemas, or evaluator configuration.
+- Remove the temporary paths manually after inspection; never reuse a smoke project for another version (installer refuses implicit upgrades).
+- The tarball must contain the public CLI, bundled assets, and docs; not `dist/dev/`, evaluator runners, schemas, or configuration.
 
 ## Development-only evaluator
 
-The evaluator under `dev/evaluator/` is repository and CI infrastructure. It is compiled for tests but excluded from the published package.
+`dev/evaluator/` is repository/CI infrastructure: compiled for tests, not published. Runners exchange JSON; reports capture transport, transcript, normalised events, usage, and diagnostics. Real Codex, Claude Code, or OpenCode runs cost credentials and budget; ordinary verification does not need them.
 
 ```sh
 npm run build
@@ -102,59 +103,77 @@ node dist/dev/evaluator/cli.js list
 node dist/dev/evaluator/cli.js run --runner local-simulated
 ```
 
-Runners exchange JSON, and reports capture transport, transcript, normalised events, usage, and diagnostics. Real Codex, Claude Code, or OpenCode runs can consume credentials and model budget; they are not required for ordinary development verification.
+Pinned `opencode-beam` runner: adapter `opencode`, model `opencode-go/beam-free`, version `opencode-2.2.0`, protocol version `2`, real evidence, 300000 ms timeout; `economy` category uses `opencode-go/beam-free#medium` to fit that timeout. Runs `opencode run --format json --standalone --auto` per turn, resuming with `--session`.
 
-The pinned `opencode-beam` runner uses adapter `opencode` with model `opencode-go/beam-free`, version `opencode-2.2.0`, protocol version `2`, real evidence, and a 300000 ms timeout; the `economy` category is pinned to the lighter `opencode-go/beam-free#medium` variant so heavier turns stay inside that timeout. It runs `opencode run --format json --standalone --auto` once per turn, resumes with `--session`, and writes `opencode.json` containing `{"mcp": {}}` into each scenario workspace so project MCP servers do not leak into the evaluation. OpenCode resolves its project directory from the inherited `PWD`, not the spawned process working directory, so the runner and the loop driver pin `PWD` to the workspace; without that pin, commands would silently run in the invoking repository. OpenCode has no environment-credential mode, so the runner reuses the local Console authentication; the residual risk is that user plugins or agents can still load. That isolation is workspace configuration, not a security boundary.
+- Runner and loop driver pin `PWD` to the workspace: OpenCode resolves its project from inherited `PWD`, not the spawned cwd; unpinned, commands silently run in the invoking repository.
+- Each scenario workspace gets `opencode.json` `{"mcp": {}}` so project MCP servers do not leak; local Console auth is reused and user plugins or agents can still load. This is configuration, not a security boundary.
 
-The release-eligible `aidlc-official-agentic` suite is version `2.5.0`. Its `supported-adapters` scenario asks the agent to explain that the workflow supports Codex, Claude Code, and OpenCode without executing remote code or shell strings. The suite also includes `build-multi-item-continuation`, which starts with three canonical build items and requires one agent run to complete all of them, record verification/review evidence, and stop only at a ready G2. This complements unit guards by exercising the model-facing continuation contract.
-
-The release checker validates required evidence according to the configured adapter policy. This repository's script uses the OpenCode-only policy:
+Release-eligible suite: `aidlc-official-agentic` `2.5.0`. `supported-adapters` expects the agent to state Codex, Claude Code, and OpenCode support without running remote code or shell strings; `build-multi-item-continuation` starts with three build items and requires one run to finish all, record verification/review evidence, and stop only at a ready G2.
 
 ```sh
 npm run release:check
 ```
 
-The script passes `--adapters opencode`, while `dev/evaluator/release.ts` keeps its `["codex","claude"]` default for compatibility so downstream users and existing policies are unaffected. It reads local evaluation evidence from `.agents/project/release-eval.json` and fails closed if required evidence or integrity thresholds are missing. Re-adding Codex or Claude to this repository's policy requires fresh real evidence for those adapters, not a policy-only edit.
+Passes `--adapters opencode` (this repository's policy); `dev/evaluator/release.ts` keeps its `["codex","claude"]` default for downstream users. Reads `.agents/project/release-eval.json`; fails closed on missing evidence or integrity thresholds. Re-adding Codex or Claude needs fresh real evidence.
 
 ## Release readiness
 
-Before an authorised release, complete:
+Before an authorised release:
 
 1. `npm test`
 2. `npm run lint`
 3. The local tarball smoke test
 4. `npm run release:check`
-5. A review of the generated package contents and documentation links
+5. Review the generated package contents and documentation links
 
-Publishing, tagging, committing, and pushing are separate human-authorised actions. A passing verification run is not delivery authority.
+Publishing, tagging, committing, and pushing are separate human-authorised actions, not implied by a passing run.
 
-## First npm publication
+### Version bump checklist
 
-The first release is `@felixdotgo/aidlc-kit@0.1.1`, with public access and the `latest` dist-tag. Complete the release checks and the project's human review gates before publishing.
+Update together:
 
-From the repository root, sign in to an npm account with permission to publish to the `@felixdotgo` scope and confirm the active account:
+| File | What pins the version |
+| --- | --- |
+| `package.json`, `package-lock.json` | Package version. |
+| `README.md` | Version badge and `npx --package` commands. |
+| `docs/command-reference.md`, `docs/configuration.md`, `docs/coordination-service.md`, `docs/loop-runbook.md`, `docs/loop-local-run.md` | `npx --package @felixdotgo/aidlc-kit@<version>` commands and "version `<version>`" notes. |
+| `docs/development.md`, `docs/testing-and-release.md` | Local archive name `felixdotgo-aidlc-kit-<version>.tgz`. |
+| `test/unit/installer.test.ts` | Expected manifest `packageVersion` and `installed version:` status output. |
+| `test/unit/eval.test.ts` | `packageVersion` constant. |
+
+Confirm no old-version references remain:
+
+```sh
+grep -rn "<old-version>" README.md DEVELOPMENT.md docs test src
+```
+
+## Publishing a release
+
+After [release readiness](#release-readiness) and the human review gates, publish `@felixdotgo/aidlc-kit@<version>` with public access and the `latest` dist-tag, signed in to an account that can publish to `@felixdotgo`:
 
 ```sh
 npm login --registry https://registry.npmjs.org
 npm whoami --registry https://registry.npmjs.org
-npm view @felixdotgo/aidlc-kit@0.1.1 version --registry https://registry.npmjs.org
+npm view @felixdotgo/aidlc-kit@<version> version --registry https://registry.npmjs.org
 ```
-
-An unpublished package normally returns `404` from `npm view`; that response does not establish scope ownership or publish permission. If `0.1.1` already exists, stop: npm versions cannot be overwritten. If `npm whoami` returns `401`, sign in again before publishing.
-
-After inspecting the local tarball and documentation, publish from the repository root:
 
 ```sh
 npm publish --access public --tag latest --registry https://registry.npmjs.org
 ```
 
-`prepublishOnly` runs the unit tests, lint, and evaluator release check before this command publishes. Complete any authentication or two-factor prompt from npm. The initial publication of a scoped package needs `--access public`; see the [npm scope documentation](https://docs.npmjs.com/cli/v11/using-npm/scope).
-
-Confirm the published version, dist-tag and artifact metadata:
-
 ```sh
-npm view @felixdotgo/aidlc-kit@0.1.1 version dist.tarball dist.integrity --json --registry https://registry.npmjs.org
+npm view @felixdotgo/aidlc-kit@<version> version dist.tarball dist.integrity --json --registry https://registry.npmjs.org
 npm view @felixdotgo/aidlc-kit dist-tags --json --registry https://registry.npmjs.org
 ```
 
-Expect version `0.1.1`, a tarball URL and integrity value, and `latest` pointing to `0.1.1`. Git tags, GitHub releases, commits, and pushes require their own delivery authorisation.
+- `npm view` `404` means unpublished (not proof of scope ownership); if the version exists, stop: npm versions cannot be overwritten. `npm whoami` `401`: sign in again.
+- `prepublishOnly` runs unit tests, lint, and the release check; answer npm's auth or two-factor prompt. A scoped package's first publish needs `--access public` ([npm scope docs](https://docs.npmjs.com/cli/v11/using-npm/scope)).
+- Expect version `<version>`, tarball URL and integrity, and `latest` at `<version>`.
+- Git tags, GitHub releases, commits, and pushes need separate delivery authorisation.
+
+## Related
+
+- [Development guide](./development.md)
+- [Architecture](./architecture.md)
+- [Coordination service](./coordination-service.md)
+- [Loop runbook](./loop-runbook.md)

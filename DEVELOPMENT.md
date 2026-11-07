@@ -1,45 +1,32 @@
 # Contributing to aidlc-kit
 
-This file is the short entry point for maintainers and contributors. Detailed guidance lives in [`docs/`](./docs/README.md) so that user setup, system operation, and repository development can evolve independently.
+Entry point for contributors. Details live in [`docs/`](./docs/README.md).
 
 ## Local bootstrap
 
-Requirements: Node.js 20 or newer and npm.
+Node.js 20.17+ and npm.
 
 ```sh
 npm install
-npm test
-npm run lint
+npm test        # build + unit tests
+npm run lint    # tsc --noEmit
 ```
 
-## Workflow bootstrap
-
-`.agents/` is gitignored; every contributor installs the repo's own workflow locally.
-
-```sh
-npm install
-npm run build
-node dist/src/cli.js init . --agent <codex|claude|opencode> --yes
-```
-
-Then configure `.agents/config.json`: set `commands` to build/test/lint as executable+args arrays (`build`: `npm`/`["run","build"]`, `test`: `npm`/`["test"]`, `lint`: `npm`/`["run","lint"]`) and `agentState` mapping your adapter id to `"scripted"`. Validate with `node dist/src/cli.js profile validate .`.
-
-See [Configuration reference](./docs/configuration.md) and [Development guide](./docs/development.md).
+To develop with the repository's own workflow (`.agents/` is gitignored), follow [Dogfooding this repository](./docs/development.md#dogfooding-this-repository).
 
 ## Contributor documentation
 
-- [Development guide](./docs/development.md) — dependencies, repository layout, implementation boundaries, and local commands.
-- [Testing and release](./docs/testing-and-release.md) — focused tests, package smoke test, evaluator, and release readiness.
-- [Architecture](./docs/architecture.md) — module ownership, data flow, and installed-runtime parity.
-- [Configuration reference](./docs/configuration.md) — profiles, rules, provider permissions, and project-owned configuration.
+- [Development guide](./docs/development.md) — layout, local commands, boundaries, code style, dogfooding.
+- [Testing and release](./docs/testing-and-release.md) — focused tests, Docker/PostgreSQL verification, package smoke test, release checklist.
+- [Architecture](./docs/architecture.md) — module ownership and source → bundle → installed flow.
+- [Design decisions](./docs/design-decisions.md) — numbered decisions and how to add one.
 
 ## Documentation policy
 
-- Keep `README.md` focused on package requirements and setup.
-- Add operational and system guidance to the relevant page in `docs/`.
-- Update command/configuration examples and their tests in the same change as a public contract.
-- Do not duplicate canonical agent instructions from `assets/aidlc/` in overview documentation.
+- `README.md` is the fastest path to install and use; everything else goes in `docs/` per [Adding or changing a page](./docs/README.md#adding-or-changing-a-page).
+- A public contract change (command, config field, schema, installed asset) updates its guide and test in the same change.
+- Never duplicate canonical agent instructions from `assets/aidlc/`; link to them.
 
 ## Delivery boundary
 
-Running verification does not authorise publishing, tagging, committing, or pushing. Those actions require separate human approval.
+Passing verification does not authorise publishing, tagging, committing, or pushing; each needs separate human approval.

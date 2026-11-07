@@ -4,79 +4,47 @@
 [![license](https://img.shields.io/npm/l/@felixdotgo/aidlc-kit)](https://github.com/felixdotgo/aidlc-kit/blob/main/LICENSE)
 [![node](https://img.shields.io/node/v/@felixdotgo/aidlc-kit)](https://nodejs.org/)
 
-`@felixdotgo/aidlc-kit` installs an AI-DLC workflow into an existing project. The workflow gives coding agents a shared task lifecycle, dependency-aware work, explicit human review gates, and project-owned state and rules. The normal lead runs in your Codex, Claude Code, or OpenCode conversation; an optional coordination service supports workers on multiple machines.
-
-Workflow assets are bundled with the package, `remoteUpdates` is `false`, and normal status checks never contact a registry. Fleet execution is opt-in and uses a separately deployed service. The optional end-to-end loop is also opt-in: select a mode during `init` or a human-run `upgrade`, then start it explicitly with `aidlc-kit loop start` — selecting a mode never starts or approves anything by itself.
+Installs an AI-DLC workflow into an existing project: a shared task lifecycle, explicit human review gates, and project-owned state for Codex, Claude Code, and OpenCode. Optionally, a loop daemon runs tasks end-to-end on one machine or across a fleet.
 
 > [!WARNING]
-> **Local loop mode is usable** today; **fleet mode and the AI-DLC Coordination service are still under active development**. The loop is **experimental** — the package is pre-1.0 (`0.x`), so CLI flags, `loop.*`/`mcp.*` configuration fields, environment variables, and installed layouts can change incompatibly in any release before `1.0.0`.
-
-## Requirements
-
-- Node.js 20.17 or newer.
-- An existing project directory.
-- Codex, Claude Code, or OpenCode.
-- Supported platforms: Linux and macOS are fully supported; Windows is best-effort (see `docs/development.md` Platform support). Loop/fleet features require Docker and a POSIX shell.
+> Pre-1.0 (`0.x`). The local loop is usable; fleet mode and the coordination service are still in development. See [Status and stability](./docs/loop-runbook.md#status-and-stability).
 
 ## Quick start
 
-Run these commands from your existing project's directory to preview the installation, then apply it:
+Requires Node.js 20.17+ and Codex, Claude Code, or OpenCode (Linux/macOS; Windows is best-effort).
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init . --agent codex --dry-run
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init . --agent codex --yes
-```
-
-`npx` may ask permission to download the package on first use. These examples pin version `0.2.0`. After installation, the project's lifecycle scripts run locally without `npx` or a registry connection.
-
-Use the adapter that matches the coding tool:
-
-| Tool | `--agent` value | Installed entry point |
-| --- | --- | --- |
-| Codex | `codex` | `AGENTS.md` |
-| Claude Code | `claude` | `CLAUDE.md` and phase skills |
-| OpenCode | `opencode` | `AGENTS.md` |
-
-Use `--all` to install every supported adapter. Codex installs workspace-write sandboxing with on-request approvals and a project execpolicy that permits only AI-DLC lifecycle scripts; trust the project before starting Codex so that it loads the project configuration. Claude Code installs a local permission allowlist for the same lifecycle-script command prefix without granting general Bash access. OpenCode installs an owner-scoped block in `AGENTS.md` and uses `.opencode/` only for detection; it writes no OpenCode configuration, MCP, or permission file, so your own settings are not overridden. When Codex and OpenCode are installed together, their blocks merge in the same `AGENTS.md`. Use `--force --yes` only for an initial installation when replacing an unmanaged conflicting file is intentional.
-
-Confirm the installed project locally:
-
-```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit status .
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init .          # previews, then installs after you confirm
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit doctor . --strict
 ```
 
-## Run the loop (optional, local mode)
+In a terminal, `init` asks for the adapter (unless exactly one is detected or you pass `--agent codex|claude|opencode` / `--all`) and the loop mode (unless `--loop-mode …`), previews the files, then asks you to confirm; `--yes` skips the confirmation, `--dry-run` writes nothing. The installed lifecycle scripts run locally and never contact a registry.
 
-`init` and `upgrade` always install a one-command launcher, so enabling the loop is a configuration edit:
+Then ask your agent for a change:
 
-1. In `.agents/config.json`, set `"loop": { "mode": "local", "agents": { "lead": "opencode", "workers": { "worker-a": "opencode" } } }` (providers: `codex`, `claude`, or `opencode`), or rerun `init` with `--loop-mode local`.
-2. Fill in `.agents/loop.env` (installed as a commented template and git-ignored through `.agents/.gitignore`). Values your tools already store are detected: the OpenCode `model` from `opencode.json`, and worker keys from OpenCode's `auth.json`, Codex's `auth.json`, or the `env` block of Claude Code settings. Exported shell variables always win.
-3. Start the daemon and the dashboard:
-
-```sh
-./.agents/aidlc/scripts/loop.sh up      # Windows: .agents\aidlc\scripts\loop.cmd up
+```text
+Add rate limiting to the login endpoint using the AI-DLC workflow.
 ```
 
-`up` checks the environment first and stops with the exact variable to set; `loop.sh check` prints the same report, never showing secret values. `Ctrl-C` closes only the dashboard; `loop.sh down` stops both. The launcher runs the CLI from the project's `node_modules` when present, otherwise the CLI that last ran `init`/`upgrade` (recorded in `.agents/data/loop/cli.json`, so an `npx --package …` or local `.tgz` install works as-is), then `aidlc-kit` on `PATH`, then `npx --no-install`. The dashboard has a **Docs** page with these guides. Local mode needs Docker on a Linux host; the `.cmd` launcher works on Windows, but local workers are only verified on Linux. See the [Loop setup runbook](./docs/loop-runbook.md).
+The agent creates a task and stops at three review steps — Confirm requirements, Approve plan, Review implementation — each needing your explicit reply. The Codex and Claude Code adapters pre-approve only the lifecycle scripts, and OpenCode gets instructions only ([Agent permissions](./docs/configuration.md#agent-permissions)); for Codex, trust the project first.
+
+## Run the loop (optional)
+
+A daemon drives tasks end-to-end on a Linux host with Docker, stopping at every review step for you:
+
+1. In `.agents/config.json`: `"loop": { "mode": "local", "agents": { "lead": "opencode", "workers": { "worker-a": "opencode" } } }` (providers: `codex`, `claude`, `opencode`).
+2. Put credentials in the git-ignored `.agents/loop.env`; keys your tools already store are detected.
+3. `./.agents/aidlc/scripts/loop.sh up` checks the environment, starts the daemon, and serves the dashboard (`--open` launches the browser); `loop.sh down` stops both.
+
+Setup: [Loop setup runbook](./docs/loop-runbook.md). Daily use: [Local loop walkthrough](./docs/loop-local-run.md).
 
 ## Documentation
 
-The detailed documentation is organised by task and audience:
-
-- [Documentation index](./docs/README.md) — choose the right guide.
-- [Operating the workflow](./docs/operating-workflow.md) — lifecycle, state, gates, and blocked work.
-- [Configuration](./docs/configuration.md) — project configuration, profiles, rules, and adapters.
-- [Command reference](./docs/command-reference.md) — every package CLI command and safety constraint.
-- [Development](./docs/development.md) — local contributor setup, source layout, and implementation rules.
-- [Testing and release](./docs/testing-and-release.md) — verification, evaluator, package smoke test, and release readiness.
-- [Architecture](./docs/architecture.md) — package boundaries and the source-to-installed flow.
-- [AI-DLC Coordination service](./docs/coordination-service.md) — opt-in Docker/remote coordination, security, and polling contract.
-- [Loop setup runbook](./docs/loop-runbook.md) — enable the loop, run it locally with `loop.sh up`, or spread it across machines.
+[Index](./docs/README.md) · [Operating the workflow](./docs/operating-workflow.md) · [Configuration](./docs/configuration.md) · [Command reference](./docs/command-reference.md) · [Troubleshooting](./docs/troubleshooting.md) · [Coordination service (fleet)](./docs/coordination-service.md) · [Contributing](./DEVELOPMENT.md)
 
 ## Safety note
 
-Only a human may initiate or apply a workflow upgrade. `upgrade` rejects `--yes` and `--force`, requires an interactive terminal, and asks the human to type the target package version. See the [command reference](./docs/command-reference.md#upgrade) before changing an existing installation.
+Only a human may upgrade: `upgrade` rejects `--yes` and `--force`, needs an interactive terminal, and asks you to type the target version ([details](./docs/command-reference.md#upgrade)).
 
 ## License
 

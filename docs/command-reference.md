@@ -1,8 +1,22 @@
 # Command reference
 
-All package commands operate on local files. The examples run version `0.2.0` through npm; `npx` may ask permission to fetch that package on first use. Replace `.` with the target project path when needed. For a source checkout, see the [development guide](./development.md).
+Lookup reference for every `aidlc-kit` command, flag, and loop environment variable, plus the lifecycle scripts installed into a project. Concepts: [Operating the workflow](./operating-workflow.md); `.agents/config.json` fields: [Configuration](./configuration.md).
 
-Global flags available on every invocation: `--version` (or `-v`) prints the package version and exits; `--help` prints usage.
+- All commands operate on local files. Examples run version `0.2.0` through npm (`npx` may ask to fetch the package once); replace `.` with the target project path. Source checkout: [development guide](./development.md).
+- Global flags: `--version` (`-v`) prints the package version and exits; `--help` prints usage.
+
+Contents:
+
+- [`init`](#init) — install the workflow into a project.
+- [`status`](#status) — report the installed version.
+- [`doctor`](#doctor) — check manifest, configuration, and state.
+- [`profile validate`](#profile-validate) — print the resolved profile chain.
+- [`uninstall`](#uninstall) — remove managed assets.
+- [`mcp setup`](#mcp-setup) — configure the optional coordination service.
+- [`upgrade`](#upgrade) — human-only package upgrade.
+- [`loop`](#loop) — run and inspect the end-to-end loop daemon.
+- [`ui`](#ui) — web dashboard.
+- [Installed lifecycle scripts](#installed-lifecycle-scripts) — `state.mjs`, `task-next.mjs`, `loop.mjs`, and fleet scripts inside the project.
 
 ## `init`
 
@@ -10,11 +24,11 @@ Global flags available on every invocation: `--version` (or `-v`) prints the pac
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
 ```
 
-Plans the installation, prints a preview, and then writes the workflow only after confirmation (or `--yes`). `--dry-run` prints the same plan without writing. If exactly one installed agent is detected, it can be selected automatically. In an interactive terminal, choose multiple agents with the checkbox prompt: use arrow keys to move, Space to toggle, A to toggle all, and Enter to confirm. For scripts and non-interactive terminals, use `--agent <name[,name]>` or `--all`.
-
-In interactive setup, choose a loop mode and, when enabled, the lead and worker providers. For non-interactive setup, omit loop options to keep the default off, or specify `--loop-mode local|fleet` together with `--loop-lead` and `--loop-workers` (for example, `--loop-workers a=codex,b=opencode`). The preview includes the project config change. These settings only configure the loop; run `aidlc-kit loop start` to actually start it. Local loop mode is usable today; fleet mode is still under active development; the loop and the coordination service remain experimental: their flags and defaults may change incompatibly in any release before `1.0.0`.
-
-`--force` is for an intentional initial replacement of an unmanaged conflicting file. It is not an upgrade mechanism. If the project already has another workflow package version, use the human-run upgrade flow instead.
+- Prints a preview and writes only after confirmation (or `--yes`); `--dry-run` prints the plan without writing.
+- One detected agent is selected automatically. Interactive terminals get a checkbox prompt (arrows move, Space toggles, A toggles all, Enter confirms); scripts pass `--agent <name[,name]>` or `--all`.
+- Interactive setup asks for a loop mode and providers. Non-interactive: omit loop options to keep `off`, or pass `--loop-mode local|fleet` with `--loop-lead` and `--loop-workers` (for example `--loop-workers a=codex,b=opencode`). This only configures the loop; `aidlc-kit loop start` starts it.
+- Loop and coordination flags are experimental ([Status and stability](./loop-runbook.md#status-and-stability)).
+- `--force` replaces an unmanaged conflicting file on an intentional initial install only; it is not an upgrade mechanism. Another installed package version needs the human-run upgrade.
 
 ## `status`
 
@@ -22,7 +36,8 @@ In interactive setup, choose a loop mode and, when enabled, the lead and worker 
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit status [path] [--json]
 ```
 
-Reports the installed version and local installation status. It does not query a registry. Pass `--json` to print the same data as a JSON object (`workflow`, `installedVersion`, `schema`, `detectedAgents`).
+- Reports the installed version and local installation status; never queries a registry.
+- `--json` prints `workflow`, `installedVersion`, `schema`, `detectedAgents`.
 
 ## `doctor`
 
@@ -30,7 +45,9 @@ Reports the installed version and local installation status. It does not query a
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit doctor [path] [--strict] [--json]
 ```
 
-Checks the local manifest, configuration, and canonical state. `--strict` turns compatibility warnings such as a legacy manifest into errors. It does not query a registry. Pass `--json` to print `{level, message, strict}`; an `error` level sets a non-zero exit code.
+- Checks the local manifest, configuration, and canonical state; never queries a registry.
+- `--strict` turns compatibility warnings (for example a legacy manifest) into errors.
+- `--json` prints `{level, message, strict}`; an `error` level exits non-zero.
 
 ## `profile validate`
 
@@ -38,7 +55,7 @@ Checks the local manifest, configuration, and canonical state. `--strict` turns 
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit profile validate [path]
 ```
 
-Loads `.agents/config.json`, resolves its profile chain, and prints the effective profile order. Use it after changing `extends` or local profiles.
+- Resolves the `.agents/config.json` profile chain and prints the effective order. Run it after changing `extends` or local profiles.
 
 ## `uninstall`
 
@@ -46,7 +63,7 @@ Loads `.agents/config.json`, resolves its profile chain, and prints the effectiv
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit uninstall [path] [--yes] [--dry-run]
 ```
 
-Prints the removal plan before applying it. It removes eligible unchanged managed assets but preserves project configuration and state. Prefer `--dry-run` first when working in an existing project.
+- Prints the removal plan, then removes eligible unchanged managed assets; project configuration and state are preserved. Run `--dry-run` first in an existing project.
 
 ## `mcp setup`
 
@@ -54,9 +71,10 @@ Prints the removal plan before applying it. It removes eligible unchanged manage
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
 ```
 
-Previews the optional AI-DLC Coordination service configuration, then writes only after confirmation. Non-interactive use requires `--deployment`, `--storage`, `--bind`, and `--workspace`. It never starts Docker; `--enable` is explicit and remote mode has no local fallback. See [AI-DLC Coordination service](./coordination-service.md) for deployment and credential requirements.
-
-`--token-env <name>` overrides the default `AIDLC_MCP_TOKEN` environment variable name used in the generated compose file. `--providers <p,...>` selects project-management connectors non-interactively (`jira`, `trello`, `github-issues`).
+- Previews the coordination service configuration and writes only after confirmation. Non-interactive use requires `--deployment`, `--storage`, `--bind`, and `--workspace`.
+- Never starts Docker; `--enable` is explicit; remote mode has no local fallback. Deployment and credentials: [AI-DLC Coordination service](./coordination-service.md).
+- `--token-env <name>` overrides the default `AIDLC_MCP_TOKEN` variable name in the generated compose file.
+- `--providers <p,...>` selects connectors non-interactively: `jira`, `trello`, `github-issues`.
 
 ## `upgrade`
 
@@ -64,11 +82,9 @@ Previews the optional AI-DLC Coordination service configuration, then writes onl
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--dry-run]
 ```
 
-Upgrade is deliberately human-only. The command rejects `--yes` and `--force`; applying it requires an interactive terminal and an exact typed confirmation of the package version. Interactive confirmations use the same styled terminal prompt as `init`. Agents must not run, preview, detect, or suggest package upgrades on their own.
-
-An omitted loop selection preserves the existing config; an explicit selection appears in the preview and is included in the upgrade backup and rollback. Enabling a mode requires a lead and worker mapping.
-
-The upgrade plan handles supported legacy `.aidlc/` project data transactionally: identical paths are deduplicated, differing content or unsafe entries stop the plan, and an audit backup supports rollback. Review the preview before an authorised human applies it.
+- Human-only: rejects `--yes` and `--force`, requires an interactive terminal and an exact typed confirmation of the package version (same styled prompt as `init`). Agents must never run, preview, detect, or suggest upgrades.
+- An omitted loop selection preserves the existing config; an explicit one appears in the preview and in the backup and rollback. Enabling a mode requires a lead and worker mapping.
+- Supported legacy `.aidlc/` data is handled transactionally: identical paths are deduplicated, differing content or unsafe entries stop the plan, and an audit backup supports rollback.
 
 ## `loop`
 
@@ -85,37 +101,98 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop leases [--task-id ID] [
 ```
 
 > [!WARNING]
-> **Local loop mode is usable** today; **fleet mode is still under active development**. The loop commands remain **experimental** — because the package is still pre-1.0 (`0.x`), their options, environment variables, and diagnostics can change incompatibly in any release before `1.0.0`.
+> Experimental, pre-1.0. See [Status and stability](./loop-runbook.md#status-and-stability).
 
-`--mode` defaults to the configured `loop.mode`; the command fails closed when it does not match (`Requested mode does not match configured authority`). Every action except `worker-image` and `leases` requires an enabled `loop.mode` with a lead and worker mapping. Local and fleet mode share one daemon and the same actions:
+- `--mode` defaults to the configured `loop.mode` and fails closed on a mismatch (`Requested mode does not match configured authority`).
+- Every action except `worker-image` and `leases` requires an enabled `loop.mode` with a lead and worker mapping. Local and fleet mode share one daemon and the same actions.
 
 | Action | Behaviour |
 | --- | --- |
-| `up` | Local mode only. The one-command start: checks that `loop.mode` is `local` (otherwise prints the config to add) and that `--port` is valid, runs the `env` report and stops on any error, starts the daemon detached (stderr → `.agents/data/loop/daemon.log`; reports `already running` instead of starting a second one, and warns when the env file changed after the daemon started), then serves the dashboard in the foreground like `ui` and records `{ pid, url }` (never the login token) in `.agents/data/loop/ui.json`. `Ctrl-C` closes only the dashboard; the daemon keeps running. `--no-ui` starts only the daemon; a dashboard already recorded and still answering at its URL is reported instead of started twice (a stale record is ignored). |
-| `down` | Stops the dashboard recorded by `up` — only when its URL answers `GET /api/instance` with the random id recorded in `ui.json`, so another project's dashboard or a reused pid is never signalled — then the daemon (as `stop`). |
-| `stop` | Asks the daemon to finish the current agent turn and exit (one `SIGTERM`) and waits up to 15 s; `--now` asks it to cancel the in-flight turn (a second `SIGTERM`). The requested stage is recorded in `.agents/data/loop/daemon.stop` for that daemon run (pid and start time), so repeating `stop` or `stop --now` never sends the third signal that would kill the daemon outright; a terminal `Ctrl-C` on a foreground `loop start` is not counted there. A lease that expired, or a daemon held by another host, is never signalled. On Windows the signal ends the process immediately. |
-| `env` | Prints what the daemon will see: providers from `loop.agents`, the env file, and each variable with its source (`shell`, `file`, `derived:<path>`) and whether it is set; only `AIDLC_OPENCODE_MODEL`, `AIDLC_LOOP_EVENT_LOG`, `AIDLC_WORKER_DOCKER_IMAGE`, `AIDLC_LOCAL_WORKTREES_ROOT`, and `AIDLC_ENV_FILE` show their value — every other variable shows `set` or `missing`, and unreadable config files are reported without quoting their content. Exits `1` when the daemon could not start (for example a missing OpenCode model). `--json` prints the same report. |
-| `start` | Starts the singleton loop daemon for the project in the foreground (`daemon` lease in `.agents/data/loop/daemon.lock`, renewed every 15 s; a second `start` fails with `Loop daemon already running (pid N): …` naming the holder). It reads **no** requirement. Fleet `start` first preflights the coordination service (`fleet_get`) and the remote integration branch and fails closed instead of falling back to local. |
-| `intake` | Creates one loop-owned task without running it. The requirement is read from stdin (an interactive prompt on a TTY), at most 8192 bytes; the id and title are derived from its first line unless `--task-id`/`--title` are given. Local intake refuses while an interactive (non-loop) task is actionable. Fleet intake creates the remote task under a short lead claim. Both write `.agents/data/tasks/<id>/loop-intake.json` (`authority: "local"` or `"fleet"`). |
-| `status` | With `--task-id`: prints the canonical task and its derived next action; local mode adds the loop run record, fleet mode the durable gate checkpoint. Without it: daemon (pid, start time, unresolved errors), dashboard, and the `env` report (`--json` combines them). |
-| `leases` | Read-only diagnostic for every loop lease, lock, and claim: the daemon lease, each task lease (`.agents/data/loop/<task>.lease`, with its `activity`), assignment locks and claims (with `effectiveState`), the lifecycle state lock, and leftover files from older versions. Each entry shows its state (`live`, `stale`, `expired`, `corrupt`), holder (pid, host, command, activity), heartbeat, expiry, what it blocks, and the fix. With `loop.mode: fleet` and the lead credential (`AIDLC_FLEET_URL`, `AIDLC_FLEET_TOKEN`, `AIDLC_FLEET_WORKSPACE`) it also reads `fleet_get` and lists the supervisor lease, lead lease (`run_claim`, lead epoch), and job claims; the supervisor epoch is shown only when it differs from the lead epoch. `--task-id` filters to one task. `--json` prints a stable report (`schemaVersion: 1`). `--clear-stale` removes only stale lease, lock, and guard files, and corrupt files older than their TTL, after re-reading each one under its guard. It never removes a live holder, never releases a claim, and never touches the state lock. Works with any `loop.mode`. See [Troubleshooting](./troubleshooting.md#loop-leases-locks-and-claims). |
-| `worker-image` | Builds (or rebuilds) the shipped worker image without requiring loop configuration: `--provider` defaults to `opencode`, `--tag` to `aidlc-worker-<provider>:local`. It runs `docker build` against the packaged `assets/aidlc/docker/Dockerfile.<provider>` and records the tag in `config.loop.workerImage`. |
+| `up` | Local mode only. Checks `loop.mode` is `local` (otherwise prints the config to add) and `--port` is valid, runs the `env` report and stops on any error, starts the daemon detached (stderr → `.agents/data/loop/daemon.log`; reports `already running` rather than starting a second; warns when the env file changed after the daemon started), then serves the dashboard in the foreground like `ui`, recording `{ pid, url }` (never the token) in `.agents/data/loop/ui.json`. `Ctrl-C` closes only the dashboard. `--no-ui` starts only the daemon; a recorded dashboard still answering at its URL is reported, not restarted (a stale record is ignored). |
+| `down` | Stops the dashboard recorded by `up` — only when its URL answers `GET /api/instance` with the random id in `ui.json`, so another project's dashboard or a reused pid is never signalled — then the daemon (as `stop`). |
+| `stop` | One `SIGTERM`: finish the current agent turn and exit, waiting up to 15 s; `--now` sends the second, cancelling the in-flight turn. The requested stage is recorded in `.agents/data/loop/daemon.stop` for that daemon run (pid and start time), so repeating `stop` or `stop --now` never sends the third signal that kills the daemon outright; a terminal `Ctrl-C` on a foreground `loop start` is not counted. An expired lease or a daemon held by another host is never signalled. On Windows the signal ends the process immediately. |
+| `env` | Prints what the daemon will see: providers from `loop.agents`, the env file, and each variable with its source (`shell`, `file`, `derived:<path>`) and whether it is set. Only `AIDLC_OPENCODE_MODEL`, `AIDLC_LOOP_EVENT_LOG`, `AIDLC_WORKER_DOCKER_IMAGE`, `AIDLC_LOCAL_WORKTREES_ROOT`, and `AIDLC_ENV_FILE` show their value; others show `set` or `missing`; unreadable config files are reported without quoting content. Exits `1` when the daemon could not start (for example a missing OpenCode model). `--json` prints the same report. |
+| `start` | Starts the singleton daemon in the foreground (`daemon` lease in `.agents/data/loop/daemon.lock`, renewed every 15 s; a second `start` fails with `Loop daemon already running (pid N): …` naming the holder). Reads **no** requirement. Fleet `start` preflights the coordination service (`fleet_get`) and the remote integration branch and fails closed instead of falling back to local. |
+| `intake` | Creates one loop-owned task without running it. The requirement comes from stdin (interactive prompt on a TTY), at most 8192 bytes; id and title derive from its first line unless `--task-id`/`--title` are given. Local intake refuses while an interactive (non-loop) task is actionable; fleet intake creates the remote task under a short lead claim. Both write `.agents/data/tasks/<id>/loop-intake.json` (`authority: "local"` or `"fleet"`). |
+| `status` | With `--task-id`: the canonical task and its derived next action, plus the loop run record (local) or the durable gate checkpoint (fleet). Without it: daemon (pid, start time, unresolved errors), dashboard, and the `env` report (`--json` combines them). |
+| `leases` | Read-only diagnostic for every loop lease, lock, and claim (daemon lease, `.agents/data/loop/<task>.lease` with `activity`, assignment locks and claims with `effectiveState`, the state lock, leftovers from older versions): state (`live`, `stale`, `expired`, `corrupt`), holder (pid, host, command, activity), heartbeat, expiry, what it blocks, and the fix. With `loop.mode: fleet` and the lead credential (`AIDLC_FLEET_URL`, `AIDLC_FLEET_TOKEN`, `AIDLC_FLEET_WORKSPACE`) it also lists the `fleet_get` supervisor lease, lead lease (`run_claim`, lead epoch; supervisor epoch only when different), and job claims. `--task-id` filters; `--json` is stable (`schemaVersion: 1`); `--clear-stale` removes only stale or TTL-expired corrupt files, never a live holder, a claim, or the state lock. Works with any `loop.mode`; see [Troubleshooting](./troubleshooting.md#loop-leases-locks-and-claims). |
+| `worker-image` | Builds the shipped worker image without loop configuration: `--provider` defaults to `opencode`, `--tag` to `aidlc-worker-<provider>:local`. Runs `docker build` on the packaged `assets/aidlc/docker/Dockerfile.<provider>` and records the tag in `config.loop.workerImage`. |
 
-`loop resume` is removed in both modes; it fails with `loop resume is removed; the daemon auto-resumes actionable tasks — run 'loop start' …`. Re-activate a paused task with the dashboard **resume** button, `state.mjs task status <id> --status active` (local), or `node .agents/aidlc/scripts/loop-entry.mjs resume-task <id> .` (either mode).
+### Daemon behaviour
 
-The daemon only runs **loop-owned** tasks: locally, tasks with an intake record or a loop run record; in fleet mode, only tasks whose local intake record says `authority: "fleet"`. Tasks created by an interactive lead are never picked up. Every `loop.pollMs` (default `5000` ms) it lists actionable loop-owned tasks and runs one bounded supervised run per task in round-robin order (bounded by the per-run `loop.limits.maxTurns`). A run that throws, or ends `blocked` or `reconcile`, is retried with exponential backoff (poll interval doubled per failure, capped at 10 minutes). A gate wait or completion does not stop the daemon, and an unreachable authority (for example the fleet service) is reported as `daemon_poll_error` and retried on the next poll. In fleet mode a run returns at a gate (`gate`/`waiting`) and releases the supervisor lease; after the reviewer approves, the next poll re-claims the task and continues.
+- `loop resume` is removed (`loop resume is removed; the daemon auto-resumes actionable tasks — run 'loop start' …`). Re-activate a paused task with the dashboard **resume**, `state.mjs task status <id> --status active` (local), or `loop-entry.mjs resume-task <id> .` (either mode).
+- **Ownership.** Only **loop-owned** tasks run: locally, tasks with an intake record or a loop run record; in fleet mode, only tasks whose local intake record says `authority: "fleet"`. Tasks created by an interactive lead are never picked up.
+- **Scheduling.** Every `loop.pollMs` (default `5000` ms) the daemon lists actionable loop-owned tasks and runs one bounded supervised run per task in round-robin order (bounded by `loop.limits.maxTurns`).
+- **Retries.** A run that throws, or ends `blocked` or `reconcile`, is retried with exponential backoff (poll interval doubled per failure, capped at 10 minutes). A gate wait or completion does not stop the daemon; an unreachable authority is reported as `daemon_poll_error` and retried next poll.
+- **Fleet gates.** A fleet run returns at a gate (`gate`/`waiting`) and releases the supervisor lease; after reviewer approval the next poll re-claims the task.
+- **Shutdown.** First `SIGINT`/`SIGTERM` stops after the current turn, second cancels the in-flight turn (and any build worker batch), third exits immediately. A terminal `Ctrl-C` also reaches the agent child, so the turn usually ends on the first press. Stopped runs are recorded `stopped` (not paused) and continue on the next `start`.
+- **Events.** Events go to stderr with their `taskId` and are appended to the JSONL file named by `AIDLC_LOOP_EVENT_LOG` when set. Daemon events: `daemon_start`, `daemon_poll`, `daemon_poll_error`, `daemon_turn`, `daemon_turn_error`, `build_deferred` (a ready build item waiting for a later batch), `gate`, `loop_stopped`.
 
-Shutdown is two-stage in both modes: the first `SIGINT`/`SIGTERM` stops after the current turn, the second cancels the in-flight agent turn (and any build worker batch), and the third exits immediately. A terminal `Ctrl-C` also reaches the agent child process, so the in-flight turn usually ends on the first press. Stopped runs are recorded as `stopped` (the task is not paused) and continue on the next `start`. Events go to stderr, carry their `taskId`, and are also appended to the JSONL file named by `AIDLC_LOOP_EVENT_LOG` when set. Daemon events include `daemon_start`, `daemon_poll`, `daemon_poll_error`, `daemon_turn`, `daemon_turn_error`, `build_deferred` (a ready build item waiting for a later batch), `gate`, and `loop_stopped`.
+### Loop environment (local mode)
 
-**Loop environment (local mode).** `loop start`/`up` and a daemon started by the dashboard resolve the environment in this order: the invoking shell (never overridden), then the env file — `AIDLC_ENV_FILE` or `--loop-env PATH`, default `.agents/loop.env`, a minimal dotenv (`KEY=VALUE`, optional `export `, `#` comments, quotes, no variable expansion) — then values derived from the configured providers only: `AIDLC_LOOP_EVENT_LOG` → `.agents/data/loop/ui-events.jsonl`; `AIDLC_OPENCODE_MODEL` → `model` of the OpenCode config (project `opencode.json[c]` over `OPENCODE_CONFIG` over `~/.config/opencode`); worker keys → OpenCode `~/.local/share/opencode/auth.json` (API-key entries), Codex `$CODEX_HOME/auth.json` (`OPENAI_API_KEY`; a ChatGPT-only login produces a warning), Claude Code `env.ANTHROPIC_API_KEY` in `.claude/settings.local.json`, `.claude/settings.json`, or `~/.claude/settings.json`. An exported shell variable is never overridden, even when empty. Env-file values act like shell exports and reach the lead and the workers. Worker keys detected from a provider's own config reach the Docker workers only; host lead turns do not receive them (`AIDLC_LEAD_ENV_EXCLUDE`), so a `claude` or `codex` lead keeps using its own login. A missing or invalid OpenCode model, an explicit env file that does not exist, or a malformed env file stops the daemon before it starts; a missing worker key, a missing `docker`, or an env file that `git check-ignore` would not ignore is a warning. The option is `--loop-env`, not `--env-file`, because Node.js reserves `--env-file` on its own command line. Fleet mode does not read the env file.
+`loop start`/`up` and a dashboard-started daemon resolve the environment in this order:
 
-`init` and `upgrade` install `.agents/aidlc/scripts/loop.sh` (executable) and `loop.cmd` for every loop mode, plus `.agents/loop.env` (commented template) and `.agents/.gitignore` (`loop.env`) when missing — both are project-owned and never overwritten. The launchers forward `up` (default), `down`, `stop`, `status`, and `check` (= `env`) to this command with `--root` set to the project, and `logs` follows `daemon.log`. They run the CLI from the project's `node_modules/.bin`, else the CLI that last applied `init`/`upgrade` — recorded as `{ cli, version, recordedAt }` in `.agents/data/loop/cli.json` (machine-local, not in the manifest) and used only while that file still exists, which covers `npx --package` and local `.tgz` installs whose npx cache entry `npx --no-install @felixdotgo/aidlc-kit` cannot find — else `aidlc-kit` on `PATH`, else `npx --no-install`. They never install anything.
+1. **The invoking shell** — an exported variable is never overridden, even when empty.
+2. **The env file** — `AIDLC_ENV_FILE` (relative to the project root) or `--loop-env PATH` (relative to the current directory), default `.agents/loop.env`. Minimal dotenv: `KEY=VALUE`, optional `export `, `#` comments, quotes, no variable expansion. Values act like shell exports and reach the lead and the workers.
+3. **Values derived from the configured providers only:**
 
-Local mode requires Docker plus the provider credential environment; the worker image is auto-built from the packaged Dockerfile on first dispatch and its tag is recorded automatically, so `AIDLC_WORKER_DOCKER_IMAGE` is only needed to override the default. Local approval happens through the trusted host terminal command `node .agents/aidlc/scripts/loop-gate.mjs <task-id>`, which refuses piped input, or the dashboard.
+| Variable | Derived from |
+| --- | --- |
+| `AIDLC_LOOP_EVENT_LOG` | `.agents/data/loop/ui-events.jsonl` |
+| `AIDLC_OPENCODE_MODEL` | `model` of the OpenCode config (project `opencode.json[c]` over `OPENCODE_CONFIG` over `~/.config/opencode`) |
+| OpenCode worker keys | API-key entries in `~/.local/share/opencode/auth.json` |
+| Codex worker key | `$CODEX_HOME/auth.json` (`OPENAI_API_KEY`; a ChatGPT-only login produces a warning) |
+| Claude Code worker key | `env.ANTHROPIC_API_KEY` in `.claude/settings.local.json`, `.claude/settings.json`, or `~/.claude/settings.json` |
 
-Fleet mode requires `AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, the lead `AIDLC_FLEET_TOKEN`, and `AIDLC_FLEET_INTEGRATION_BRANCH` (optionally `AIDLC_FLEET_GIT_REMOTE`). The facade derives `AIDLC_FLEET_PROJECT_ROOT`, `AIDLC_FLEET_WORKER_IDS`, `AIDLC_FLEET_WORKER_PROVIDERS`, and the lead agent from the root and `loop.agents`; explicitly set values must match. `loop.limits` (`maxTurns`, `turnTimeoutMs`, `maxStallTurns`) and `loop.pollMs` become the fleet defaults, and an explicit `AIDLC_FLEET_MAX_TURNS`, `AIDLC_FLEET_TURN_TIMEOUT_MS`, `AIDLC_FLEET_MAX_STALL_TURNS`, or `AIDLC_FLEET_POLL_MS` still overrides them. Lead and worker processes never receive `AIDLC_FLEET_REVIEWER_TOKEN`. Fleet workers run separately through the fleet runner on each worker machine, and a reviewer approves gates with the reviewer credential as documented in [Coordination service](./coordination-service.md).
+- Detected worker keys reach the Docker workers only; host lead turns do not receive them (`AIDLC_LEAD_ENV_EXCLUDE`), so a `claude` or `codex` lead keeps its own login.
+- **Errors (daemon does not start):** a missing or invalid OpenCode model, an explicit env file that does not exist, or a malformed env file.
+- **Warnings:** a missing worker key, a missing `docker`, or an env file that `git check-ignore` would not ignore.
+- The option is `--loop-env`, not `--env-file` (Node.js reserves `--env-file`). Fleet mode does not read the env file.
+- Optional overrides: `AIDLC_WORKER_DOCKER_IMAGE` (single worker image instead of the per-provider default) and `AIDLC_LOCAL_WORKTREES_ROOT` (worker worktrees root; default a system temp directory; must be outside the integration checkout).
+- Local mode requires Docker plus provider credentials. The worker image is auto-built on first dispatch and its tag recorded; `AIDLC_WORKER_DOCKER_IMAGE` only overrides the default.
+- Local approval: the trusted host terminal command `node .agents/aidlc/scripts/loop-gate.mjs <task-id>` (refuses piped input) or the dashboard.
 
-The installed `loop-entry.mjs` is the single entry point behind the CLI and the dashboard. Its positional form is `loop-entry.mjs <action> [task-id] [root] [mode] [provider] [tag] [title]`, for example `echo "<requirement>" | node .agents/aidlc/scripts/loop-entry.mjs intake "" .`. The diagnostic form is `loop-entry.mjs leases [task-id] [root] [--json] [--clear-stale]` (an empty task id lists every task). Besides the actions above it accepts `resume-task <id>` (re-activate a paused task, both modes) and the fleet-only dashboard JSON actions `tasks`, `task <id>`, `gate <id>` (current review snapshot with its checkpoint), `approve <id>` (approval source on stdin; reviewer credential only from that process's `AIDLC_FLEET_REVIEWER_TOKEN`), and `feedback <id>` (stdin JSON `{"reason":"<feedback>","source":"<provenance>"}`; keeps the task at its gate by running `remote-state.mjs task status <id> --status active --mode audited` under the lead claim, and never needs the reviewer credential). A local dashboard reads local state in-process, so those actions fail in local mode.
+### Launchers (loop.sh / loop.cmd)
+
+`init` and `upgrade` install `.agents/aidlc/scripts/loop.sh` (executable) and `loop.cmd` for every loop mode, plus `.agents/loop.env` (commented template) and `.agents/.gitignore` (`loop.env`) when missing; all are project-owned and never overwritten.
+
+| Launcher command | Runs |
+| --- | --- |
+| `up` (default) | `aidlc-kit loop up` |
+| `down` | `aidlc-kit loop down` |
+| `stop` | `aidlc-kit loop stop` |
+| `status` | `aidlc-kit loop status` |
+| `check` | `aidlc-kit loop env` |
+| `logs` | follows `.agents/data/loop/daemon.log` |
+
+Each forwarded command runs with `--root` set to the project. CLI lookup order (never installs anything):
+
+1. The project's `node_modules/.bin`.
+2. The CLI that last applied `init`/`upgrade`, recorded as `{ cli, version, recordedAt }` in machine-local `.agents/data/loop/cli.json` (not in the manifest) while that file exists; covers `npx --package` and `.tgz` installs that `npx --no-install @felixdotgo/aidlc-kit` cannot find.
+3. `aidlc-kit` on `PATH`.
+4. `npx --no-install`.
+
+### Fleet environment
+
+| Variable | Requirement |
+| --- | --- |
+| `AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE` | Required. |
+| `AIDLC_FLEET_TOKEN` | Required: the lead credential. |
+| `AIDLC_FLEET_INTEGRATION_BRANCH` | Required. |
+| `AIDLC_FLEET_GIT_REMOTE` | Optional. |
+| `AIDLC_FLEET_PROJECT_ROOT`, `AIDLC_FLEET_WORKER_IDS`, `AIDLC_FLEET_WORKER_PROVIDERS`, lead agent | Derived by the facade from the root and `loop.agents`; explicitly set values must match. |
+| `AIDLC_FLEET_MAX_TURNS`, `AIDLC_FLEET_TURN_TIMEOUT_MS`, `AIDLC_FLEET_MAX_STALL_TURNS`, `AIDLC_FLEET_POLL_MS` | Optional overrides. `loop.limits` (`maxTurns`, `turnTimeoutMs`, `maxStallTurns`) and `loop.pollMs` are the fleet defaults; an explicit value overrides them. |
+| `AIDLC_FLEET_REVIEWER_TOKEN` | Never given to lead and worker processes. |
+
+Fleet workers run through the fleet runner on each worker machine; a reviewer approves gates with the reviewer credential ([Coordination service](./coordination-service.md)).
+
+### Loop entry script (`loop-entry.mjs`)
+
+- `loop-entry.mjs` is the single entry point behind the CLI and the dashboard. Positional form: `loop-entry.mjs <action> [task-id] [root] [mode] [provider] [tag] [title]`, for example `echo "<requirement>" | node .agents/aidlc/scripts/loop-entry.mjs intake "" .`.
+- Diagnostic form: `loop-entry.mjs leases [task-id] [root] [--json] [--clear-stale]` (an empty task id lists every task).
+- Extra actions: `resume-task <id>` (both modes) and the fleet-only dashboard JSON actions `tasks`, `task <id>`, `gate <id>` (current review snapshot with its checkpoint), `approve <id>`, `feedback <id>`. A local dashboard reads local state in-process, so these fail in local mode.
+- `approve <id>` reads the approval source on stdin; the reviewer credential comes only from that process's `AIDLC_FLEET_REVIEWER_TOKEN`.
+- `feedback <id>` reads stdin JSON `{"reason":"<feedback>","source":"<provenance>"}` and keeps the task at its gate via `remote-state.mjs task status <id> --status active --mode audited` under the lead claim; it never needs the reviewer credential.
 
 ## `ui`
 
@@ -123,49 +200,72 @@ The installed `loop-entry.mjs` is the single entry point behind the CLI and the 
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--token-file PATH] [--reviewer-token-file PATH]
 ```
 
-Starts a web dashboard (built on `node:http`, no extra dependencies) for viewing task status and operating the loop without typing CLI commands repeatedly. The project is the positional `path` (default `.`); `ui` has no `--root` flag. The authority comes from `loop.mode`: the header shows `authority · local` or `authority · fleet`. Local dashboards read canonical local state in-process; fleet dashboards read tasks, task details, and gate snapshots (review text from the coordination service) through the `loop-entry.mjs` JSON actions.
+- Web dashboard on `node:http` (no extra dependencies). The project is the positional `path` (default `.`); there is no `--root` flag.
+- Authority comes from `loop.mode` (header: `authority · local` or `authority · fleet`). Local dashboards read canonical state in-process; fleet dashboards read tasks, details, and gate snapshots through the `loop-entry.mjs` JSON actions.
+- Dashboard usage (board, side panel, live log, feedback): [Local loop walkthrough](./loop-local-run.md#use-the-web-dashboard).
 
 | Flag | Effect |
 | --- | --- |
 | `--port`, `--host` | Bind address; defaults to `127.0.0.1:4173`. Pass `--host 0.0.0.0` only as an explicit opt-in. |
 | `--open` | Launches the system browser with the login URL (best effort; the URL is printed anyway). |
-| `--token-file PATH` | Uses a fixed session token from `PATH` so the browser stays signed in across restarts. The file must live outside the project, be a regular non-symlink file with mode `600`/`400`, and hold one 16–256 character token; a missing file is created with a random token. |
+| `--token-file PATH` | Fixed session token from `PATH` so the browser stays signed in across restarts. The file must live outside the project, be a regular non-symlink file with mode `600`/`400`, and hold one 16–256 character token; a missing file is created with a random token. |
 | `--reviewer-token-file PATH` | Fleet only: reads the reviewer credential from `PATH` (same file rules, never created). `AIDLC_FLEET_REVIEWER_TOKEN` in the `ui` environment works the same way. |
 
-Routes:
+### Routes
 
-- `GET /` renders a **kanban board by default** (columns grouped by `phase`: clarify / plan / build / wrap / done) with a list/table toggle, a **Settings** dialog, and a **New task** side panel with a Markdown editor (formatting toolbar, <kbd>Ctrl</kbd>+<kbd>B</kbd>/<kbd>I</kbd>/<kbd>K</kbd>, Write/Preview tabs, a draft kept in `localStorage`; a leading `#`, list, or quote marker is dropped from the derived title). The page uses the full window width and is branded **Loop**. Cards show the title (the id is on hover and in search) plus only the flags the column cannot express: paused, closed, superseded, handed off, non-normal risk, pending feedback; the list view has no id column. Clicking anywhere on a card opens a **side panel** that slides in from the right (`/?task=<id>` opens it directly; Back or <kbd>Esc</kbd> closes it); ctrl/cmd-click or middle-click opens the full detail page in a new tab, shift-click in the same tab. The task id in the side panel header and on the detail page is a copy-to-clipboard button; the current step of the progress stepper pulses while the task is active or waiting at a gate.
-- `GET /docs[/<slug>]` renders the packaged guides (`loop-runbook` first, then the local walkthrough, configuration, command reference, troubleshooting, operating the workflow, architecture) with a sidebar and table of contents; links between them stay in the dashboard. Only whitelisted slugs are served (`404` otherwise). `POST /api/markdown` (field `markdown`, token required) returns `{ ok, html }` rendered by the same escaping renderer as task artifacts; the New task preview uses it.
-- `GET /tasks/:id` renders the full task detail page: a horizontal progress stepper, a structured gate view (in fleet mode the review snapshot text), rendered `intent`/`design`/`workplan` artifacts (Markdown), decisions, work items, evidence, details, and a live log stream. `GET /partial/tasks/:id` returns the same detail body as an HTML fragment for the side panel (with a compact live log of the last 20 important lines).
-- `GET /tasks/:id/changes[?item=<item-id>]` renders the task's **code changes**: a file list with +/− counts and status badges next to a unified diff, for the whole task or one work item. It is linked from the work-items panel, the side panel, and the Review implementation gate panel. `GET /api/tasks/:id/changes[?item=]` returns the same data as JSON: `{ ok, source, items: [{ itemId, workerId?, commit, base?, files: [{ path, oldPath?, status, added, removed, binary }], patch, truncated, note? }], note? }`. Sources, in order: fleet mode uses the current gate snapshot's `integrationCommit` (diffed against its first parent, so it shows the last integration step); local mode uses `.agents/data/loop/assignments/<task>.json` — per item the latest reported/integrated attempt, preferring its recorded `integrationCommit`, else `baseCommit..commit`; a task without loop records (for example run interactively) falls back to the **working tree** (`git diff HEAD` plus untracked files), labelled as uncommitted and not task-scoped; outside a Git repository `source` is `none`. Only the task and item ids come from the URL — commits are read from records, validated as hex SHAs and resolved with `git rev-parse` before use, and Git runs without a shell. Each item is capped at 300 files and 1 MiB of patch (`truncated: true` beyond that), and the whole-task view at 4 MiB of patch in total — further items list their files only and load their diff when selected. A recorded integration commit missing from the local repository falls back to the worker commit; a commit that is missing entirely is reported as a note, not an error.
-- `GET /api/live?known=<region>:<hash>,…[&task=<id>][&drawer=<id>][&notify=<n>]` drives in-place page updates. Regions are `notify` (header bell; `notify` = items to show, default 5, max 100), `daemon` (header pill), `board` (dashboard), `detail` (task page, needs `task`), and `drawer` (side panel, needs `drawer`). It re-renders the listed regions from one state read and returns `{ regions: { <name>: { hash, html } }, reviews: { count, items } }` with only the regions whose hash changed; unknown names are ignored. Pages poll it about every 1.5 s and morph the returned HTML into place. In fleet mode, reads on this path share a result up to 1 s old instead of spawning `loop-entry.mjs` per request.
-- `GET /api/tasks` returns task summaries as JSON (`?archive=1`, `?statuses=`, `?query=`, `?limit=`, `?cursor=`); `GET /api/tasks/:id` returns one task; `GET /api/tasks/:id/gate` returns the gate view or fleet snapshot (`409` when the task is not waiting); `GET /api/tasks/:id/artifact/:name` returns raw artifact content for programmatic clients.
-- `GET /api/loop/status?task-id=` returns `loop status` as JSON. `POST /api/loop/start` (field `requirement`) runs loop intake and starts the daemon if none is running (`201` with `taskId`, `title`, `daemon`; `409` with the intake error). `POST /api/loop/resume` (field `taskId`) re-activates a `paused` task (`409` for any other status). `POST /api/gate/approve` (fields `taskId`, `source`, optional `gate` — the gate the reviewer saw; `409` if the task now waits at a different one) runs the atomic `state.mjs gate approve` locally, or the fleet reviewer approval of the current snapshot. `POST /api/gate/feedback` (fields `taskId`, `feedback`, optional `source`) keeps the task at its current gate and sends the feedback back to the loop: locally it runs `state.mjs task status <id> --status active --mode audited --reason <feedback> --source <provenance>`, in fleet mode `loop-entry.mjs feedback <id>`; `400` on a missing `feedback`, `409` when the task is not waiting at a gate. All spawn the installed scripts asynchronously as thin facades; a malformed or non-object JSON body is a `400`.
-- `GET /api/events[?task-id=]` streams loop events as SSE: on connect the last 200 matching lines within the most recent 256 KB, then new complete lines; it follows rotation/truncation and resumes from `Last-Event-ID`. With `task-id` (which must match the task-id pattern, else `400`) it reads that task's own history file `.agents/data/loop/events/<task-id>.jsonl` (its `.1` generation first); event ids are then `t:<inode>:<offset>` and a full replay is preceded by an `event: reset` message so the client clears what it shows. When the task has no history file yet (older logs), it filters the global `ui-events.jsonl` by `taskId` as before. A symlinked per-task log file or `events` directory is never followed (the stream then falls back to the global file, which is read as before).
+- `GET /` — kanban board by `phase` with list toggle, **Settings**, and **New task**; `/?task=<id>` opens the task side panel.
+- `GET /docs[/<slug>]` — the packaged guides; only whitelisted slugs are served (`404` otherwise).
+- `POST /api/markdown` (field `markdown`, token required) — `{ ok, html }` from the same escaping renderer as task artifacts.
+- `GET /tasks/:id` — detail page (stepper, gate view or fleet snapshot text, rendered `intent`/`design`/`workplan`, decisions, items, evidence, live log). `GET /partial/tasks/:id` — the same body as an HTML fragment for the side panel (last 20 important log lines).
+- `GET /tasks/:id/changes[?item=<item-id>]` — code changes (file list with +/− counts and status badges, unified diff) for the whole task or one item.
+- `GET /api/tasks/:id/changes[?item=]` — the same data: `{ ok, source, items: [{ itemId, workerId?, commit, base?, files: [{ path, oldPath?, status, added, removed, binary }], patch, truncated, note? }], note? }`.
+  - Sources in order: fleet — the current gate snapshot's `integrationCommit` diffed against its first parent; local — `.agents/data/loop/assignments/<task>.json`, per item the latest reported/integrated attempt, preferring its `integrationCommit`, else `baseCommit..commit`.
+  - No loop records — the **working tree** (`git diff HEAD` plus untracked files), labelled uncommitted and not task-scoped; outside a Git repository `source` is `none`.
+  - Only task and item ids come from the URL; commits come from records, are validated as hex SHAs and resolved with `git rev-parse`; Git runs without a shell.
+  - Limits: 300 files and 1 MiB of patch per item (`truncated: true` beyond), 4 MiB of patch per whole-task view; further items list files only and load their diff on selection.
+  - A recorded integration commit missing locally falls back to the worker commit; a commit missing entirely is a note, not an error.
+- `GET /api/live?known=<region>:<hash>,…[&task=<id>][&drawer=<id>][&notify=<n>]` — in-place updates. Regions: `notify` (header bell; `notify` items, default 5, max 100), `daemon` (header pill), `board`, `detail` (needs `task`), `drawer` (needs `drawer`).
+  - Re-renders the listed regions from one state read and returns `{ regions: { <name>: { hash, html } }, reviews: { count, items } }` with only changed regions; unknown names are ignored.
+  - Pages poll about every 1.5 s and morph the HTML in place. In fleet mode reads share a result up to 1 s old instead of spawning `loop-entry.mjs` per request.
+- `GET /api/tasks` (`?archive=1`, `?statuses=`, `?query=`, `?limit=`, `?cursor=`) — task summaries; `GET /api/tasks/:id` — one task; `GET /api/tasks/:id/gate` — gate view or fleet snapshot (`409` when not waiting); `GET /api/tasks/:id/artifact/:name` — raw artifact content.
+- `GET /api/loop/status?task-id=` — `loop status` as JSON.
+- `POST /api/loop/start` (field `requirement`) — loop intake, starting the daemon if none runs; `201` with `taskId`, `title`, `daemon`; `409` with the intake error.
+- `POST /api/loop/resume` (field `taskId`) — re-activates a `paused` task; `409` for any other status.
+- `POST /api/gate/approve` (fields `taskId`, `source`, optional `gate` — the gate the reviewer saw; `409` if the task now waits at another) — the atomic `state.mjs gate approve` locally, or the fleet reviewer approval of the current snapshot.
+- `POST /api/gate/feedback` (fields `taskId`, `feedback`, optional `source`) — keeps the task at its gate: locally `state.mjs task status <id> --status active --mode audited --reason <feedback> --source <provenance>`, fleet `loop-entry.mjs feedback <id>`; `400` on missing `feedback`, `409` when not at a gate.
+- All `POST` routes spawn the installed scripts asynchronously as thin facades; a malformed or non-object JSON body is `400`.
+- `GET /api/events[?task-id=]` — SSE loop events: on connect the last 200 matching lines within the most recent 256 KB, then new complete lines; follows rotation/truncation and resumes from `Last-Event-ID`.
+  - With `task-id` (must match the task-id pattern, else `400`) it reads `.agents/data/loop/events/<task-id>.jsonl` (`.1` generation first); ids are `t:<inode>:<offset>` and a full replay is preceded by `event: reset`.
+  - Without a history file it filters the global `ui-events.jsonl` by `taskId`. A symlinked per-task file or `events` directory is never followed (falls back to the global file).
 
 ### Dashboard authentication
 
-At start the CLI prints a login URL such as `http://127.0.0.1:4173/#token=<token>`. Opening it stores the token in the browser's `localStorage` and strips the fragment from the address bar (a fragment is never sent to the server); **⚙ Settings** still accepts a pasted token. There is no unauthenticated mode. The rules:
+At start the CLI prints a login URL such as `http://127.0.0.1:4173/#token=<token>`. Opening it stores the token in `localStorage` and strips the fragment (never sent to the server); **⚙ Settings** accepts a pasted token. There is no unauthenticated mode.
 
-- The mutating actions (new task, resume, gate feedback, gate approve) require the token in a header — `x-aidlc-token` or `Authorization: Bearer <token>` — never in a form or JSON body field. A missing or wrong token is `401`.
-- Every request whose `Host` header does not name the bound address is rejected `403` (any loopback name — `127.0.0.1`, `localhost`, `[::1]` — is accepted when bound to loopback). A wildcard bind (`0.0.0.0`, `::`) cannot pin the Host and relies on the token and the Origin check.
+- Mutating actions (new task, resume, gate feedback, gate approve) require the token in a header — `x-aidlc-token` or `Authorization: Bearer <token>` — never in a form or JSON body field. Missing or wrong token: `401`.
+- A `Host` header that does not name the bound address is rejected `403` (any loopback name — `127.0.0.1`, `localhost`, `[::1]` — is accepted when bound to loopback). A wildcard bind (`0.0.0.0`, `::`) cannot pin the Host and relies on the token and the Origin check.
 - A non-`GET` request whose `Origin` is not the dashboard's own origin is rejected `403`.
-- In fleet mode, `POST /api/gate/approve` returns `403` unless the UI holds a reviewer credential (`AIDLC_FLEET_REVIEWER_TOKEN` or `--reviewer-token-file`); the detail page then shows the `remote-state.mjs gate inbox` / `gate approve` reviewer commands instead of the approve form. The credential is passed only to that one approve child process. `POST /api/gate/feedback` is exempt: it never needs the reviewer credential in any mode and stays available without one.
+- In fleet mode `POST /api/gate/approve` returns `403` unless the UI holds a reviewer credential (`AIDLC_FLEET_REVIEWER_TOKEN` or `--reviewer-token-file`); without one the detail page shows the `remote-state.mjs gate inbox` / `gate approve` reviewer commands instead. The credential goes only to that one approve child process. `POST /api/gate/feedback` never needs it.
 - The daemon and every other child process the UI spawns never inherit the UI token or the reviewer credential.
 
-These rules exist because a browser will send requests to `127.0.0.1` on behalf of any web page: a header-only token defeats cross-site form posts (CSRF), the Host check defeats DNS rebinding, and keeping tokens out of the daemon environment stops a host-executed lead from approving its own gate. Residual risk: a `--token-file` is readable by any process running as the same user, so prefer the per-session token unless you need restarts to keep the browser signed in.
+Why (a browser sends requests to `127.0.0.1` on behalf of any web page):
 
-Operational notes:
+- A header-only token defeats cross-site form posts (CSRF); the Host check defeats DNS rebinding.
+- Keeping tokens out of the daemon environment stops a host-executed lead from approving its own gate.
+- Residual risk: a `--token-file` is readable by any process running as the same user; prefer the per-session token unless restarts must keep the browser signed in.
 
-- The gate panel renders only on the full task detail page (`/tasks/:id`) while the task is `blocked_on_user`; on the dashboard such a task shows a **review** button that opens that page. The panel has a **Feedback** block (textarea + **Send feedback (stay at gate)**) before the **Approve** block (required approval note + **✓ Approve**, which opens a confirmation popup; only **Confirm approve** sends the request). Feedback records `Cancelled gate wait at <gate>: <feedback>`, sets the task `active` at the same gate, and the loop revises the review artifact and re-presents it, exactly like typing feedback in `loop-gate.mjs`. Until that gate is approved, the card and detail page show a **feedback pending** pill with the pending feedback and the Approve block shows a warning (approval is not blocked). The dashboard header shows whether the daemon is running.
-- The **live log** on the detail page shows what the loop is doing as readable sentences — `hh:mm:ss · actor · sentence`, for example `lead · ran \`npm test\``, `command \`npm test\` → exit 0`, `worker-a · worker reported 3 file(s)`, `integrated item \`ui\` (abc1234)` — grouped under `Turn N · phase · actor` headers. Each event carries optional `actor` (`lead` or a worker id), `phase`, `itemId`, and a redacted `summary` (at most 240 characters; command output is never logged). **Important** (default) hides bookkeeping events and shows only the first line of agent text; **All** shows everything; **Raw JSON** shows the original lines. The choice is kept in `localStorage` (`aidlc-live-log`). The side panel shows a compact version (last 20 important lines) with an **Open full log** link.
-- Event files: the daemon writes every event to `.agents/data/loop/ui-events.jsonl` (rotated to `.jsonl.1` at 5 MB; used for the daemon health banner) and every task event also to `.agents/data/loop/events/<task-id>.jsonl` (rotated to `.1` at 1 MiB), so one task's history is not pushed out by other tasks. `daemon_poll` is written only when the actionable set, the back-off set, or the error state changes. Every local daemon — started by `loop up`, `loop start`, or **New task** — points `AIDLC_LOOP_EVENT_LOG` at the global file unless the shell sets it; daemons started by `loop up` or **New task** write their stderr to `.agents/data/loop/daemon.log`.
-- **Exposure:** like every other `GET` route, the changes page and API need no token — they rely on the loopback bind and the Host check. Binding a non-loopback host (`--host 0.0.0.0`) lets anyone who can reach the port read the task diffs, artifacts, and repository changes.
-- The dashboard **resume** button appears only on `paused` tasks and sets them back to `active` (locally equivalent to `node .agents/aidlc/scripts/state.mjs task status <id> --status active`; in fleet mode `loop-entry.mjs resume-task`); the daemon then picks the task up on its next poll if it is loop-owned.
+### Operational notes
+
+- The gate panel renders only on `/tasks/:id` while the task is `blocked_on_user`. Feedback records `Cancelled gate wait at <gate>: <feedback>`, sets the task `active` at the same gate, and the loop re-presents the revised artifact, exactly like `loop-gate.mjs` feedback; approval is never blocked by pending feedback.
+- Live log events carry optional `actor` (`lead` or a worker id), `phase`, `itemId`, and a redacted `summary` (at most 240 characters; command output is never logged). The **Important**/**All**/**Raw JSON** choice is kept in `localStorage` (`aidlc-live-log`).
+- Event files: every event goes to `.agents/data/loop/ui-events.jsonl` (rotated to `.jsonl.1` at 5 MB; feeds the daemon health banner), every task event also to `.agents/data/loop/events/<task-id>.jsonl` (rotated to `.1` at 1 MiB). `daemon_poll` is written only when the actionable set, back-off set, or error state changes.
+- Every local daemon (`loop up`, `loop start`, **New task**) sets `AIDLC_LOOP_EVENT_LOG` to the global file unless the shell does; `loop up` and **New task** daemons write stderr to `.agents/data/loop/daemon.log`.
+- **Exposure:** every `GET` route, including the changes page and API, needs no token and relies on the loopback bind and Host check. `--host 0.0.0.0` lets anyone reaching the port read task diffs, artifacts, and repository changes.
+- **resume** appears only on `paused` tasks and runs the re-activation command for the mode; the daemon picks a loop-owned task up on its next poll.
 
 ## Installed lifecycle scripts
 
-After `init`, task lifecycle commands live in the target project, not in the package CLI:
+After `init`, lifecycle commands live in the target project, not in the package CLI:
 
 ```sh
 node .agents/aidlc/scripts/state.mjs task list --limit 20
@@ -180,7 +280,9 @@ node .agents/aidlc/scripts/task-next.mjs <task-id> --require-stop
 node .agents/aidlc/scripts/gate-view.mjs <task-id>
 ```
 
-The normal interactive loop runs in the current Codex, Claude Code, or OpenCode conversation, using native agents and the installed lifecycle commands. The optional `loop.mjs` command is for unattended CLI execution:
+### Unattended runner (`loop.mjs`)
+
+The interactive loop runs in the current Codex, Claude Code, or OpenCode conversation; `loop.mjs` runs one task unattended from the CLI:
 
 ```sh
 node .agents/aidlc/scripts/loop.mjs run <task-id> --agent codex|claude|opencode [--max-turns N] [--turn-timeout-ms N] [--max-stall-turns N] [--root PATH]
@@ -188,13 +290,16 @@ node .agents/aidlc/scripts/loop.mjs resume <task-id> [--max-turns N] [--turn-tim
 node .agents/aidlc/scripts/loop.mjs status <task-id> [--root PATH]
 ```
 
-`--agent opencode` requires `AIDLC_OPENCODE_MODEL` in `provider/model[#variant]` form; the turn fails closed without it. The container-isolated lead rejects OpenCode with `OpenCode workers require file-based credentials and are not available in isolated containers yet` and does not fall back to the host. Local Docker worker batches and fleet worker containers accept OpenCode via environment credentials — the key follows the `AIDLC_OPENCODE_MODEL` prefix: `openai/` → `OPENAI_API_KEY`, `anthropic/` → `ANTHROPIC_API_KEY`, otherwise `OPENCODE_API_KEY` — with OpenCode's XDG data/config roots redirected into the worker's ephemeral HOME. Use `loop.mjs run --agent opencode` for host-executed lead turns, or use Codex or Claude Code where an isolated lead is required.
+- `--agent opencode` requires `AIDLC_OPENCODE_MODEL` in `provider/model[#variant]` form; the turn fails closed without it. OpenCode works for host-executed lead turns and Docker workers, never the container-isolated lead ([Provider credentials and OpenCode](./configuration.md#provider-credentials-and-opencode)).
+- **Limits.** Defaults: 12 turns, 10 minutes per turn; two completed turns without observable progress stop the run.
+- **Provider.** Each run records its provider; `resume` rejects a different agent. The runner never grants human approval.
+- **Lease.** A run holds `.agents/data/loop/<task-id>.lease` with activity `turn`, so `state.mjs gate approve <task-id>` refuses until it stops at the gate. `status` prints `liveLease` (the holder while a turn runs, else `null`) and `lease` (state, holder, activity, expiry, fix).
+- **Resuming.** An interactive client resumes by reading `task next` and reconciling local assignment metadata; fleet execution uses fenced service leases and remote canonical state.
+- If context preparation fails before a turn starts, the loop pauses with a reason; fix it and `resume`. An interrupted turn with no captured session ID needs inspection of canonical state before recovery.
 
-The defaults are 12 turns and 10 minutes per turn; two completed turns without observable progress stop the run. Each run records its provider, and `resume` rejects a different agent. The runner never grants human approval. While a run executes it holds the task lease `.agents/data/loop/<task-id>.lease` with activity `turn`, so `state.mjs gate approve <task-id>` refuses until it stops at the gate. `status` prints `liveLease` (the holder while a turn runs, else `null`) and `lease` (state, holder, activity, expiry, and the fix). An interactive client can resume by reading `task next` and reconciling local assignment metadata; fleet execution uses fenced service leases and the remote canonical state.
+### Fleet runner and remote state
 
-If context preparation fails before an agent turn starts, the loop pauses with a reason; fix the context problem and use `resume`. An interrupted running turn with no captured session ID still requires inspection of canonical state before recovery.
-
-The fleet runner drives the supervised multi-worker flow against a coordination service. From the service deployment (a source checkout or the installed `.agents/aidlc-coordination/`), with the lead credential plus `AIDLC_FLEET_WORKER_IDS`, `AIDLC_FLEET_INTEGRATION_BRANCH`, and `AIDLC_FLEET_PROJECT_ROOT` set:
+From the service deployment (a source checkout or the installed `.agents/aidlc-coordination/`), with the lead credential plus `AIDLC_FLEET_WORKER_IDS`, `AIDLC_FLEET_INTEGRATION_BRANCH`, and `AIDLC_FLEET_PROJECT_ROOT`:
 
 ```sh
 node .agents/aidlc-coordination/src/fleet-run.mjs supervisor <task-id>
@@ -202,9 +307,12 @@ node .agents/aidlc-coordination/src/fleet-run.mjs coordinator <task-id> --once
 node .agents/aidlc-coordination/src/fleet-run.mjs worker --once
 ```
 
-`supervisor` claims the task's supervisor lease, runs fenced lead turns through the coordinator, publishes each gate snapshot with its checkpoint in one service transaction, waits for the reviewer approval, and resumes automatically; it returns at a pause, blocked state, or completion, and never approves a gate. `coordinator --once` runs a single unattended pass without the supervisor lease. `worker --once` claims one ready assignment on a worker machine and fails closed without a usable worker image or that machine's worker credential; see [Coordination service](./coordination-service.md#multi-machine-loop-deployment) for how the image is resolved. `aidlc-kit loop start --mode fleet` runs the same supervisor inside the shared loop daemon in a bounded mode that returns at each gate instead of waiting for the reviewer.
+- `supervisor` claims the supervisor lease, runs fenced lead turns through the coordinator, publishes each gate snapshot with its checkpoint in one service transaction, waits for reviewer approval, and resumes. It returns at a pause, blocked state, or completion and never approves a gate.
+- `coordinator --once` runs one unattended pass without the supervisor lease.
+- `worker --once` claims one ready assignment on a worker machine and fails closed without a usable worker image or that machine's worker credential ([image resolution](./coordination-service.md#multi-machine-loop-deployment)).
+- `aidlc-kit loop start --mode fleet` runs the same supervisor inside the loop daemon, returning at each gate instead of waiting.
 
-Fleet mode uses `remote-state.mjs` instead of local `state.mjs`. Set `AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, and `AIDLC_FLEET_PROJECT_ROOT`; lead mutations additionally require `AIDLC_FLEET_TOKEN` and the current `AIDLC_FLEET_LEAD_EPOCH`. Claim an epoch before creating or changing a task:
+Fleet mode uses `remote-state.mjs` instead of `state.mjs`. Set `AIDLC_FLEET_URL`, `AIDLC_FLEET_WORKSPACE`, and `AIDLC_FLEET_PROJECT_ROOT`; lead mutations also need `AIDLC_FLEET_TOKEN` and the current `AIDLC_FLEET_LEAD_EPOCH`. Claim an epoch before creating or changing a task:
 
 ```sh
 node .agents/aidlc/scripts/remote-state.mjs run claim <task-id>
@@ -213,34 +321,74 @@ node .agents/aidlc/scripts/remote-state.mjs phase context <task-id>
 node .agents/aidlc/scripts/remote-state.mjs run release <task-id> --epoch <epoch>
 ```
 
-The same client supports task items, evidence, decisions, status, audited transitions, wrap lessons, and feature manifests through revision-checked remote mutations. It cannot approve gates with a lead token. A connected reviewer uses `gate inbox` and, only after an explicit later user reply, `gate approve <task-id> --snapshot <id> --source <reply>` with `AIDLC_FLEET_REVIEWER_TOKEN`. See [Coordination service](./coordination-service.md#multi-machine-loop-deployment) for bootstrap, fleet processes, and credentials.
-When `AIDLC_FLEET_URL` is set, local lifecycle, context, gate, assignment, and standalone loop commands reject use so an unattended lead cannot accidentally mutate a second local authority. Unset it only when deliberately returning to a local run.
+- The client covers task items, evidence, decisions, status, audited transitions, wrap lessons, and feature manifests through revision-checked remote mutations. It cannot approve gates with a lead token.
+- A connected reviewer uses `gate inbox` and, only after an explicit later user reply, `gate approve <task-id> --snapshot <id> --source <reply>` with `AIDLC_FLEET_REVIEWER_TOKEN`.
+- While `AIDLC_FLEET_URL` is set, local lifecycle, context, gate, assignment, and standalone loop commands reject use, so an unattended lead cannot mutate a second local authority. Unset it only when deliberately returning to a local run.
 
-Installed lifecycle options may appear before or after positionals and accept both `--name value` and `--name=value`. Unknown, duplicate, command-irrelevant, missing-value, and surplus positional arguments are rejected before state I/O. Boolean options such as `--all`, `--include-archive`, and `--require-stop` do not accept values. When a literal value begins with `--`, use the equals form so it is not confused with a missing value.
+### Options and project root
 
-An explicit `--root <path>` wins and must identify a directory containing `.agents/`. Without `--root`, the runtime walks upward from the current working directory and selects the nearest ancestor containing `.agents/aidlc/`. If no installed-workflow marker exists, the command fails without creating local state. Manual calls from a nested directory need an absolute or upward-relative script path so Node can locate the entry point. Runtime-generated actions always include both an absolute script path and an absolute `--root`, so they remain executable from any working directory.
+- Options may appear before or after positionals as `--name value` or `--name=value`. Unknown, duplicate, command-irrelevant, missing-value, and surplus positional arguments are rejected before state I/O.
+- Boolean options (`--all`, `--include-archive`, `--require-stop`) take no value. A literal value starting with `--` needs the equals form.
+- An explicit `--root <path>` wins and must contain `.agents/`. Otherwise the runtime walks upward to the nearest ancestor containing `.agents/aidlc/`; with no marker it fails without creating local state.
+- Manual calls from a nested directory need an absolute or upward-relative script path. Runtime-generated actions always carry an absolute script path and an absolute `--root`.
 
-Every `state.mjs` and `task-next.mjs` command prints one JSON envelope: `{ok: true, result, nextAction?}`. `result` carries the command payload (a mutated command nests it as `{task, ...extra}`; a read returns the read object), and `nextAction` is present whenever the command is task-scoped. Task-less commands (`memory list|promote|retire`, `lesson rebuild|search`, `state migrate`, `task list|find`) return no `nextAction`. A success envelope may additionally carry `warnings: [{code, message, hint?}]` when the mutation persisted but a derived step failed afterwards — `LESSON_INDEX_STALE` (lesson-index rebuild) or `RENDER_FAILED` (workplan render); the mutation is committed and the exit code stays `0`, so callers follow the warning hint instead of retrying the mutation, while the explicit repair commands (`lesson rebuild`, `render.mjs`) and `state migrate` still fail loudly. Failures print a one-line `{ok: false, error: {message, hint?}}` on stderr — never a stack trace. Exit codes are typed: `0` success, `1` expected validation or gate error, `2` the continuation guard, `3` an unexpected crash. Callers must execute `run_phase` actions immediately; a successful mutation is not permission to stop. In build, the action includes `itemId`, `remainingItems`, and an item-focused context command while work remains, and every embedded command carries an explicit `--root` so it runs from any working directory.
+### Output envelope and exit codes
 
-`task-next.mjs --require-stop` prints the current action plus a machine-readable `continuation` object in the stdout envelope — `{required, code, taskId, classification}` and, when work remains, `command`, `reason`, `itemId`, and `remainingItems` — and exits `2` when the classification is `run_phase`. The first stderr line is `CONTINUATION_REQUIRED: {json}` carrying the same task id, command, and reason (followed by an explicit "expected pause, not a failure" note); it is a local guard against a premature final response, and the caller must execute `continuation.command` instead of replying. It exits normally (`continuation.code = STOP_ALLOWED`) for a valid human gate, durable blocker, terminal outcome, or completion. The guard is detection at the package boundary: it cannot technically intercept a message a model host has already emitted, so hosts recover by running `task next <task-id>` in the next turn and executing its command. `task status ... --status blocked_on_user` fails instead of persisting when the current gate is not ready, and `gate-view.mjs` only renders tasks already in that validated status.
+Every `state.mjs` and `task-next.mjs` command prints one JSON envelope: `{ok: true, result, nextAction?}`.
 
-Human approval is a dedicated atomic operation. The displayed review steps map to stable `--gate` values: **Confirm requirements** → `G0_confirm`, **Approve plan** → `G1_review`, **Review implementation** → `G2_codereview`. Display labels are always English; task prose may follow the task language:
+- **`result`** carries the payload (a mutation nests it as `{task, ...extra}`; a read returns the read object).
+- **`nextAction`** is present for every task-scoped command. Task-less commands (`memory list|promote|retire`, `lesson rebuild|search`, `state migrate`, `task list|find`) return none.
+- **`warnings`** `[{code, message, hint?}]` may accompany a success when the mutation persisted but a derived step failed: `LESSON_INDEX_STALE` (lesson-index rebuild) or `RENDER_FAILED` (workplan render). The exit code stays `0`; follow the hint, do not retry. The repair commands (`lesson rebuild`, `render.mjs`) and `state migrate` still fail loudly.
+- **Failures** print one line `{ok: false, error: {message, hint?}}` on stderr — never a stack trace.
+- **Exit codes:** `0` success, `1` expected validation or gate error, `2` continuation guard, `3` unexpected crash.
+- Execute `run_phase` actions immediately; a successful mutation is not permission to stop. In build the action includes `itemId`, `remainingItems`, and an item-focused context command while work remains; every embedded command carries an explicit `--root`.
+
+### Continuation guard
+
+- `task-next.mjs --require-stop` prints the current action plus a `continuation` object — `{required, code, taskId, classification}` and, when work remains, `command`, `reason`, `itemId`, `remainingItems` — and exits `2` when the classification is `run_phase`.
+- The first stderr line is `CONTINUATION_REQUIRED: {json}` with the same task id, command, and reason, followed by an explicit "expected pause, not a failure" note. The caller must execute `continuation.command` instead of replying.
+- It exits normally (`continuation.code = STOP_ALLOWED`) for a valid human gate, durable blocker, terminal outcome, or completion.
+- The guard detects at the package boundary and cannot intercept an already-emitted message; hosts recover by running `task next <task-id>` in the next turn and executing its command.
+- `task status ... --status blocked_on_user` fails instead of persisting when the current gate is not ready; `gate-view.mjs` renders only tasks already in that validated status.
+
+### Gate approval
+
+Human approval is a dedicated atomic operation. Review steps map to stable `--gate` values: **Confirm requirements** → `G0_confirm`, **Approve plan** → `G1_review`, **Review implementation** → `G2_codereview`. Display labels are always English; task prose may follow the task language.
 
 ```sh
 node .agents/aidlc/scripts/state.mjs gate approve <task-id> --gate <gate> --source "<explicit approval>"
 ```
 
-`--source` is audit provenance, not authentication or proof of consent. The host agent must invoke this command only in a later user turn that explicitly approves the gate currently presented.
+`--source` is audit provenance, not authentication or proof of consent. Invoke it only in a later user turn that explicitly approves the gate currently presented.
 
-`evidence add` accepts `spec`, `test`, `lint`, `review`, and `diagnostic`; it rejects `approval`. An evidence `--area` must belong to the task's affected areas, and multi-area test or lint evidence must name its area. `task status` accepts `active`, `blocked_on_user`, and `paused` (`done` is not a status command; finish with `task transition --to done` or `task archive`), and rejects `blocked_on_user` at wrap, which has no human gate. Every route out of a validated `blocked_on_user` wait, including `paused`, requires audited `--reason` and `--source` metadata and appends diagnostic evidence; entering `paused` from `active` requires the same audited `--mode audited --reason --source` triple and appends a `Paused while active` diagnostic, while resuming `paused → active` needs no audit metadata. Repair bounds are machine-enforced: the third failed verify record per area, or the second failed review record, in the current build flips `nextAction` to `blocked` and adds a `REPAIR_BOUND` error to the Review implementation gate check. Normal phase advancement uses `gate approve`, and wrap completion uses `task transition --to done` or `task archive <task-id> --reason "<reason>" --source "<source>"`, which applies the same transition checks and appends an `Archive to done` diagnostic. The low-level transition escape hatch is intentionally noisy, records diagnostic evidence, still applies all transition checks, and requires audit metadata:
+### Evidence, status, and transitions
+
+- **Evidence.** `evidence add` accepts `spec`, `test`, `lint`, `review`, and `diagnostic`; it rejects `approval`. `--area` must belong to the task's affected areas; multi-area test or lint evidence must name its area.
+- **Status.** `task status` accepts `active`, `blocked_on_user`, and `paused` (`done` is not a status; finish with `task transition --to done` or `task archive`). It rejects `blocked_on_user` at wrap, which has no human gate.
+- **Audited exits.** Every route out of a validated `blocked_on_user` wait, including `paused`, requires audited `--reason` and `--source` and appends diagnostic evidence. `active → paused` requires the same `--mode audited --reason --source` triple and appends a `Paused while active` diagnostic; `paused → active` needs no audit metadata.
+- **Repair bounds.** The third failed verify record per area, or the second failed review record, in the current build flips `nextAction` to `blocked` and adds a `REPAIR_BOUND` error to the Review implementation gate check.
+- **Advancing and finishing.** Phases advance with `gate approve`; wrap completes with `task transition --to done` or `task archive <task-id> --reason "<reason>" --source "<source>"`, which applies the same transition checks and appends an `Archive to done` diagnostic.
+
+The low-level transition escape hatch is intentionally noisy: it records diagnostic evidence, applies all transition checks, requires audit metadata, and rejects self-transitions:
 
 ```sh
 node .agents/aidlc/scripts/state.mjs task transition <task-id> --to <phase> --mode audited --reason "<reason>" --source "<source>"
 ```
 
-Self-transitions are rejected, and `task create` rejects an id that collides case-insensitively with an existing task or archive record. `task create` also fails while another unrelated task is actionable; its `--switch-from <ids>` acknowledgement still requires explicit user direction. `--feature <feature-id>` permits sibling tasks in an existing feature without abandoning them. `feature link` checks membership and task dependencies; `task item ... --depends-on <item-id,...> --owns <path,...>` adds item edges and an optional Git path scope. Loop dispatch (local and fleet) requires a nonempty path scope. When `loop.mode` is `local` or `fleet`, the Approve plan check also fails with `PARTITION_SCOPE` for an open item without `--owns`, and with `PARTITION_OVERLAP` when two items that can run concurrently (no direct or transitive `--depends-on` between them) own overlapping paths; with the loop off both are warnings. Overlap is per path segment: `src` overlaps `src/a.ts` but not `srcx`. The rendered workplan shows each item's scope as `owns: … · after: …`. Path scopes are normalized (trailing slashes stripped) and may name either a file or a directory; directory scopes cover every file beneath them. Missing and cyclic dependencies fail, and an item or feature task cannot finish before its prerequisites. After reopening the Approve plan step, all non-deferred execution items return to `todo`; prior Review implementation, verification, and review evidence cannot satisfy the new build boundary, and repair-bound counters reset with it.
+### Task creation, features, and item scopes
 
-State writes and generated workplans use symlink-checked atomic replacement. State-lock release is owner-token checked and never removes a replacement owner's lock. If a process stops after writing a terminal archive record but before committing the catalog, a retry replaces that orphan only when the persisted catalog still contains the same active task identity and does not reference an archive record; malformed, referenced, or identity-conflicting records fail closed.
+- **Creation.** `task create` rejects an id that collides case-insensitively with an existing task or archive record, and fails while another unrelated task is actionable; its `--switch-from <ids>` acknowledgement still requires explicit user direction. `--feature <feature-id>` permits sibling tasks in an existing feature without abandoning them.
+- **Dependencies.** `feature link` checks membership and task dependencies; `task item ... --depends-on <item-id,...> --owns <path,...>` adds item edges and an optional Git path scope. Missing and cyclic dependencies fail; an item or feature task cannot finish before its prerequisites.
+- **Path scopes.** Loop dispatch (local and fleet) requires a nonempty path scope. With `loop.mode` `local` or `fleet`, the Approve plan check fails with `PARTITION_SCOPE` for an open item without `--owns` and `PARTITION_OVERLAP` when two items that can run concurrently (no direct or transitive `--depends-on`) own overlapping paths; with the loop off both are warnings.
+- **Overlap rules.** Per path segment: `src` overlaps `src/a.ts` but not `srcx`. Scopes are normalized (trailing slashes stripped), may name a file or a directory, and directory scopes cover every file beneath. The rendered workplan shows `owns: … · after: …` per item.
+- **Reopening.** After reopening Approve plan, all non-deferred execution items return to `todo`; prior Review implementation, verification, and review evidence cannot satisfy the new build boundary, and repair-bound counters reset.
+
+### Atomic writes and archives
+
+- State writes and generated workplans use symlink-checked atomic replacement. State-lock release is owner-token checked and never removes a replacement owner's lock.
+- A process that stops after writing a terminal archive record but before committing the catalog leaves an orphan; a retry replaces it only when the persisted catalog still holds the same active task identity and references no archive record. Malformed, referenced, or identity-conflicting records fail closed.
+
+### Memory promotion
 
 Promoting an agent-memory candidate requires traceable source records and an explicit approver:
 
@@ -248,4 +396,9 @@ Promoting an agent-memory candidate requires traceable source records and an exp
 node .agents/aidlc/scripts/state.mjs memory promote <memory-id> --summary "<summary>" --guidance "<guidance>" --source-task <task-id> --source-lesson <lesson-id> --approved-by "<human>"
 ```
 
-Use [Operating the workflow](./operating-workflow.md) for gates, approvals, handoffs, and task ownership.
+## Related
+
+- [Operating the workflow](./operating-workflow.md) — gates, approvals, handoffs, and task ownership.
+- [Configuration](./configuration.md) — `.agents/config.json`, `loop.*`, `mcp`, and adapter permissions.
+- [Loop setup runbook](./loop-runbook.md) — step-by-step loop setup.
+- [Troubleshooting](./troubleshooting.md) — error codes and recovery.

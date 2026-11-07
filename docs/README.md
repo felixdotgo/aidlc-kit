@@ -1,35 +1,50 @@
 # Documentation
 
-Use this page to choose the guide that matches your role and next task.
+Pick a page by what you want to do. New here? Install with the [README](../README.md), then read [Operating the workflow](./operating-workflow.md).
 
-## For package users and operators
+> [!WARNING]
+> The loop, fleet mode, and the coordination service are pre-1.0 and experimental. See [Status and stability](./loop-runbook.md#status-and-stability).
 
-1. Start with the repository [README](../README.md) to install the workflow.
-2. Read [Operating the workflow](./operating-workflow.md) before asking an agent to change a project.
-3. Use [Configuration](./configuration.md) to configure project rules, profiles, and Codex, Claude Code, and OpenCode permissions.
-4. Keep [Command reference](./command-reference.md) nearby for safe CLI usage.
-5. Read [AI-DLC Coordination service](./coordination-service.md) before enabling remote canonical state — the coordination service and **fleet** mode are **experimental and still under active development**, with known bugs and possible breaking changes in every release before `1.0.0`.
-6. Use the [Loop setup runbook](./loop-runbook.md) to run the loop end-to-end — enable from `off`, run in `local` mode, or spread across machines with `fleet`.
+## Get started
 
-## For contributors and maintainers
+| Page | Read it when… |
+| --- | --- |
+| [README](../README.md) | You are installing the workflow into a project. |
+| [Loop setup runbook](./loop-runbook.md) | You want to enable the loop, locally or across machines. |
+| [Local loop walkthrough](./loop-local-run.md) | The loop is set up and you want to add tasks, watch them, approve gates, and use the dashboard. |
 
-1. Begin with [Development](./development.md) for local setup and implementation boundaries.
-2. Use [Testing and release](./testing-and-release.md) for the verification and package-smoke workflow.
-3. Read [Architecture](./architecture.md) before changing package, installed-runtime, migration, or asset behaviour.
+## Use and operate
 
-## Documentation map
+| Page | Read it when… |
+| --- | --- |
+| [Operating the workflow](./operating-workflow.md) | You want the lifecycle, task state, review gates, and handoffs. |
+| [AI-DLC Coordination service](./coordination-service.md) | You are deploying remote state or fleet workers on several machines. |
 
-| Page | Audience | Purpose |
-| --- | --- | --- |
-| [Operating the workflow](./operating-workflow.md) | Operators | Lifecycle, task state, human gates, and blocked work. |
-| [Configuration](./configuration.md) | Operators and maintainers | Project configuration, profile precedence, rules, and Codex, Claude Code, and OpenCode permissions. |
-| [Command reference](./command-reference.md) | Operators | Package CLI commands, flags, previews, and safety limits. |
-| [Development](./development.md) | Contributors | Dependencies, source layout, local commands, and implementation rules. |
-| [Testing and release](./testing-and-release.md) | Maintainers | Test strategy, evaluator, package smoke test, and release checks. |
-| [Architecture](./architecture.md) | Contributors | Boundaries, dependency direction, and source-to-consumer flow. |
-| [AI-DLC Coordination service](./coordination-service.md) | Operators | Opt-in service deployment, state authority, and credential safety. Experimental and under active development: known bugs, breaking changes possible before `1.0.0`. |
-| [Loop setup runbook](./loop-runbook.md) | Operators | Step-by-step loop setup: enable from `off`, run in `local` mode (usable today), or spread across machines with `fleet` (in development). Experimental: breaking changes possible before `1.0.0`. |
-| [Troubleshooting](./troubleshooting.md) | Operators and contributors | Symptom/error-code recovery guide for locks, corrupt state, continuation guard, gate-check errors, and fleet authority. |
-| [Design decisions](./design-decisions.md) | Contributors | ADR-lite: dual core, single JSON state, compact style, human-only upgrade, append-only evidence, and how to add a decision. |
+## Reference
 
-When a public command, configuration field, or installed layout changes, update the relevant guide and its validation in the same change.
+| Page | Read it when… |
+| --- | --- |
+| [Configuration](./configuration.md) | You are editing `.agents/config.json`: profiles, rules, agent permissions, loop settings. |
+| [Command reference](./command-reference.md) | You need a command, flag, environment variable, or installed script. |
+| [Troubleshooting](./troubleshooting.md) | You have an error code, a stuck or paused task, or a dashboard problem. |
+
+## Contribute
+
+| Page | Read it when… |
+| --- | --- |
+| [Development](./development.md) | You are setting up this repository, dogfooding its workflow, or changing source. |
+| [Testing and release](./testing-and-release.md) | You are verifying a change or preparing a release. |
+| [Architecture](./architecture.md) | You are changing a package boundary, installed runtime, migration, or asset layout. |
+| [Design decisions](./design-decisions.md) | You need the reasoning behind a project-wide decision, or must record one. |
+
+## Adding or changing a page
+
+Pages are flat `docs/<slug>.md` files; the dashboard, tests, and external links depend on the names.
+
+- **Shape:** `# Title`, a 1–2 sentence opening (purpose and audience), `##` headings by reader task, tables for lookups, `## Related` with 2–4 links.
+- **One source of truth:** each fact lives on one page; other pages give one sentence and a link. Experimental features get only a one-line callout to [Status and stability](./loop-runbook.md#status-and-stability).
+- **Links:** `./<slug>.md#anchor`. The dashboard keeps links to pages in `DOC_PAGES` (`src/ui/docs.ts`) in-app and opens the rest on GitHub. Don't rename a linked heading without updating the links.
+- **Register it:** add the page to a table above; to show it in the dashboard, add it to `DOC_PAGES` and run `node --test dist/test/unit/ui-docs.test.js` after `npm run build`; if the package must always ship it, add it to the docs test in `test/unit/installer.test.ts`.
+- **Versions:** pages with version-pinned commands go on the [version bump checklist](./testing-and-release.md#version-bump-checklist).
+
+A public command, configuration field, or installed-layout change updates the relevant page and its test in the same change.

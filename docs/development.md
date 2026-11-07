@@ -1,37 +1,32 @@
 # Development guide
 
-This guide is for contributors to `@felixdotgo/aidlc-kit`. It covers local setup, source ownership, and the rules that keep the package runtime and installed workflow behaviour aligned.
+Local setup, dogfooding, source ownership, and the rules that keep package runtime and installed workflow aligned. To use the workflow in your own project, start at the [documentation index](./README.md).
 
 ## Requirements and dependencies
 
-- Node.js 20.17 or newer is required by the package runtime.
-- npm installs the repository development dependencies.
-- `@inquirer/prompts` is the runtime dependency for interactive CLI prompts; installed lifecycle scripts remain dependency-free.
-- Development uses TypeScript and `@types/node` as declared in `package.json`.
+- Node.js 20.17 or newer; npm installs the dev dependencies (TypeScript, `@types/node`).
+- `@inquirer/prompts` is the only runtime dependency; installed lifecycle scripts are dependency-free.
+- Codex, Claude Code, or OpenCode: only for real evaluator drivers; OpenCode also needs `AIDLC_OPENCODE_MODEL` (`provider/model[#variant]`).
 
 ```sh
 npm install
 ```
 
-Codex, Claude Code, or OpenCode are optional for manually exercising real evaluator drivers. Ordinary build, lint, and unit-test work does not need external model credentials. OpenCode driver runs also need `AIDLC_OPENCODE_MODEL` set to a `provider/model[#variant]` value.
-
 ## Platform support
-
-Node.js 20.17 or newer is required on every platform. Linux and macOS are fully supported and tested. Windows is best-effort: win32 path separators are handled in `src/state/guards.ts`, `src/profiles.ts`, and the installed `assets/aidlc/scripts/lib/store.mjs`/`context-runtime.mjs`, and the state lock uses `process.kill(pid, 0)` for liveness; the lock and path handling are not exercised on Windows in CI. Loop and fleet features require Docker and a POSIX shell (`loop-local-workers.mjs` rejects non-Linux hosts).
 
 | Platform | Status | Notes |
 | --- | --- | --- |
 | Linux | Supported | Full CI coverage; Docker worker isolation available. |
 | macOS | Supported | Full test coverage; POSIX shell recipes apply. |
-| Windows | Best-effort | Use WSL or Git Bash for the local build recipe; lock/path code handles win32 separators but is untested. |
-| Loop / fleet | Linux only | Requires Docker + POSIX shell; `AIDLC_TEST_WORKER_IMAGE`/`AIDLC_WORKER_DOCKER_IMAGE` for e2e. |
+| Windows | Best-effort | Use WSL or Git Bash for shell recipes. win32 separators handled in `src/state/guards.ts`, `src/profiles.ts`, installed `lib/store.mjs` and `context-runtime.mjs`; state lock liveness via `process.kill(pid, 0)`. Not in CI. |
+| Loop / fleet | Linux only | Needs Docker and a POSIX shell; `loop-local-workers.mjs` rejects other hosts. E2e tests need `AIDLC_TEST_WORKER_IMAGE` and `AIDLC_WORKER_DOCKER_IMAGE`. |
 
 ## Repository layout
 
 ```text
 assets/aidlc/                Source workflow contracts, schemas, and installed scripts
 skills/                      Source thin phase adapters
-src/                         TypeScript package CLI (src/cli/), installer + shared planning core, lifecycle domain (src/model/, src/state/), profiles, and migrations
+src/                         Package CLI (src/cli/), installer, shared planning core, lifecycle domain (src/model/, src/state/), profiles, migrations
 dev/evaluator/               Development-only evaluator harness and runners
 scripts/build-assets.mjs     Bundles workflow assets for package distribution
 test/unit/                   Unit and installed-runtime parity tests
@@ -39,26 +34,22 @@ docs/                        User, operator, and contributor documentation
 dist/                        Generated TypeScript and bundled assets; do not hand-edit
 ```
 
-The asset build copies `assets/aidlc/` and `skills/` into `dist/assets/.agents/`. At install time, the package writes the workflow to a consumer project's `.agents/aidlc/` and `.agents/skills/` locations. Always state which of these three layouts—source, bundle, or installed project—you mean in code or documentation.
+Three layouts: source (`assets/aidlc/`, `skills/`), bundle (`dist/assets/.agents/`), installed (consumer `.agents/aidlc/` and `.agents/skills/`). Say which you mean.
 
 ## Local commands
 
 | Command | Purpose |
 | --- | --- |
-| `npm run build` | Rebuild bundled workflow assets and compile TypeScript into `dist/`. |
+| `npm run build` | Bundle workflow assets and compile TypeScript into `dist/`. |
 | `npm run sync-core` | Copy `assets/aidlc/scripts/lib/store.mjs` to `services/aidlc-coordination/src/lifecycle-core.mjs` byte-identically. |
 | `npm run lint` | Type-check without emitting files. |
-| `npm test` | Build, then run every compiled unit test with Node's test runner. |
-| `node --test dist/test/unit/<file>.test.js` | Run a focused compiled test after building. |
-| `npm run release:check` | Run the repository release-evidence policy check. |
-
-Run the narrowest relevant test while iterating, then run `npm test` and `npm run lint` before handing off a non-trivial change. See [Testing and release](./testing-and-release.md) for the package smoke test and evaluator.
+| `npm test` | Build, then run all compiled unit tests (Node test runner). |
+| `node --test dist/test/unit/<file>.test.js` | Run one compiled test after building. |
+| `npm run release:check` | Release-evidence policy check. |
 
 ## Local build and registry-free installation
 
-Use this fast smoke test to install workflow assets from the current checkout into a disposable consumer project. It invokes the freshly compiled CLI directly, so the consumer installation does not use `npm install`, `npx`, a published package, or an npm registry. Repository bootstrap and build still use npm and the dependencies already installed in this checkout.
-
-Run the following POSIX shell commands from the repository root:
+Install the checkout's assets into a disposable consumer project via the compiled CLI (no `npm install`, `npx`, or registry). From the repository root:
 
 ```sh
 AIDLC_REPO="$(pwd)"
@@ -74,72 +65,131 @@ node "$AIDLC_LOCAL_PROJECT/.agents/aidlc/scripts/state.mjs" task list --root "$A
 printf 'Local test project: %s\n' "$AIDLC_LOCAL_PROJECT"
 ```
 
-The dry run previews the managed writes before `--yes` applies them. `status` describes the installed version and adapters, `doctor --strict` is the integrity check, and the final command confirms that the copied dependency-free lifecycle runtime can read its canonical state without the package CLI.
-
-Always use a new empty directory and inspect the printed path before removing it manually. Do not point this recipe at a real project unless its managed files and workflow state are intentional test targets. Reusing a fixture across package versions triggers the human-only upgrade protection by design. On Windows, use WSL or Git Bash for the snippet, or create a temporary directory in PowerShell and pass its absolute path to the same Node commands.
-
-This direct-`dist` smoke verifies the compiled checkout, but it does not verify the published file allowlist, package bin metadata, or tarball exclusions. Before release, also run the separate [package smoke test](./testing-and-release.md#package-smoke-test), which packs and extracts a local tarball without installing or fetching the package from a registry.
+- Use a new empty directory each time (reuse across versions triggers the human-only upgrade protection); remove it manually. On Windows, create it in PowerShell and pass the absolute path.
+- Do not target a real project unless its managed files and state are intentional test targets.
+- This checks the compiled checkout only, not the published allowlist, bin metadata, or tarball exclusions; run the [package smoke test](./testing-and-release.md#package-smoke-test) before release.
 
 ## Run `npx` from a local package archive
-
-To test the package before release, create its `.tgz` archive and run the local archive with `npx`:
 
 ```sh
 npm pack
 npx --package felixdotgo-aidlc-kit-0.2.0.tgz -- aidlc-kit init .
 ```
 
-`npx` runs the archive without publishing it. Run the command from the directory containing the archive. Use a disposable project instead of `.` if you do not want the command to write workflow files into the current directory.
+Run from the archive's directory; pass a disposable project instead of `.` to avoid writing into the current directory.
+
+## Dogfooding this repository
+
+`.agents/` is gitignored; each contributor installs the repository's own workflow from the checkout.
+
+### Install the workflow from source
+
+```sh
+npm install
+npm run build
+node dist/src/cli.js init . --agent <codex|claude|opencode> --loop-mode off --yes
+```
+
+Edit `.agents/config.json` as below (`commands` as executable-and-argument arrays; your adapter id → `"scripted"` in `agentState`), then `node dist/src/cli.js profile validate .`.
+
+```json
+{
+  "commands": {
+    "build": { "command": "npm", "args": ["run", "build"] },
+    "test": { "command": "npm", "args": ["test"] },
+    "lint": { "command": "npm", "args": ["run", "lint"] }
+  },
+  "agentState": { "opencode": "scripted" }
+}
+```
+
+### Check for drift and re-sync
+
+After changing `assets/aidlc/`, check for a stale install (any output means stale; symptom: `loop: Isolated local worker dispatcher is not integrated; loop execution is unavailable`):
+
+```sh
+diff -rq assets/aidlc/scripts .agents/aidlc/scripts
+```
+
+Re-sync is a human-only upgrade (TTY required); stop the loop daemon first (`node dist/src/cli.js loop down --root .` or `loop stop`), then re-run `diff -rq`:
+
+```sh
+npm run build
+node dist/src/cli.js upgrade . --dry-run   # preview the plan
+node dist/src/cli.js upgrade .             # type the package version when prompted
+```
+
+### Run the loop from a source checkout
+
+> [!WARNING]
+> Experimental, pre-1.0. See [Status and stability](./loop-runbook.md#status-and-stability).
+
+In place of `npx --package @felixdotgo/aidlc-kit@<version> aidlc-kit …`, run the compiled CLI after `npm run build`:
+
+| Task | Command |
+| --- | --- |
+| Start the daemon and dashboard | `node dist/src/cli.js loop up --root .` |
+| Check daemon and task status | `node dist/src/cli.js loop status --root . [--task-id <task-id>]` |
+| Serve only the dashboard | `node dist/src/cli.js ui .` |
+
+See [Local loop walkthrough](./loop-local-run.md) and [Command reference](./command-reference.md#loop).
 
 ## Ownership boundaries
 
-The package has three ownership layers:
-
-1. Package-managed kernel assets installed under `.agents/aidlc/`.
-2. Project-owned configuration, profiles, rules, and evaluation material under `.agents/project/`.
-3. Project-owned task state and derived data under `.agents/data/`.
-
-Do not introduce a second lifecycle board or hand-edit canonical state. The installed lifecycle scripts are dependency-free so consumer projects do not need this package to operate after installation.
+- `.agents/aidlc/`: package-managed kernel assets.
+- `.agents/project/`: project-owned config, profiles, rules, and evaluation material.
+- `.agents/data/`: project-owned task state and derived data; never add a second lifecycle board or hand-edit it.
 
 ## Mirrored runtime behaviour
 
-The TypeScript implementation powers the package CLI. Installed projects use a dependency-free mirror under `assets/aidlc/scripts/`. Changes to shared lifecycle, state, gate, profile, or context behaviour must preserve parity between these paths and add coverage for both package and installed-runtime execution.
-
-Likewise, a public configuration or schema change must update its validator, JSON schema, installed assets, package inventory, documentation, and tests together.
-
-The dual-core sync rule: after editing `assets/aidlc/scripts/lib/store.mjs`, run `npm run sync-core` so `services/aidlc-coordination/src/lifecycle-core.mjs` stays byte-identical.
+- TypeScript powers the package CLI; installed projects use the dependency-free mirror in `assets/aidlc/scripts/`. Lifecycle, state, gate, profile, or context changes keep parity and add coverage for both.
+- A public configuration or schema change updates validator, JSON schema, installed assets, package inventory, docs, and tests together.
+- Dual-core sync rule: after editing `assets/aidlc/scripts/lib/store.mjs`, run `npm run sync-core` so `services/aidlc-coordination/src/lifecycle-core.mjs` stays byte-identical.
 
 ## Code style and conventions
 
-Adopted as the project baseline (approved decision `D1-convention-standard` on task `refactor-source-readability`):
+Baseline (decision `D1-convention-standard`, task `refactor-source-readability`):
 
-- **Strict TypeScript, no new dependencies for tooling.** Keep `strict` mode; enforce via `npm run lint` (`tsc --noEmit`). No ESLint/Prettier for now.
-- **File size targets.** Aim for ≤250 lines per source file and ≤60 lines per function; split by domain responsibility when exceeded.
-- **Module boundaries.** One responsibility per module; a facade module may re-export a public API for compatibility (for example `src/state.ts`).
-- **Naming.** Descriptive camelCase for functions/variables, `PascalCase` for types/interfaces, `SCREAMING_SNAKE_CASE` for true constants; file names match their primary export.
-- **Error handling.** Fail with typed, one-line errors; never swallow exceptions silently; validate inputs before I/O.
-- **Dependencies.** Pass dependencies (fetch, clock, environment) explicitly as parameters; avoid module-level mutable state.
-- **Public API.** Document exported symbols with JSDoc when the contract is non-obvious.
-- **Behavior preservation.** Refactors must not change CLI output, state schema, file layout, or installed assets; run parity tests.
-- **Verification.** Run the narrowest relevant test while iterating; `npm test` + `npm run lint` before handing off.
+- **Strict TypeScript.** Keep `strict`; enforce via `npm run lint` (`tsc --noEmit`). No ESLint/Prettier or other tooling deps.
+- **Size.** ≤250 lines per file, ≤60 per function; split by responsibility.
+- **Modules.** One responsibility each; a facade may re-export a public API (e.g. `src/state.ts`).
+- **Naming.** camelCase functions/variables, `PascalCase` types, `SCREAMING_SNAKE_CASE` constants; file name matches primary export.
+- **Errors.** Typed one-line errors; never swallow; validate inputs before I/O.
+- **Dependencies.** Pass fetch, clock, environment explicitly; no module-level mutable state.
+- **Public API.** JSDoc exported symbols with non-obvious contracts.
+- **Behavior preservation.** Refactors never change CLI output, state schema, file layout, or installed assets; run parity tests.
+- **Verification.** Narrowest test while iterating; `npm test` + `npm run lint` before handoff.
 
 ## Safe implementation rules
 
-- Resolve all project-relative paths through the shared path helpers; reject traversal and symlink escape.
-- Keep installation, migration, and upgrade plans deterministic and conflict-first.
+- Resolve project-relative paths through the shared path helpers; reject traversal and symlink escape.
+- Keep install, migration, and upgrade plans deterministic and conflict-first.
 - Preserve project-owned configuration and state when changing managed assets.
-- Do not add remote profile discovery, runtime asset downloads, executable plugin hooks, registry checks, or shell-string command execution.
-- Treat human-gated lifecycle transitions as atomic, auditable state operations.
-
-Read [Architecture](./architecture.md) before changing a module boundary, migration, installed script, or bundle layout.
+- Never add remote profile discovery, runtime asset downloads, executable plugin hooks, registry checks, or shell-string execution.
+- Human-gated lifecycle transitions are atomic, auditable state operations.
+- Read [Architecture](./architecture.md) before changing a module boundary, migration, installed script, or bundle layout.
 
 ## Contributing to prompt assets
 
-Prompt assets are the installed workflow contracts under `assets/aidlc/` (notably `orchestrator.md` and `phase-*.md`). They feed the phase packets generated by `context.mjs`.
+Prompt assets are the contracts under `assets/aidlc/` (`orchestrator.md`, `phase-*.md`) that `context.mjs` turns into phase packets.
 
-- Keep them compact: the default phase-packet budget is 16,000 characters (`config.context.maxChars`). Optional rules and diagnostics are omitted first; the next-action contract, full phase contract, approved decisions, safety/spec anchors, task state, and applicable latest evidence are mandatory and are never truncated — if they do not fit, packet generation fails instead.
-- Heading invariants are enforced by `gate-check.mjs`:
+- Keep them compact: default packet budget is 16,000 characters (`config.context.maxChars`); optional rules and diagnostics drop first.
+- Never truncated (generation fails instead): next-action contract, phase contract, approved decisions, safety/spec anchors, task state, latest applicable evidence.
+- Heading invariants enforced by `gate-check.mjs`:
   - Intent (`G0_confirm`): `## 📋 Problem`, `## 🗺️ Affected areas`, `## 💭 Assumptions`, `## ❓ Open questions`, `## 🎯 Scope`.
   - Design (`G1_review`): `## 🧩 Solution per affected area`, `## 📌 Spec traceability`, `## 🔗 Cross-service contracts`, `## ⚠️ Risks / edge cases`.
-- When changing contracts, run `npm run release:check` (`--adapters opencode`) and the evaluator suite; update docs and tests in the same change.
-- Never duplicate canonical agent instructions in overview docs; point to the installed assets instead. See [Design decisions](./design-decisions.md) (D6) for the compact-style rationale.
+- After changing contracts, run `npm run release:check` (`--adapters opencode`) and the evaluator suite; update docs and tests in the same change. Rationale: [Design decisions](./design-decisions.md) D6.
+
+## Documentation conventions
+
+Follow [Adding or changing a page](./README.md#adding-or-changing-a-page). In addition:
+
+- A public contract change (command, config field, schema, installed asset) updates its guide and the asserting test in the same change.
+- Never duplicate canonical agent instructions from `assets/aidlc/`; link to the installed asset.
+
+## Related
+
+- [Testing and release](./testing-and-release.md)
+- [Architecture](./architecture.md)
+- [Design decisions](./design-decisions.md)
+- [Configuration](./configuration.md)

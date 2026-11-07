@@ -52,7 +52,7 @@ const readConfig = (root: string): { loop?: { mode?: string } } | undefined => {
 const requireLocalLoop = (root: string): void => {
   if (!existsSync(loopEntryPath(root))) throw new Error(`AI-DLC is not installed in ${root}; run: npx @felixdotgo/aidlc-kit init --loop-mode local`);
   const mode = readConfig(root)?.loop?.mode ?? "off";
-  if (mode === "fleet") throw new Error("loop up/down manage the local daemon; this project uses fleet mode (see docs/loop-runbook.md, Part B)");
+  if (mode === "fleet") throw new Error("loop up/down manage the local daemon; this project uses fleet mode (see docs/loop-runbook.md#fleet-multi-machine)");
   if (mode !== "local") throw new Error([
     "Loop mode is off. Enable it in .agents/config.json:",
     '  "loop": { "mode": "local", "agents": { "lead": "opencode", "workers": { "worker-a": "opencode" } } }',

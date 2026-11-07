@@ -1,23 +1,17 @@
 # Loop setup runbook
 
+Setup for the end-to-end loop: a **lead** agent runs clarify, plan, and wrap, **workers** run build items in Docker, and the loop stops at every gate for a human. Journeys, in order: [Enable the loop from `off`](#enable-the-loop-from-off), [Local mode](#local-mode), [Fleet (multi-machine)](#fleet-multi-machine); day-to-day operation is the [Local loop walkthrough](./loop-local-run.md).
+
+## Status and stability
+
 > [!WARNING]
-> The loop is **experimental** and pre-1.0 (`0.x`): the `loop.*` fields, provider mappings, environment variables, and diagnostics can change incompatibly in any release before `1.0.0`. **Local mode is usable** on a single Linux host today; **fleet mode is still under active development** and is not yet stable.
-
-This runbook walks through the three most common operational journeys for the end-to-end loop, in order:
-
-1. [Enable the loop from `off`](#enable-the-loop-from-off)
-2. [Run the loop in `local` mode](#local-mode)
-3. [Run the loop across multiple machines (`fleet`)](#fleet-multi-machine)
-
-It is a step-by-step guide, not a reference. For the full field, flag, and environment reference, see [Configuration](./configuration.md), [Command reference](./command-reference.md), and [AI-DLC Coordination service](./coordination-service.md); this runbook links to those pages for depth instead of repeating them.
-
-## The loop in one paragraph
-
-The loop drives a task end-to-end. A **lead** agent runs the clarify, plan, and wrap phases, while **workers** execute build items. `local` mode uses the project's canonical local state (`state.mjs`) with a host-executed lead and Docker-isolated workers on one Linux host. `fleet` mode delegates authority to a coordination service and can spread workers across machines. Both modes use the same loop daemon, intake, and dashboard; only the authority differs. Selecting a mode only configures the loop; nothing runs until you call `aidlc-kit loop start` explicitly.
+> **Experimental, pre-1.0 (`0.x`).** Local mode is usable on one Linux host; fleet mode and the Coordination service are under active development with known bugs.
+> CLI flags, `loop.*`/`mcp.*` fields, environment variables, diagnostics, and installed layouts can change incompatibly before `1.0.0`.
+> Selecting a mode never starts or approves anything; only `aidlc-kit loop start` (or `loop.sh up`) runs the loop.
 
 ## Enable the loop from `off`
 
-`loop.mode` defaults to `off` (an absent `loop` field also means `off`). Enabling it means setting `loop.mode` to `local` or `fleet` and providing `loop.agents` with one `lead` and one or more named `workers`, each mapped to `codex`, `claude`, or `opencode`:
+`loop.mode` defaults to `off` (absent `loop` field included). Set it to `local` or `fleet` and give `loop.agents` one `lead` and one or more named `workers`, each `codex`, `claude`, or `opencode`:
 
 ```json
 {
@@ -28,163 +22,107 @@ The loop drives a task end-to-end. A **lead** agent runs the clarify, plan, and 
 }
 ```
 
-### Step 1 — Choose how to write the config
-
-Pick one of three ways to set `loop.mode` and `loop.agents`:
-
-- **Edit `.agents/config.json` directly.** This is the project-owned config; the fields are described in [Configuration](./configuration.md#optional-loop-configuration).
-- **Use `init`** for a new install:
+- Edit `.agents/config.json` directly; fields in [Configuration](./configuration.md#optional-loop-configuration).
+- New install, with `init`:
   ```sh
   npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init . \
     --loop-mode local --loop-lead codex --loop-workers a=codex,b=opencode
   ```
-- **Use the human-only `upgrade`** for an existing install, which preserves the existing config when you omit the loop flags and lets an authorised human review the change before applying. Stop the loop daemon and any `loop start` first: lease files changed format, and a newer loop refuses to start while a loop from the previous version still holds a task (`A loop from a previous aidlc-kit version is still running …`):
+- Existing install, with the human-only `upgrade` (omitting the loop flags preserves the config). Stop the daemon first; a newer loop refuses to start while an older one holds a task (`A loop from a previous aidlc-kit version is still running …`).
   ```sh
   npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit upgrade . \
     --loop-mode local --loop-lead codex --loop-workers a=codex,b=opencode --dry-run
   ```
 
-### Step 2 — Verify the loop is enabled
+Verify: every `aidlc-kit loop` invocation fails closed before anything starts unless:
 
-`aidlc-kit loop start` fails closed unless the config is complete:
+- `loop.mode` is `local` or `fleet`, and `loop.agents` has a valid `lead` and at least one valid worker (`Loop requires a configured lead and worker providers`).
+- Any `--mode` flag matches `loop.mode` (`Requested mode does not match configured authority`).
 
-- `loop.mode` must be `local` or `fleet`.
-- `loop.agents` must have a valid `lead` provider and at least one valid `worker` mapping (`Loop requires a configured lead and worker providers`).
-- The requested `--mode` must match the configured `loop.mode` (`Requested mode does not match configured authority`).
-
-These checks run on any `aidlc-kit loop` invocation before anything starts, so a wrong configuration fails closed with a clear message rather than silently running. A valid configuration is only a selection: it does not install or start a service, authorise an upgrade, or grant gate approval. Run `aidlc-kit loop start` to actually start the loop, and keep provider credentials out of the config object.
+A valid config is only a selection: it installs and starts nothing and grants no approval. Keep credentials out of the config object.
 
 ## Local mode
 
-Local mode is the single-machine journey. The lead runs on the host (Codex, Claude Code, or OpenCode) for clarify/plan/wrap, and build items fan out to Docker-isolated workers. It uses the canonical local state and requires local authority; see [Command reference](./command-reference.md#loop) for the authority boundary.
+One Linux host: the lead runs on the host (Codex, Claude Code, or OpenCode), build items fan out to Docker-isolated workers, and the canonical state is the local `state.mjs`.
 
 ### Prerequisites
 
 | Requirement | Notes |
 | --- | --- |
-| Linux host | Loop/fleet features require Docker and a POSIX shell; `loop-local-workers.mjs` rejects non-Linux hosts. |
+| Linux host, non-root user | `loop-local-workers.mjs` rejects non-Linux hosts; Docker workers need a non-root uid/gid. |
 | Docker engine | The worker batch preflights `docker info` and the worker image. |
-| Non-root host user | Docker workers require a non-root uid/gid. |
-| Worker Docker image | Auto-built from the packaged Dockerfile on first build dispatch (`aidlc-kit loop worker-image`); set `AIDLC_WORKER_DOCKER_IMAGE` only to override the per-provider default. |
-| Provider credentials | In `.agents/loop.env` (git-ignored) or exported; detected from the provider's own login when possible; never written into `.agents/config.json`. |
+| Worker Docker image | Auto-built on first build dispatch; `AIDLC_WORKER_DOCKER_IMAGE` only overrides the default. |
+| Provider credentials | In `.agents/loop.env` (git-ignored) or exported; never in `.agents/config.json`. |
 
 ### Step 1 — Configure `local`
 
-Set `loop.mode` to `local` with a lead and workers (see [Enable the loop from `off`](#enable-the-loop-from-off)):
-
-```json
-{
-  "loop": {
-    "mode": "local",
-    "agents": { "lead": "codex", "workers": { "worker-a": "codex", "worker-b": "opencode" } }
-  }
-}
-```
+Set `loop.mode` to `local` with a lead and workers, as shown in [Enable the loop from `off`](#enable-the-loop-from-off).
 
 ### Step 2 — Fill in `.agents/loop.env`
 
-`init`/`upgrade` install `.agents/loop.env` as a commented template (git-ignored through `.agents/.gitignore`). Uncomment what you need; anything already exported in the shell wins, and values your tools already store are detected for the configured providers only:
+`init`/`upgrade` install `.agents/loop.env` as a commented template (git-ignored through `.agents/.gitignore`). Uncomment what you need; exported shell variables win, and values your tools already store are detected for the configured providers only:
 
-- `AIDLC_OPENCODE_MODEL` ← `"model"` in `opencode.json` (project, `OPENCODE_CONFIG`, or `~/.config/opencode`).
-- `OPENCODE_API_KEY` (or the key matching the model prefix) ← API-key entries in `~/.local/share/opencode/auth.json`.
-- `OPENAI_API_KEY` ← `~/.codex/auth.json` after `codex login --with-api-key` (a ChatGPT-only login is not enough for Docker workers).
-- `ANTHROPIC_API_KEY` ← `"env"` in `.claude/settings.local.json`, `.claude/settings.json`, or `~/.claude/settings.json`.
-- `AIDLC_LOOP_EVENT_LOG` ← always `.agents/data/loop/ui-events.jsonl`.
-
-Check the result, without secret values, at any time:
-
-```sh
-./.agents/aidlc/scripts/loop.sh check     # = aidlc-kit loop env
-```
-
-Use another file with `--loop-env PATH` or `AIDLC_ENV_FILE`. The variables, for reference:
-
-| Variable | Required | Purpose |
+| Variable | Required | Purpose and detected from |
 | --- | --- | --- |
-| `AIDLC_WORKER_DOCKER_IMAGE` | no | Optional single-image override. The per-provider default `aidlc-worker-<provider>:local` is auto-built and recorded in `loop.workerImage`. |
-| `AIDLC_OPENCODE_MODEL` | if any provider is `opencode` | `provider/model[#variant]` (for example `opencode-go/gpt-6-luna`). The turn fails closed without a valid value. |
-| `OPENAI_API_KEY` | if a provider is `codex` | Codex worker credential. |
-| `ANTHROPIC_API_KEY` | if a provider is `claude` | Claude Code worker credential. |
-| `OPENCODE_API_KEY` | if a provider is `opencode` | OpenCode worker credential. The key follows the model provider: `openai/` → `OPENAI_API_KEY`, `anthropic/` → `ANTHROPIC_API_KEY`, otherwise `OPENCODE_API_KEY`. |
-| `AIDLC_LOCAL_WORKTREES_ROOT` | no | Root for worker worktrees; defaults to a system temp directory. It must be outside the integration checkout. |
-| `AIDLC_LOOP_EVENT_LOG` | no | Path to the JSONL event-log sidecar that feeds the web dashboard live log; set to `.agents/data/loop/ui-events.jsonl` automatically for every local daemon. Task events are also written to `events/<task-id>.jsonl` next to it (per-task history for the live log). |
-| `AIDLC_ENV_FILE` | no | The env file to load instead of `.agents/loop.env` (relative to the project root). |
+| `AIDLC_OPENCODE_MODEL` | if any provider is `opencode` | `provider/model[#variant]` (for example `opencode-go/gpt-6-luna`); the turn fails closed without it. Detected: `"model"` in `opencode.json` (project, `OPENCODE_CONFIG`, or `~/.config/opencode`). |
+| `OPENAI_API_KEY` | if a provider is `codex` | Codex worker credential. Detected: `~/.codex/auth.json` after `codex login --with-api-key` (a ChatGPT-only login is not enough). |
+| `ANTHROPIC_API_KEY` | if a provider is `claude` | Claude Code worker credential. Detected: `"env"` in `.claude/settings.local.json`, `.claude/settings.json`, or `~/.claude/settings.json`. |
+| `OPENCODE_API_KEY` | if a provider is `opencode` | OpenCode worker credential; the key follows the model prefix (`openai/` → `OPENAI_API_KEY`, `anthropic/` → `ANTHROPIC_API_KEY`, otherwise `OPENCODE_API_KEY`). Detected: `~/.local/share/opencode/auth.json`. |
+| `AIDLC_WORKER_DOCKER_IMAGE` | no | Single-image override; the default `aidlc-worker-<provider>:local` is auto-built and recorded in `loop.workerImage`. |
 
-Docker workers (local and fleet) authenticate OpenCode from the environment and redirect OpenCode's XDG data/config roots into the worker's ephemeral HOME. Only the **isolated lead** container does not support OpenCode yet (`OpenCode workers require file-based credentials and are not available in isolated containers yet`); the daemon runs the lead on the host, so an OpenCode lead works there.
+Check the result (secrets never printed) with `./.agents/aidlc/scripts/loop.sh check` (= `aidlc-kit loop env`).
+
+Rarely set: `AIDLC_LOCAL_WORKTREES_ROOT` (worker worktrees root, default a system temp directory, must be outside the integration checkout); `AIDLC_LOOP_EVENT_LOG` (always `.agents/data/loop/ui-events.jsonl` for a local daemon); `AIDLC_ENV_FILE` or `--loop-env PATH` (another env file). Lookup order: [Command reference](./command-reference.md#loop). Credential rule: [Provider credentials and OpenCode](./configuration.md#provider-credentials-and-opencode).
 
 ### Step 3 — Build the worker image (usually automatic)
-
-Build the worker image for each provider you use, or let the supervisor auto-build it on the first build dispatch:
 
 ```sh
 npx @felixdotgo/aidlc-kit loop worker-image --provider codex    # → aidlc-worker-codex:local
 npx @felixdotgo/aidlc-kit loop worker-image --provider opencode # → aidlc-worker-opencode:local
 ```
 
-The command records the tag into `loop.workerImage`; the local supervisor reuses it and auto-builds any missing per-provider image before dispatch. The batch preflight still inspects the image and runs each provider CLI with `--version` inside the container, so a missing or mismatched image fails before any worker starts. See [Testing and release](./testing-and-release.md#loop-docker-and-postgresql-verification) for the fixture build pattern used by the test suite.
+- Records the tag in `loop.workerImage`; the supervisor auto-builds any missing per-provider image before dispatch.
+- Batch preflight inspects the image and runs each provider CLI with `--version` in the container; a missing or mismatched image fails before any worker starts. Test fixtures: [Testing and release](./testing-and-release.md#loop-docker-and-postgresql-verification).
 
 ### Step 4 — Start the daemon, add tasks, and watch
 
-The quickest way runs the environment check, starts the daemon in the background, and serves the dashboard:
-
 ```sh
-./.agents/aidlc/scripts/loop.sh up          # --open launches the browser; --no-ui starts only the daemon
-./.agents/aidlc/scripts/loop.sh status      # daemon, dashboard, environment
-./.agents/aidlc/scripts/loop.sh logs        # follow the daemon log
-./.agents/aidlc/scripts/loop.sh down        # stop the dashboard and the daemon (--now cancels the running turn)
+./.agents/aidlc/scripts/loop.sh up      # env check + daemon + dashboard; --open launches the browser, --no-ui skips the dashboard
+./.agents/aidlc/scripts/loop.sh down    # stop both (--now cancels the running turn); also: status, logs, check
 ```
 
-`Ctrl-C` in the `up` terminal closes only the dashboard. On Windows use `.agents\aidlc\scripts\loop.cmd` with the same commands. The rest of this step shows the underlying commands.
+`Ctrl-C` in the `up` terminal closes only the dashboard. On Windows use `.agents\aidlc\scripts\loop.cmd`.
 
-`start` launches the singleton daemon (one per project) and reads no requirement. Add tasks with the web dashboard **New task** or loop intake, which reads the requirement from stdin (capped at 8192 bytes) and never from an argument:
+Underneath, `loop start` runs the singleton daemon (one per project) and reads no requirement. Add tasks with the dashboard **New task** or with intake (stdin only, capped at 8192 bytes):
 
 ```sh
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start
 echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop intake
 ```
 
-The daemon runs only loop-owned tasks (created through intake), one bounded run per task in turn, and keeps polling after a task reaches a gate or completes. Stop it with `Ctrl-C`: the first signal stops after the current turn, the second cancels the turn, the third exits. A stopped run is not a pause; the task continues on the next `start`.
-
-`status` prints the canonical task and its derived next action:
-
-```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop status --task-id <task-id>
-```
-
-If something looks stuck ("already running", a gate that cannot be approved, a build item that is never dispatched), ask who holds what:
-
-```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop leases [--task-id <task-id>]
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop leases --clear-stale   # removes stale holders only
-```
-
-Each entry shows the holder (pid, host, command, activity), its expiry, what it blocks, and the exact fix. Leases left by a crashed process expire within 60 s and are reclaimed automatically; claims are never released for you — follow the printed `assignment.mjs reconcile` / `release` command. See [Troubleshooting](./troubleshooting.md#loop-leases-locks-and-claims).
-
-There is no `loop resume`. After a gate approval the daemon continues the task on its next poll. A **paused** task is not actionable: fix the cause, then press **resume** on the dashboard or run `node .agents/aidlc/scripts/state.mjs task status <task-id> --status active`.
-
-As an alternative to typing these commands repeatedly, `aidlc-kit ui` starts a web dashboard to view task status, add tasks, resume paused tasks, send gate feedback, and approve gates; it prints a login URL that signs the browser in. See [Command reference](./command-reference.md#ui) and [Loop local run](./loop-local-run.md#57-web-dashboard-aidlc-kit-ui).
+- The daemon runs only loop-owned tasks, keeps polling after a gate or completion, and auto-resumes approved tasks; there is no `loop resume`.
+- Stuck: `aidlc-kit loop leases`, then [Loop leases, locks and claims](./troubleshooting.md#loop-leases-locks-and-claims).
+- Status, stopping, resuming, the streaming log, and the dashboard: [Local loop walkthrough](./loop-local-run.md#start-the-daemon-and-add-tasks).
 
 ### Step 5 — Approve gates, or send feedback, from the trusted host terminal
 
-Gate approval happens only through a human — the trusted host terminal or the signed-in dashboard — never from a lead or worker container, and never via piped input:
+Only a human approves a gate, on the trusted host terminal or the signed-in dashboard; never a lead or worker container, never piped input:
 
 ```sh
-node .agents/aidlc/scripts/loop-gate.mjs <task-id>
+node .agents/aidlc/scripts/loop-gate.mjs <task-id>   # type approve, or any other text as feedback (task stays at the gate)
 ```
 
-The command prints the exact review (task, phase, gate, artifact digests, and — at `G2_codereview` — the integration commit), then prompts `Type approve to approve this exact review, or type feedback to send guidance back to the loop:`. Type `approve` to approve that exact review. Any other text is feedback: the task stays at the same gate, goes back to `active` with evidence `Cancelled gate wait at <gate>: <feedback>`, and the daemon's next lead turn revises the review artifact and re-presents the gate. If the review changes while you type, it fails closed and asks you to inspect the new review.
-
-On the dashboard the task detail page offers the same two actions: **Send feedback (stay at gate)** and **✓ Approve** (which asks for confirmation in a popup before sending). A **feedback pending** pill on the card and detail page shows feedback that has not yet been followed by an approval of that gate.
+The dashboard detail page offers the same two actions ([details](./loop-local-run.md#approve-a-gate-or-send-feedback)).
 
 ## Fleet (multi-machine)
 
-Fleet mode spreads the loop across machines through the coordination service. It uses `remote-state.mjs` instead of the local `state.mjs`, and the remote workspace is canonical. Deployment, storage (SQLite for one host, PostgreSQL for multiple hosts), and credentials are covered in [Coordination service](./coordination-service.md); this section keeps the loop-specific steps and links there for the rest.
+Fleet mode spreads the loop across machines through the coordination service: `remote-state.mjs` replaces the local `state.mjs`, and the remote workspace is canonical. Deployment, storage, and credentials: [Coordination service](./coordination-service.md#multi-machine-loop-deployment).
 
 ### Prerequisites
 
-- A deployed coordination service with PostgreSQL for a multi-host topology, and a shared Git remote — see [Coordination service](./coordination-service.md#multi-machine-loop-deployment).
-- `loop.mode` set to `fleet` with a lead and workers matching your worker machines.
-- Three distinct credential classes (`MCP_FLEET_LEAD_TOKEN`, `MCP_FLEET_REVIEWER_TOKEN`, and `MCP_FLEET_WORKER_TOKENS`) configured on the service.
+- A deployed coordination service (PostgreSQL for multi-host) and a shared Git remote.
+- `loop.mode` set to `fleet`, with workers matching your worker machines.
+- Three distinct credential classes on the service: `MCP_FLEET_LEAD_TOKEN`, `MCP_FLEET_REVIEWER_TOKEN`, `MCP_FLEET_WORKER_TOKENS`.
 
 ### Step 1 — Configure `fleet`
 
@@ -201,76 +139,75 @@ Fleet mode spreads the loop across machines through the coordination service. It
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `AIDLC_FLEET_URL` | yes | The full HTTPS `/mcp` URL of the service. |
-| `AIDLC_FLEET_WORKSPACE` | yes | The remote workspace id. |
-| `AIDLC_FLEET_TOKEN` | yes | The lead credential. |
-| `AIDLC_FLEET_INTEGRATION_BRANCH` | yes | The shared integration branch; it must exist on the remote. |
-| `AIDLC_FLEET_PROJECT_ROOT` | no | Set automatically by `aidlc-kit loop`; required only for the direct `remote-state.mjs` / fleet-runner client. When set explicitly it must match the loop root. |
-| `AIDLC_FLEET_WORKER_IDS` / `AIDLC_FLEET_WORKER_PROVIDERS` | no | Derived from `loop.agents.workers`; when set explicitly they must match it. |
-| `AIDLC_FLEET_GIT_REMOTE` | no | Git remote name; defaults to `origin`. |
-| `AIDLC_FLEET_MAX_TURNS`, `AIDLC_FLEET_TURN_TIMEOUT_MS`, `AIDLC_FLEET_MAX_STALL_TURNS`, `AIDLC_FLEET_POLL_MS` | no | Override `loop.limits` and `loop.pollMs`, which are the defaults. |
+| `AIDLC_FLEET_URL` | yes | Full HTTPS `/mcp` URL of the service. |
+| `AIDLC_FLEET_WORKSPACE` | yes | Remote workspace id. |
+| `AIDLC_FLEET_TOKEN` | yes | Lead credential. |
+| `AIDLC_FLEET_INTEGRATION_BRANCH` | yes | Shared integration branch; must exist on the remote. |
+| `AIDLC_FLEET_PROJECT_ROOT` | no | Set by `aidlc-kit loop`; needed only for the direct `remote-state.mjs` / fleet-runner client. Must match the loop root. |
+| `AIDLC_FLEET_WORKER_IDS` (comma-separated) / `AIDLC_FLEET_WORKER_PROVIDERS` | no | Derived from `loop.agents.workers`; must match it. |
+| `AIDLC_FLEET_GIT_REMOTE` | no | Git remote name; default `origin`. |
+| `AIDLC_FLEET_AGENT` | direct runner only | Lead provider when running `fleet-run.mjs` directly (default `codex`); `aidlc-kit loop` sets it from `loop.agents.lead`. Also the per-worker provider fallback. |
+| `AIDLC_FLEET_MAX_TURNS`, `AIDLC_FLEET_TURN_TIMEOUT_MS`, `AIDLC_FLEET_MAX_STALL_TURNS`, `AIDLC_FLEET_POLL_MS` | no | Override `loop.limits` and `loop.pollMs`. |
 
-The lead agent comes from `loop.agents.lead`. Do not export `AIDLC_FLEET_REVIEWER_TOKEN` in the lead shell; the daemon strips it from every lead and worker process anyway.
+The lead agent is `loop.agents.lead`. Do not export `AIDLC_FLEET_REVIEWER_TOKEN` in the lead shell; the daemon strips it from every lead and worker process.
 
 ### Step 3 — Start the daemon and add tasks
 
-`aidlc-kit loop start --mode fleet` preflights the service (`fleet_get`) and the remote integration branch, then starts the same daemon as local mode, failing closed instead of falling back to local:
+`loop start --mode fleet` preflights the service (`fleet_get`) and the remote integration branch, then runs the same daemon as local mode, failing closed instead of falling back to local:
 
 ```sh
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start --mode fleet
 echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop intake --mode fleet
 ```
 
-Intake creates the remote task under a short lead claim and writes `.agents/data/tasks/<task-id>/loop-intake.json` with `authority: "fleet"` on this lead machine. Only those tasks are fleet loop-owned; a remote task created any other way is never picked up. For each actionable task the daemon runs the fleet supervisor in a bounded mode: it claims the supervisor lease, runs fenced lead turns and worker dispatch through the coordinator, publishes the gate snapshot with its checkpoint, then returns and releases the lease. After the reviewer approves, the next poll re-claims the task and continues. An unreachable service shows up as `daemon_poll_error` and does not stop the daemon. Shutdown, backoff, and `status` behave as in local mode; there is no `loop resume` (re-activate a paused task with the dashboard **resume**).
+- **Intake** creates the remote task under a short lead claim and writes `.agents/data/tasks/<task-id>/loop-intake.json` with `authority: "fleet"`; only those tasks are fleet loop-owned.
+- **Each actionable task** runs the fleet supervisor bounded (claim the supervisor lease, fenced lead turns and worker dispatch, publish the gate snapshot, release); after reviewer approval the next poll re-claims it.
+- An unreachable service shows as `daemon_poll_error`; the daemon keeps running.
 
-The underlying fleet runner is also available directly from the service deployment (the installed `.agents/aidlc-coordination/`, or `dist/services/aidlc-coordination/` from a source checkout):
+The fleet runner also runs directly from the service deployment (`.agents/aidlc-coordination/`, or `dist/services/aidlc-coordination/` in a source checkout); `supervisor` waits at each gate and never approves:
 
 ```sh
 node .agents/aidlc-coordination/src/fleet-run.mjs supervisor <task-id>
 node .agents/aidlc-coordination/src/fleet-run.mjs coordinator <task-id> --once
 ```
 
-Run directly, `supervisor` waits at each gate for the reviewer approval and resumes automatically; it never approves a gate.
-
 ### Step 4 — Run a worker on each worker machine
 
-On each worker machine, point at the same `AIDLC_FLEET_URL`, workspace, and `AIDLC_FLEET_PROJECT_ROOT` (a checkout of the project), use that worker's own `AIDLC_FLEET_TOKEN`, then set:
+Same `AIDLC_FLEET_URL`, workspace, and `AIDLC_FLEET_PROJECT_ROOT` (a project checkout); this worker's own `AIDLC_FLEET_TOKEN`; and:
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `AIDLC_FLEET_WORKER_ID` | yes | This machine's worker id (must be a configured worker). |
+| `AIDLC_FLEET_WORKER_ID` | yes | This machine's worker id (a configured worker). |
 | `AIDLC_FLEET_WORKTREES_ROOT` | yes | Root for this worker's isolated worktrees. |
-| `AIDLC_FLEET_WORKER_AGENT` | recommended | This worker's provider (`codex`, `claude`, or `opencode`); falls back to this worker's entry in `AIDLC_FLEET_WORKER_PROVIDERS`, then to `AIDLC_FLEET_AGENT`. A worker with a provider rejects jobs for another provider. |
-| `AIDLC_WORKER_DOCKER_IMAGE` | no | Image override. Otherwise the image is `loop.workerImage[provider]` from the project config or `aidlc-worker-<provider>:local`, auto-built from the packaged Dockerfile when missing. Without a known provider this variable is required. |
+| `AIDLC_FLEET_WORKER_AGENT` | recommended | Provider (`codex`, `claude`, or `opencode`); falls back to this worker's entry in `AIDLC_FLEET_WORKER_PROVIDERS`, then `AIDLC_FLEET_AGENT`. A worker rejects jobs for another provider. |
+| `AIDLC_WORKER_DOCKER_IMAGE` | no | Image override; otherwise `loop.workerImage[provider]` or `aidlc-worker-<provider>:local`, auto-built. Required when the provider is unknown. |
 | `AIDLC_OPENCODE_MODEL` | if the provider is `opencode` | `provider/model[#variant]`. |
-| worker credential | yes | `OPENAI_API_KEY` (codex), `ANTHROPIC_API_KEY` (claude), or for opencode the key matching the model prefix (`openai/`, `anthropic/`, otherwise `OPENCODE_API_KEY`). |
-
-Run one bounded assignment per invocation, or omit `--once` to keep polling:
+| worker credential | yes | `OPENAI_API_KEY` (codex), `ANTHROPIC_API_KEY` (claude), or the key matching the opencode model prefix (`openai/`, `anthropic/`, otherwise `OPENCODE_API_KEY`). |
 
 ```sh
-node .agents/aidlc-coordination/src/fleet-run.mjs worker --once
+node .agents/aidlc-coordination/src/fleet-run.mjs worker --once   # omit --once to keep polling
 ```
 
 The worker resolves the image to its immutable `sha256:` id and preflights Docker and the provider CLI before claiming work.
 
 ### Step 5 — Approve gates as the reviewer
 
-Use the reviewer credential in a connected reviewer conversation:
-
 ```sh
 node .agents/aidlc/scripts/remote-state.mjs gate inbox
 node .agents/aidlc/scripts/remote-state.mjs gate approve <task-id> --snapshot <snapshot-id> --source "<explicit user approval>"
 ```
 
-The approve command checks that the snapshot is still current and uses the reviewer-only service operation. Run it only after the human explicitly approves the packet. Alternatively, start `aidlc-kit ui` with the fleet environment from Step 2 plus the reviewer credential (`AIDLC_FLEET_REVIEWER_TOKEN` or `--reviewer-token-file`): the dashboard then approves the current snapshot itself, passing the credential only to that one approve process. Without a reviewer credential the dashboard shows these commands instead and its approve API returns `403`.
-
-To send the loop back to work instead of approving, use **Send feedback (stay at gate)** on the dashboard detail page. Feedback needs **no reviewer credential** in fleet mode: the dashboard runs `loop-entry.mjs feedback <task-id>`, which records the feedback under the lead claim through `remote-state.mjs task status <task-id> --status active --mode audited`; the task stays at the same gate, the supervisor sees the pending feedback on its next poll, revises the review artifact, and publishes a new snapshot for the reviewer.
+- `gate approve` checks the snapshot is still current and uses the reviewer-only operation; run it only after the human explicitly approves the packet.
+- Dashboard: start `aidlc-kit ui` with the Step 2 environment plus `AIDLC_FLEET_REVIEWER_TOKEN` or `--reviewer-token-file`; without it the approve API returns `403` and the page shows these commands.
+- **Send feedback (stay at gate)** needs no reviewer credential: it runs `remote-state.mjs task status <task-id> --status active --mode audited` under the lead claim; the task stays at the gate and the supervisor publishes a revised snapshot.
 
 ## Authority boundary
 
-`local` mode uses the canonical local state and requires local authority; `fleet` mode uses `remote-state.mjs`. When `AIDLC_FLEET_URL` is set, local lifecycle, context, gate, assignment, and standalone loop commands reject use so an unattended lead cannot accidentally mutate a second local authority. Unset `AIDLC_FLEET_URL` only when deliberately returning to a local run. See [Coordination service](./coordination-service.md#state-and-synchronization-contract) for the remote canonical-state contract.
+`local` uses the canonical local state; `fleet` uses `remote-state.mjs`. While `AIDLC_FLEET_URL` is set, local lifecycle, context, gate, assignment, and standalone loop commands reject use; unset it only when deliberately returning to a local run. Contract: [State and synchronization contract](./coordination-service.md#state-and-synchronization-contract).
 
 ## Where to go next
 
-- [Operating the workflow](./operating-workflow.md) — gates, approvals, handoffs, and task ownership.
-- [Troubleshooting](./troubleshooting.md) — symptom/error-code recovery, including fleet authority and Docker worker image diagnostics.
+- [Local loop walkthrough](./loop-local-run.md) — day-to-day operation.
+- [AI-DLC Coordination service](./coordination-service.md) — deploying the fleet service.
+- [Operating the workflow](./operating-workflow.md) — gates, approvals, handoffs.
+- [Troubleshooting](./troubleshooting.md) — symptom and error-code recovery.
