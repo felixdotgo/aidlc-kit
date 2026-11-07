@@ -5,6 +5,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readyTaskItems, formatGateView, pathsOverlap } from "./store.mjs";
 import { isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
+import { explainFleetConflict, LEASES_COMMAND } from "./loop-holder.mjs";
 
 export const FLEET_LIMITS = Object.freeze({ maxTurns: 12, turnTimeoutMs: 600_000, maxStallTurns: 2, maxWorkers: 4, leaseMs: 300_000, heartbeatMs: 60_000 });
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -111,7 +112,7 @@ async function withHeartbeat(renew, intervalMs, work) {
   try {
     const result = await work(abort.signal);
     await pending;
-    if (failure) throw new Error(`Fleet lease renewal failed: ${failure.message}`);
+    if (failure) throw new Error(`Fleet lease renewal failed: ${explainFleetConflict(failure.message)}`);
     return result;
   } finally { clearInterval(timer); await pending; }
 }
@@ -155,7 +156,7 @@ export async function runFleetCoordinator({ repository, taskId, ownerId = random
       const stopping = () => Boolean(stopSignal?.aborted || cancelSignal?.aborted);
       const stopped = (reason) => ({ status: "stopped", taskId, reason, revision: snapshot.revision });
       for (;;) {
-        if (leaseLost.aborted) throw new Error("Lead lease renewal failed");
+        if (leaseLost.aborted) throw new Error(`Lead lease renewal failed: the lead lease (run_claim, lead epoch ${epoch}) for ${taskId} could not be renewed or the supervisor lease was lost; another lead may have taken over or the coordination service is unreachable. Inspect: ${LEASES_COMMAND} ${taskId}`);
         if (stopping()) return stopped(cancelSignal?.aborted ? "cancel requested" : "stop requested");
         if (Date.now() - startedAt >= limits.maxTurns * limits.turnTimeoutMs) return { status: "paused", taskId, reason: "coordinator wall-time limit reached" };
         snapshot = validateSnapshot(await readTask({ taskId }), taskId);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -63,14 +63,85 @@ test("live lease blocks a duplicate runner and dead owner can be reclaimed", () 
   const { root, taskId } = fixture();
   try {
     const release = lease.acquireLoopLease(root, taskId, "run-a");
-    assert.equal(lease.readLiveLease(root, taskId).runId, "run-a");
+    assert.equal(lease.readLiveLease(root, taskId).purpose, "loop run run-a");
+    assert.equal(lease.readLiveLease(root, taskId).activity, "turn");
     assert.throws(() => lease.acquireLoopLease(root, taskId, "run-b"), /live loop runner/);
     release();
     const path = lease.loopLeasePath(root, taskId);
     writeFileSync(path, JSON.stringify({ schemaVersion: 1, taskId, runId: "dead", pid: 2147483647, token: "dead", createdAt: new Date().toISOString() }));
     const releaseReclaimed = lease.acquireLoopLease(root, taskId, "run-c");
-    assert.equal(lease.readLiveLease(root, taskId).runId, "run-c");
+    assert.equal(lease.readLiveLease(root, taskId).purpose, "loop run run-c");
+    assert.equal(JSON.parse(readFileSync(path, "utf8")).schemaVersion, 2);
     releaseReclaimed();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("task lease activity gates approval: waiting allows it, turn (supervised or manual) refuses it", () => {
+  const { root, taskId } = fixture("blocked_on_user");
+  const approve = () => spawnSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), "gate", "approve", taskId, "--gate", "G0_confirm", "--source", "yes", "--root", root], { encoding: "utf8" });
+  try {
+    const supervisor = lease.acquireTaskLease(root, taskId, { activity: "waiting", label: "supervisor" });
+    assert.equal(lease.readLiveLease(root, taskId), null);
+    supervisor.setActivity("turn");
+    assert.equal(lease.readLiveLease(root, taskId).activity, "turn");
+    let result = approve();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /Gate approval is unavailable while loop runner owns loop-test; .*task lease held by pid \d+ on .*activity turn.*loop-entry\.mjs leases loop-test/);
+    supervisor.release();
+    const manual = lease.acquireLoopLease(root, taskId, "manual");
+    result = approve();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /loop runner owns/);
+    manual();
+    const waiting = lease.acquireTaskLease(root, taskId, { activity: "waiting", label: "supervisor" });
+    result = approve();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    waiting.release();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a supervised runLoop shares the supervisor's task lease and returns it to waiting", async () => {
+  const { root, taskId } = fixture();
+  try {
+    const supervisor = lease.acquireTaskLease(root, taskId, { activity: "waiting", label: "supervisor" });
+    const seen: any[] = [];
+    const result = await runtime.runLoop({ root, taskId, agent: "codex", driver: async ({ onSessionId }: { onSessionId: (id: string) => void }) => {
+      seen.push(lease.readLiveLease(root, taskId));
+      onSessionId("thread-1");
+      execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), "task", "status", taskId, "--status", "blocked_on_user", "--root", root]);
+      return { sessionId: "thread-1", resultText: "", diagnostics: [] };
+    } });
+    assert.equal(result.status, "gate");
+    assert.equal(seen[0]?.token, supervisor.token);
+    assert.equal(seen[0]?.activity, "turn");
+    const onDisk = JSON.parse(readFileSync(lease.loopLeasePath(root, taskId), "utf8"));
+    assert.equal(onDisk.token, supervisor.token);
+    assert.equal(onDisk.activity, "waiting");
+    assert.equal(lease.readLiveLease(root, taskId), null);
+    const status = runtime.loopStatus(root, taskId);
+    assert.equal(status.liveLease, null);
+    assert.equal(status.lease.state, "live");
+    assert.equal(status.lease.holder.activity, "waiting");
+    supervisor.release();
+    assert.equal(runtime.loopStatus(root, taskId).lease.state, "absent");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a legacy supervisor lease: a live one refuses with an upgrade hint, a dead one is cleaned up", () => {
+  const { root, taskId } = fixture();
+  try {
+    const legacy = join(root, ".agents/data/loop", `${taskId}.supervisor.lease`);
+    mkdirSync(join(root, ".agents/data/loop"), { recursive: true });
+    writeFileSync(legacy, JSON.stringify({ taskId, pid: process.pid, token: "old" }));
+    assert.throws(() => lease.acquireTaskLease(root, taskId, { label: "supervisor" }), /previous aidlc-kit version is still running .*stop the loop daemon/);
+    writeFileSync(legacy, JSON.stringify({ taskId, pid: 2147483647, token: "old" }));
+    writeFileSync(join(root, ".agents/data/loop", `${taskId}.supervisor.guard`), JSON.stringify({ taskId, pid: 2147483647, token: "g" }));
+    const old = (Date.now() - 60000) / 1000;
+    utimesSync(join(root, ".agents/data/loop", `${taskId}.supervisor.guard`), old, old);
+    const handle = lease.acquireTaskLease(root, taskId, { label: "supervisor" });
+    assert.equal(existsSync(legacy), false);
+    assert.equal(existsSync(join(root, ".agents/data/loop", `${taskId}.supervisor.guard`)), false);
+    handle.release();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

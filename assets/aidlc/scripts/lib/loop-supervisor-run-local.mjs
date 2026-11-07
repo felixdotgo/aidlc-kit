@@ -9,7 +9,7 @@ import { runSupervisor } from "./loop-supervisor.mjs";
 import { createLocalSupervisorAdapter } from "./loop-supervisor-local.mjs";
 import { pathsOverlap, readyTaskItems, selectBuildBatch } from "./store.mjs";
 import { runLocalWorkerBatch } from "./loop-local-workers.mjs";
-import { reconcileLocalAssignments } from "./assignment-store.mjs";
+import { ASSIGNMENT_STATE_LABELS, effectiveAssignmentState, reconcileLocalAssignments } from "./assignment-store.mjs";
 import { ensureWorkerImage, defaultWorkerImageTag } from "./loop-worker-image.mjs";
 import { workerCredentialKeys } from "./loop-worker-docker.mjs";
 
@@ -26,7 +26,7 @@ export function createLocalLoopSupervisor({ root: rootInput, taskId, agent, limi
   const root = validateRoot(rootInput);
   if (!isLoopProvider(agent)) throw new Error(`local lead agent must be ${LOOP_PROVIDER_LIST}`);
   if (typeof driver !== "function" || typeof runner !== "function" || typeof onEvent !== "function") throw new Error("invalid local supervisor callbacks");
-  const adapter = createLocalSupervisorAdapter({ root, taskId });
+  const adapter = createLocalSupervisorAdapter({ root, taskId, onWarning: onEvent });
   const getRecord = () => readLoopRecord(root, taskId);
   const execute = async (mode) => {
     requireLocalAuthority();
@@ -98,8 +98,14 @@ export function planLocalBuildBatch({ taskId, task, workers, assignments = [] })
   if (!selected.length) {
     // Every ready item is held back by an assignment; never auto-release it.
     const blocking = active.filter((entry) => ready.some((itemId) => entry.itemId === itemId || pathsOverlap(byId.get(itemId).ownedPaths, entry.ownedPaths ?? [])));
-    const details = blocking.map((entry) => `${entry.state === "leased" ? "Active" : "Unresolved"} assignment ${entry.id} (${entry.state}) for ${entry.itemId} holds ${(entry.ownedPaths ?? []).join(", ")}`).join("; ");
-    throw new Error(`${details || `No ready build item of ${taskId} could be dispatched`}; inspect it, then run node .agents/aidlc/scripts/assignment.mjs reconcile ${taskId} or node .agents/aidlc/scripts/assignment.mjs release ${taskId} <assignment-id>`);
+    const now = Date.now();
+    const details = blocking.map((entry) => {
+      const state = entry.leaseExpiresAt ? effectiveAssignmentState(entry, now) : entry.state;
+      const claim = [entry.workerId ? `worker ${entry.workerId}` : null, `${ASSIGNMENT_STATE_LABELS[state] ?? state}`, entry.leaseExpiresAt ? `claim expires ${entry.leaseExpiresAt}` : null].filter(Boolean).join(", ");
+      return `${entry.state === "leased" ? "Active" : "Unresolved"} assignment ${entry.id} (${entry.state}) for ${entry.itemId} holds ${(entry.ownedPaths ?? []).join(", ")} [${claim}]`;
+    }).join("; ");
+    const releaseTarget = blocking.length === 1 ? blocking[0].id : "<assignment-id>";
+    throw new Error(`${details || `No ready build item of ${taskId} could be dispatched`}; inspect it (node .agents/aidlc/scripts/assignment.mjs show ${taskId}), then run node .agents/aidlc/scripts/assignment.mjs reconcile ${taskId} once the item is done, or node .agents/aidlc/scripts/assignment.mjs release ${taskId} ${releaseTarget} to drop the claim (discards the worker's unintegrated result)`);
   }
   const jobs = selected.map((itemId, index) => {
     const [workerId, agent] = providers[index];
@@ -151,7 +157,7 @@ export function createIsolatedLocalSupervisor({ root: rootInput, taskId, agent, 
   if (!isLoopProvider(agent)) throw new Error(`local lead agent must be ${LOOP_PROVIDER_LIST}`);
   if (!workers || typeof workers !== "object" || Array.isArray(workers) || !Object.keys(workers).length) throw new Error("Loop requires a configured lead and worker providers");
   for (const [id, provider] of Object.entries(workers)) if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || !isLoopProvider(provider)) throw new Error(`invalid local worker: ${id}`);
-  const adapter = createLocalSupervisorAdapter({ root, taskId });
+  const adapter = createLocalSupervisorAdapter({ root, taskId, onWarning: onEvent });
   const getRecord = () => readLoopRecord(root, taskId);
   const images = Object.fromEntries([...new Set(Object.values(workers))].map((provider) => [provider, docker?.images?.[provider] ?? docker?.image ?? workerImages?.[provider] ?? process.env.AIDLC_WORKER_DOCKER_IMAGE ?? defaultWorkerImageTag(provider)]));
   const credentials = docker?.credentials ?? Object.fromEntries([...new Set(Object.values(workers))].map((provider) => [provider, workerCredentialKeys(provider)]));

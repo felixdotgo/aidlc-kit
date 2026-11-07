@@ -92,3 +92,27 @@ test("listTasks reads every canonical task from the workspace state", async () =
   const broken = createFleetRemoteRepository({ callTool: async () => ({ state: {} }), url: "http://service/mcp", token: "token", workspace: "demo", root: "/tmp/project" });
   await assert.rejects(broken.listTasks(), /Invalid remote workspace state/);
 });
+
+test("remote adapter explains lease/claim FleetConflicts but keeps code, current, and the original text", async () => {
+  const { createFleetRemoteRepository } = await load();
+  const conflict = (message: string) => Object.assign(new Error(message), { code: "FLEET_CONFLICT", current: { revision: 9 } });
+  let fail: Error | null = conflict("lead claim is held");
+  const callTool = async ({ name }: any) => {
+    if (name === "fleet_get") return { workspace: "demo", revision: 1, fleet: { features: {}, leads: {}, jobs: {} } };
+    if (fail) throw fail;
+    return { workspace: "demo", revision: 2, fleet: { features: {}, leads: { "task-a": { epoch: 1 } }, jobs: {} } };
+  };
+  const repo = createFleetRemoteRepository({ callTool, url: "http://service/mcp", token: "token", workspace: "demo", root: "/tmp/project" });
+  await assert.rejects(repo.claimLead({ taskId: "task-a", leaseMs: 300000, idempotencyKey: "k" }), (error: any) => {
+    assert.equal(error.code, "FLEET_CONFLICT");
+    assert.equal(error.current.revision, 9);
+    assert.match(error.message, /^Fleet conflict: another lead holds the lead lease \(run_claim\)/);
+    assert.match(error.message, /Inspect: node \.agents\/aidlc\/scripts\/loop-entry\.mjs leases \(lead claim is held\)$/);
+    return true;
+  });
+  // Non-lease conflicts and non-conflict errors pass through unchanged.
+  fail = conflict("fleet revision conflict");
+  await assert.rejects(repo.claimLead({ taskId: "task-a", leaseMs: 300000, idempotencyKey: "k2" }), (error: any) => error.message === "fleet revision conflict");
+  fail = Object.assign(new Error("stale or expired lead claim"), { code: "OTHER" });
+  await assert.rejects(repo.claimLead({ taskId: "task-a", leaseMs: 300000, idempotencyKey: "k3" }), (error: any) => error.message === "stale or expired lead claim");
+});

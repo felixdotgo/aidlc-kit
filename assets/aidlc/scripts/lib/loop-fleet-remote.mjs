@@ -1,11 +1,20 @@
 import { randomUUID } from "node:crypto";
+import { explainFleetConflict } from "./loop-holder.mjs";
 
 const idempotency = () => randomUUID();
 
 /** Map the coordination service's versioned MCP tools to the headless runner. */
 export function createFleetRemoteRepository({ callTool, url, token, workspace, root, workerId }) {
   if (typeof callTool !== "function" || !url || !token || !workspace || !root) throw new Error("Fleet remote requires MCP callTool, URL, token, workspace, and project root");
-  const call = (name, args) => callTool({ url, token, name, args: { workspace, ...args } });
+  // A FleetConflict keeps its code/current for retry logic; its message gains
+  // a lease/claim explanation and the inspect command (original kept in parentheses).
+  const call = async (name, args) => {
+    try { return await callTool({ url, token, name, args: { workspace, ...args } }); }
+    catch (error) {
+      if (error?.code === "FLEET_CONFLICT" && typeof error.message === "string") error.message = explainFleetConflict(error.message);
+      throw error;
+    }
+  };
   let ownerToken;
   let supervisorToken, supervisorEpoch, supervisorTask;
   const fleet = () => call("fleet_get", {});

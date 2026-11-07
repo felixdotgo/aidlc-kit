@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { createRemoteReviewerClient, createRemoteStateClient, featureConfig, remoteConfig, reviewerConfig } from "./lib/remote-state-client.mjs";
 import { compileContext } from "./lib/context-runtime.mjs";
+import { explainFleetConflict } from "./lib/loop-holder.mjs";
 import { checkGate, closeTask, handoffTask, nextAction, readyTaskItems, recordLesson, recordNoLessons, reopenTask, transitionTask, validateState } from "./lib/store.mjs";
 
 const parse = (argv) => {
@@ -307,5 +308,5 @@ if (isEntry) {
     const result = isReview ? await runRemoteReview(argv, createRemoteReviewerClient(config), config) : argv[0] === "feature" ? await runRemoteFeature(argv, createRemoteStateClient(config)) : argv[0] === "run" ? await runRemoteLease(argv, createRemoteStateClient(config)) : await runRemoteState(argv, createRemoteStateClient(config), config.projectRoot, config);
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) process.exitCode = 1;
-  } catch (error) { console.error(JSON.stringify({ ok: false, error: error.message, code: error.code, currentRevision: error.current?.revision }, null, 2)); process.exitCode = 1; }
+  } catch (error) { console.error(JSON.stringify({ ok: false, error: error.code === "FLEET_CONFLICT" ? explainFleetConflict(error.message) : error.message, code: error.code, currentRevision: error.current?.revision }, null, 2)); process.exitCode = 1; }
 }

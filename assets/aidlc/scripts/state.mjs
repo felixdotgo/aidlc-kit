@@ -270,7 +270,8 @@ if (group === "state" && action === "migrate") {
 } else if (group === "gate" && action === "approve") {
   const gate = option(parsed, "--gate"); const source = option(parsed, "--source");
   if (!id || !gate || !source) throw new Error("gate approve requires active task id, --gate, and explicit --source");
-  if (readLiveLease(root, id)) throw new Error(`Gate approval is unavailable while loop runner owns ${id}; wait for the runner to stop at the human gate`);
+  const runner = readLiveLease(root, id);
+  if (runner) throw new Error(`Gate approval is unavailable while loop runner owns ${id}; wait for the runner to stop at the human gate (task lease held by pid ${runner.pid}${runner.host ? ` on ${runner.host}` : ""}${runner.activity ? `, activity ${runner.activity}` : ""}${runner.expiresAt ? `, expires ${runner.expiresAt}` : ""}; inspect: node .agents/aidlc/scripts/loop-entry.mjs leases ${id})`);
   const outcome = approveAndAdvance(root, state, id, gate, source); persist([outcome.task]); emit({ task: outcome.task, idempotent: outcome.idempotent }, outcome.task);
 } else {
   throw new Error(usage);

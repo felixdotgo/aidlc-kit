@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { acquireHolder, describeHolder } from "./loop-holder.mjs";
 
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const states = new Set(["leased", "reported", "uncertain", "integrated", "released"]);
 const safeId = (value, label) => { if (typeof value !== "string" || !idPattern.test(value)) throw new Error(`Invalid ${label}`); return value; };
 const iso = () => new Date().toISOString();
-const wait = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 export function assignmentPath(root, taskId, suffix = ".json") {
   safeId(taskId, "task id");
@@ -56,42 +56,61 @@ function write(root, taskId, value) {
   }
 }
 
-function alive(pid) {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return error?.code !== "ESRCH"; }
-}
-
+/** Short mutex around one read-modify-write of `assignments/<task>.json`
+ * (kind lock, 30s TTL, no heartbeat). Waits up to 5s for another holder. */
 function locked(root, taskId, action) {
   const path = assignmentPath(root, taskId, ".lock");
-  mkdirSync(dirname(path), { recursive: true });
-  const token = randomUUID();
-  const deadline = Date.now() + 5000;
-  for (;;) {
-    try {
-      const fd = openSync(path, "wx", 0o600);
-      try { writeFileSync(fd, JSON.stringify({ pid: process.pid, token })); fsyncSync(fd); }
-      finally { closeSync(fd); }
-      break;
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      let owner;
-      try { owner = JSON.parse(readFileSync(path, "utf8")); }
-      catch { throw new Error(`Corrupt assignment lock for ${taskId}; inspect before retry`); }
-      if (!Number.isSafeInteger(owner.pid) || typeof owner.token !== "string") throw new Error(`Corrupt assignment lock for ${taskId}`);
-      if (!alive(owner.pid)) {
-        const current = JSON.parse(readFileSync(path, "utf8"));
-        if (current.token === owner.token) unlinkSync(path);
-        continue;
-      }
-      if (Date.now() >= deadline) throw new Error(`Timed out waiting for assignment lock: ${taskId}`);
-      wait(10);
-    }
-  }
+  const handle = acquireHolder({
+    path, kind: "lock", scope: `assignments:${taskId}`, purpose: "assignment read-modify-write", waitMs: 5000,
+    busyMessage: (entry) => `Timed out waiting for assignment lock: ${taskId}: ${describeHolder(entry)}`,
+  });
   try { return action(); }
   finally {
-    const current = JSON.parse(readFileSync(path, "utf8"));
-    if (current.token === token) unlinkSync(path);
+    // A release failure must not mask the committed write; the lock then
+    // expires on its own after its 30s TTL.
+    try { handle.release(); } catch { /* expires via TTL */ }
   }
+}
+
+/** User-facing labels for the persisted assignment (claim) states. */
+export const ASSIGNMENT_STATE_LABELS = Object.freeze({
+  leased: "claim held",
+  expired: "claim expired; needs reconcile",
+  uncertain: "expired or outcome unknown; needs reconcile",
+  reported: "worker reported; awaiting integration",
+  integrated: "integrated",
+  released: "released",
+});
+
+/** Display state computed at read time: a `leased` claim past its
+ * leaseExpiresAt shows as `expired` (mutations persist it as `uncertain`). */
+export function effectiveAssignmentState(assignment, now = Date.now()) {
+  return assignment.state === "leased" && Date.parse(assignment.leaseExpiresAt) <= now ? "expired" : assignment.state;
+}
+
+const reconcileCommand = (taskId) => `node .agents/aidlc/scripts/assignment.mjs reconcile ${taskId}`;
+const releaseCommand = (taskId, id) => `node .agents/aidlc/scripts/assignment.mjs release ${taskId} ${id}`;
+
+/** One-line description of a claim: id, item, worker, paths, state, expiry. */
+export function describeAssignment(assignment, now = Date.now()) {
+  const state = effectiveAssignmentState(assignment, now);
+  return `assignment ${assignment.id} (item ${assignment.itemId}, worker ${assignment.workerId}, paths ${(assignment.ownedPaths ?? []).join(", ")}, state ${state}: ${ASSIGNMENT_STATE_LABELS[state] ?? state}, claim expires ${assignment.leaseExpiresAt})`;
+}
+
+/** Remedy commands for a blocking claim. */
+export function assignmentRemedy(taskId, assignment, now = Date.now()) {
+  const release = `${releaseCommand(taskId, assignment.id)} to drop the claim (discards the worker's unintegrated result)`;
+  const state = effectiveAssignmentState(assignment, now);
+  if (state === "leased") return `wait for the worker to report or for the claim to expire; if the worker is gone, run ${release}`;
+  if (state === "expired" || state === "uncertain") return `the claim expired or its outcome is unknown: run ${reconcileCommand(taskId)} (marks it integrated if the item is done); if the item is not done and the worker is gone, run ${release}`;
+  return `run ${reconcileCommand(taskId)} once the item is done in canonical state; or run ${release}`;
+}
+
+const blockedBy = (taskId, assignment) => `${describeAssignment(assignment)}; ${assignmentRemedy(taskId, assignment)}`;
+
+function notLeased(taskId, assignmentId, item, suffix = "") {
+  if (!item) return new Error(`Assignment is not leased${suffix}: assignment ${assignmentId} does not exist for ${taskId}; inspect: node .agents/aidlc/scripts/assignment.mjs show ${taskId}`);
+  return new Error(`Assignment is not leased${suffix}: ${describeAssignment(item)}; run ${reconcileCommand(taskId)}`);
 }
 
 function canonical(root, taskId) {
@@ -108,8 +127,12 @@ function expire(value, now) {
   }
 }
 
+/** Read-only view: each assignment gains `effectiveState` and `stateLabel`
+ * (an overdue `leased` claim shows as `expired`); nothing is written. */
 export function showLocalAssignments(root, taskId) {
-  return read(root, safeId(taskId, "task id"));
+  const value = read(root, safeId(taskId, "task id"));
+  const now = Date.now();
+  return { ...value, assignments: value.assignments.map((assignment) => { const effectiveState = effectiveAssignmentState(assignment, now); return { ...assignment, effectiveState, stateLabel: ASSIGNMENT_STATE_LABELS[effectiveState] ?? effectiveState }; }) };
 }
 
 export function claimLocalAssignment(root, { taskId, itemId, workerId, ownedPaths, leaseMs = 300000, baseCommit = null, branch = null, sessionId = null }) {
@@ -124,9 +147,11 @@ export function claimLocalAssignment(root, { taskId, itemId, workerId, ownedPath
   return locked(root, taskId, () => {
     const value = read(root, taskId); expire(value, Date.now());
     const active = value.assignments.filter((entry) => ["leased", "reported", "uncertain"].includes(entry.state));
-    if (active.some((entry) => entry.itemId === itemId && entry.state === "leased")) throw new Error(`Item already leased: ${itemId}`);
-    if (value.assignments.some((entry) => entry.itemId === itemId && ["reported", "uncertain"].includes(entry.state))) throw new Error(`Item has unresolved assignment; reconcile before retry: ${itemId}`);
-    for (const other of active) for (const path of ownedPaths) for (const prior of other.ownedPaths) if (path === prior || path.startsWith(`${prior}/`) || prior.startsWith(`${path}/`)) throw new Error(`Owned path overlaps active assignment: ${path}`);
+    const leased = active.find((entry) => entry.itemId === itemId && entry.state === "leased");
+    if (leased) throw new Error(`Item already leased: ${itemId}: claimed by ${blockedBy(taskId, leased)}`);
+    const unresolved = value.assignments.find((entry) => entry.itemId === itemId && ["reported", "uncertain"].includes(entry.state));
+    if (unresolved) throw new Error(`Item has unresolved assignment; reconcile before retry: ${itemId}: ${blockedBy(taskId, unresolved)}`);
+    for (const other of active) for (const path of ownedPaths) for (const prior of other.ownedPaths) if (path === prior || path.startsWith(`${prior}/`) || prior.startsWith(`${path}/`)) throw new Error(`Owned path overlaps active assignment: ${path}: held by ${blockedBy(taskId, other)}`);
     const attempt = 1 + Math.max(0, ...value.assignments.filter((entry) => entry.itemId === itemId).map((entry) => entry.attempt));
     const assignment = { id: randomUUID(), taskId, itemId, workerId, ownedPaths, attempt, baseCommit, branch, sessionId, checkpoint: null, state: "leased", leaseExpiresAt: new Date(Date.now() + leaseMs).toISOString(), idempotencyKey: randomUUID(), createdAt: iso(), updatedAt: iso() };
     value.assignments.push(assignment); write(root, taskId, value);
@@ -139,7 +164,7 @@ export function heartbeatLocalAssignment(root, taskId, assignmentId, leaseMs = 3
   return locked(root, taskId, () => {
     const value = read(root, taskId); expire(value, Date.now());
     const item = value.assignments.find((entry) => entry.id === assignmentId);
-    if (!item || item.state !== "leased") throw new Error("Assignment is not leased");
+    if (!item || item.state !== "leased") throw notLeased(taskId, assignmentId, item);
     if (sessionId !== undefined) { if (typeof sessionId !== "string" || !sessionId || sessionId.length > 300) throw new Error("Invalid sessionId"); item.sessionId = sessionId; }
     item.leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString(); item.updatedAt = iso(); write(root, taskId, value); return item;
   });
@@ -152,7 +177,7 @@ export function reportLocalAssignment(root, taskId, assignmentId, { checkpoint =
   return locked(root, taskId, () => {
     const value = read(root, taskId); expire(value, Date.now());
     const item = value.assignments.find((entry) => entry.id === assignmentId);
-    if (!item || item.state !== "leased") throw new Error("Assignment is not leased; reconcile before reporting");
+    if (!item || item.state !== "leased") throw notLeased(taskId, assignmentId, item, "; reconcile before reporting");
     for (const path of changedPaths) if (!item.ownedPaths.some((owned) => path === owned || path.startsWith(`${owned}/`))) throw new Error(`Changed path is outside assignment scope: ${path}`);
     item.state = "reported"; item.checkpoint = checkpoint; item.commit = commit; item.changedPaths = changedPaths; item.updatedAt = iso(); write(root, taskId, value); return item;
   });

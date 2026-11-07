@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { requireLocalAuthority } from "./authority.mjs";
 import { isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
+import { acquireHolder, describeHolder, LEASE_TTL_MS, readHolder } from "./loop-holder.mjs";
 import { validateLimits, validateRoot, readLoopRecord } from "./loop-runtime.mjs";
 import { createIsolatedLocalSupervisor } from "./loop-supervisor-run-local.mjs";
 import { loadState, nextAction } from "./store.mjs";
@@ -34,79 +34,29 @@ export function isLoopOwned(root, taskId) {
 /** Path of the singleton daemon lock (one local daemon per project root). */
 export const daemonLockPath = (root) => join(root, ".agents", "data", "loop", "daemon.lock");
 
-const pidAlive = (pid) => {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return error?.code !== "ESRCH"; }
-};
-
-const parseDaemonLock = (path) => {
-  let value;
-  try { value = JSON.parse(readFileSync(path, "utf8")); }
-  catch (error) { if (error?.code === "ENOENT") return null; return { corrupt: true }; }
-  if (!value || value.schemaVersion !== 1 || !Number.isSafeInteger(value.pid) || value.pid < 1 || typeof value.token !== "string" || !value.token) return { corrupt: true };
-  return value;
-};
-
-/** Read the daemon lock: `null` when absent, otherwise `{ pid, startedAt, alive }`. */
+/** Read the daemon lease: `null` when absent, otherwise `{ pid, startedAt,
+ * alive, state, holder }` where `state` is live|stale|corrupt (see
+ * `loop-holder.mjs`). `pid`/`startedAt` stay top-level for the web UI. */
 export function readDaemonLock(root) {
-  const lock = parseDaemonLock(daemonLockPath(root));
-  if (!lock) return null;
-  if (lock.corrupt) return { pid: null, startedAt: null, alive: false };
-  return { pid: lock.pid, startedAt: lock.startedAt ?? null, alive: pidAlive(lock.pid) };
+  const entry = readHolder(daemonLockPath(root), { ttlMs: LEASE_TTL_MS });
+  if (entry.state === "absent") return null;
+  if (entry.state === "corrupt") return { pid: null, startedAt: null, alive: false, state: "corrupt", holder: null };
+  const { holder } = entry;
+  return { pid: holder.pid, startedAt: holder.startedAt ?? null, alive: entry.state === "live", state: entry.state, holder };
 }
 
-/** Run `action` under a short-lived exclusive guard file so two starters
- * cannot both reclaim the same stale lock (one would delete the other's fresh
- * lock). A guard older than 10s is treated as abandoned. */
-function withReclaimGuard(path, action) {
-  const guard = `${path}.guard`;
-  const deadline = Date.now() + 5000;
-  for (;;) {
-    try { writeFileSync(guard, String(process.pid), { flag: "wx", mode: 0o600 }); break; }
-    catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      try { if (Date.now() - lstatSync(guard).mtimeMs > 10000) { unlinkSync(guard); continue; } }
-      catch (statError) { if (statError?.code === "ENOENT") continue; throw statError; }
-      if (Date.now() >= deadline) throw new Error("Timed out waiting for the loop daemon lock guard");
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-    }
-  }
-  try { return action(); }
-  finally { try { unlinkSync(guard); } catch (error) { if (error?.code !== "ENOENT") throw error; } }
-}
-
-/** Acquire the singleton daemon lock. A lock owned by a dead pid (or a corrupt
- * lock) is reclaimed under a guard after re-checking it is still the same stale
- * lock; a live owner fails closed. Liveness is a pid probe, like the loop and
- * supervisor leases, so a recycled pid can keep a stale lock "alive" until the
- * file is removed by hand. Returns a release function. */
-export function acquireDaemonLock(root) {
+/** Acquire the singleton daemon lease (`loop/daemon.lock`, kind lease, scope
+ * daemon, 60s TTL renewed every 15s). A stale holder (expired, or its pid is
+ * gone on this host) or an old corrupt file is reclaimed under the holder
+ * guard; a live owner or a recent corrupt file fails closed with the holder
+ * details and the `leases` command. Returns a release function. */
+export function acquireDaemonLock(root, { onWarning = () => {}, onLost } = {}) {
   const path = daemonLockPath(root);
-  mkdirSync(join(root, ".agents", "data", "loop"), { recursive: true });
-  const token = randomUUID();
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      writeFileSync(path, `${JSON.stringify({ schemaVersion: 1, pid: process.pid, token, startedAt: new Date().toISOString() })}\n`, { flag: "wx", mode: 0o600 });
-      return () => {
-        const current = parseDaemonLock(path);
-        if (current && !current.corrupt && current.token === token) { try { unlinkSync(path); } catch (error) { if (error?.code !== "ENOENT") throw error; } }
-      };
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      let stat;
-      try { stat = lstatSync(path); } catch (statError) { if (statError?.code === "ENOENT") continue; throw statError; }
-      if (stat.isSymbolicLink()) throw new Error(`Daemon lock is a symlink: ${path}`);
-      const observed = parseDaemonLock(path);
-      if (!observed) continue;
-      if (!observed.corrupt && pidAlive(observed.pid)) throw new Error(`Loop daemon already running (pid ${observed.pid})`);
-      withReclaimGuard(path, () => {
-        const current = parseDaemonLock(path);
-        const same = current && (observed.corrupt ? current.corrupt : !current.corrupt && current.token === observed.token);
-        if (same) { try { unlinkSync(path); } catch (unlinkError) { if (unlinkError?.code !== "ENOENT") throw unlinkError; } }
-      });
-    }
-  }
-  throw new Error("Could not acquire the loop daemon lock");
+  const handle = acquireHolder({
+    path, kind: "lease", scope: "daemon", purpose: "loop daemon (one per project root)", onWarning, onLost,
+    busyMessage: (entry) => `Loop daemon already running (pid ${entry.holder.pid}): ${describeHolder(entry)}`,
+  });
+  return () => handle.release();
 }
 
 /** Enumerate actionable, loop-owned tasks from canonical state in a
@@ -162,10 +112,11 @@ export async function runLoopDaemon({ root: rootInput, authority, pollMs = DEFAU
   const root = validateRoot(rootInput);
   if (!authority || typeof authority.listActionable !== "function" || typeof authority.runTask !== "function") throw new Error("Loop daemon requires a loop authority");
   const poll = validateDaemonPollMs(pollMs);
-  const releaseLock = acquireDaemonLock(root);
+  const lost = new AbortController();
+  const releaseLock = acquireDaemonLock(root, { onWarning: onEvent, onLost: (reason) => { onEvent({ type: "daemon_lease_lost", message: `Daemon lease lost; stopping after the current turn: ${reason}` }); lost.abort(); } });
   try {
     onEvent({ type: "daemon_start", authority: authority.mode ?? "unknown", pid: process.pid });
-    return await daemonLoop({ root, poll, signal, cancelSignal, onEvent, now, listActionable: () => authority.listActionable(), turn: ({ taskId, signal: runSignal, cancelSignal: runCancel, onEvent: runEvent }) => authority.runTask({ taskId, signal: runSignal, cancelSignal: runCancel, onEvent: runEvent }) });
+    return await daemonLoop({ root, poll, signal: signal ? AbortSignal.any([signal, lost.signal]) : lost.signal, cancelSignal, onEvent, now, listActionable: () => authority.listActionable(), turn: ({ taskId, signal: runSignal, cancelSignal: runCancel, onEvent: runEvent }) => authority.runTask({ taskId, signal: runSignal, cancelSignal: runCancel, onEvent: runEvent }) });
   } finally { releaseLock(); }
 }
 
@@ -178,9 +129,10 @@ export async function runLocalDaemon({ root: rootInput, agent, workers = {}, wor
   const poll = validateDaemonPollMs(pollMs);
   // Fail fast on a bad config.loop.limits instead of failing every task turn.
   if (limits !== undefined) validateLimits(limits);
-  const releaseLock = acquireDaemonLock(root);
+  const lost = new AbortController();
+  const releaseLock = acquireDaemonLock(root, { onWarning: onEvent, onLost: (reason) => { onEvent({ type: "daemon_lease_lost", message: `Daemon lease lost; stopping after the current turn: ${reason}` }); lost.abort(); } });
   try {
-    return await daemonLoop({ root, agent, workers, workerImages, limits, poll, signal, cancelSignal, onEvent, now, turn: runTaskTurn });
+    return await daemonLoop({ root, agent, workers, workerImages, limits, poll, signal: signal ? AbortSignal.any([signal, lost.signal]) : lost.signal, cancelSignal, onEvent, now, turn: runTaskTurn });
   } finally { releaseLock(); }
 }
 

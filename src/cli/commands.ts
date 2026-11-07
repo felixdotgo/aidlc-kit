@@ -13,9 +13,32 @@ import { openBrowser, readUiTokenFile, startUiServer } from "../task-ui.js";
 import { assertKnownOptions, DOCTOR_FLAGS, flags, MCP_FLAGS, rootArg, STATUS_FLAGS, UI_FLAGS, value } from "./argv.js";
 import { confirmGeneral, mcpSetupSelections } from "./prompt.js";
 
+/** `loop leases [--task-id ID] [--root PATH] [--json] [--clear-stale]`. */
+const loopLeasesArgs = (args: string[]): { root: string; argv: string[] } => {
+  const parsed = new Map<string, string>();
+  const switches = new Set<string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const key = args[index] ?? "";
+    if (key === "--json" || key === "--clear-stale") { if (switches.has(key)) throw new Error("Invalid or duplicate loop option"); switches.add(key); continue; }
+    const entry = args[index + 1];
+    if (!["--task-id", "--root"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
+    parsed.set(key, entry);
+    index += 1;
+  }
+  const root = resolve(parsed.get("--root") ?? ".");
+  return { root, argv: ["leases", parsed.get("--task-id") ?? "", root, ...switches] };
+};
+
 export const runLoopCommand = async (args: string[]): Promise<void> => {
   const action = args[0] ?? "";
-  if (!["start", "status", "resume", "intake", "worker-image"].includes(action)) throw new Error("Expected loop start, status, intake, or worker-image");
+  if (!["start", "status", "resume", "intake", "worker-image", "leases"].includes(action)) throw new Error("Expected loop start, status, intake, leases, or worker-image");
+  if (action === "leases") {
+    const { root, argv } = loopLeasesArgs(args.slice(1));
+    const child = spawn(process.execPath, [join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs"), ...argv], { stdio: "inherit" });
+    const code = await new Promise<number | null>((resolveExit, rejectExit) => { child.once("error", rejectExit); child.once("exit", (exitCode) => resolveExit(exitCode)); });
+    if (code !== 0) process.exitCode = code ?? 1;
+    return;
+  }
   const parsed = new Map<string, string>();
   for (let index = 1; index < args.length; index += 2) {
     const key = args[index];

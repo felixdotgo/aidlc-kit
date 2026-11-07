@@ -6,7 +6,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { acquireLoopLease, assertLoopPath, readLiveLease } from "./loop-lease.mjs";
+import { acquireTaskLease, assertLoopPath, heldTaskLease, readLiveLease, readTaskLease } from "./loop-lease.mjs";
+import { explainHolder } from "./loop-holder.mjs";
 import { isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
 
 export const DEFAULT_LIMITS = Object.freeze({ maxTurns: 12, turnTimeoutMs: 600000, maxStallTurns: 2 });
@@ -193,7 +194,16 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
   if (preflight) checkAgent(record?.agent ?? agent, root);
   if (!record) record = { schemaVersion: 1, taskId, runId: randomUUID(), agent, status: "running", sessionId: null, iteration: 0, stallTurns: 0, limits, lastFingerprint: null, checkpoint: null, stopReason: null, pausedByLoop: false, updatedAt: iso() };
   else { const prior = { iteration: record.iteration, status: record.status, stopReason: record.stopReason, limits: record.limits }; record.limits = limits; record.stallTurns = 0; onEvent({ type: "resume", prior }); }
-  const release = acquireLoopLease(root, taskId, record.runId);
+  // The task lease: shared with the supervisor that drives this run (activity
+  // flips waiting -> turn -> waiting), or acquired here for a manual
+  // `loop.mjs run|resume` (activity turn). While activity is "turn",
+  // `state.mjs gate approve` refuses to approve.
+  const shared = heldTaskLease(root, taskId);
+  const lease = shared ?? acquireTaskLease(root, taskId, { activity: "turn", label: "loop runner", purpose: `loop run ${record.runId}`, onWarning: onEvent });
+  if (shared) {
+    try { shared.setActivity("turn"); }
+    catch (error) { try { shared.setActivity("waiting"); } catch { /* the next heartbeat writes the requested activity */ } throw error; }
+  }
   try {
     let current = readCanonical(root, taskId);
     if (precondition) {
@@ -224,6 +234,7 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
     // long multi-gate task is not permanently re-paused on every resume.
     let runTurns = 0;
   for (;;) {
+      lease.assertOwned();
       const kind = classifyAction(current.action);
       if (kind !== "run_phase") {
         record.status = kind === "await_user" ? "gate" : kind;
@@ -322,12 +333,23 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
       record.updatedAt = iso(); writeLoopRecord(root, record);
       return outputStop(record, stopped.action);
     }
-  } finally { release(); }
+  } finally {
+    if (!shared) lease.release();
+    else {
+      // Back to "waiting" so a human can approve the gate this run stopped at.
+      // If the write fails (guard timeout), the requested activity is kept and
+      // written by the next heartbeat; a lost lease is reported by the
+      // supervisor's next assertOwned.
+      try { shared.setActivity("waiting"); } catch (error) { onEvent({ type: "diagnostic", message: `Task lease not yet returned to waiting (retried by the next heartbeat): ${error.message}` }); }
+    }
+  }
 }
 
 export function loopStatus(rootInput, taskId) {
   const root = validateRoot(rootInput);
   const record = readLoopRecord(root, taskId);
   const current = readCanonical(root, taskId);
-  return { record, liveLease: readLiveLease(root, taskId), nextAction: current.action };
+  const entry = readTaskLease(root, taskId);
+  const lease = { state: entry.state, path: entry.path, holder: entry.holder, reason: entry.reason, ...explainHolder(entry) };
+  return { record, liveLease: entry.state === "corrupt" ? null : readLiveLease(root, taskId), lease, nextAction: current.action };
 }

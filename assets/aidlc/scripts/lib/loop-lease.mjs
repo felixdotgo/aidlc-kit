@@ -1,9 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { lstatSync, unlinkSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { acquireHolder, clearStaleHolder, describeHolder, GUARD_STALE_MS, LEASE_TTL_MS, readHolder } from "./loop-holder.mjs";
 
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 export function assertLoopPath(root, taskId, suffix = ".json") {
   if (!idPattern.test(taskId)) throw new Error(`Invalid task id: ${taskId}`);
   const base = resolve(root);
@@ -17,73 +16,80 @@ export function assertLoopPath(root, taskId, suffix = ".json") {
 }
 
 export const loopLeasePath = (root, taskId) => assertLoopPath(root, taskId, ".lease");
-const guardPath = (root, taskId) => assertLoopPath(root, taskId, ".lease.guard");
 
-function parseLease(path) {
-  let value;
-  try { value = JSON.parse(readFileSync(path, "utf8")); }
-  catch (error) { throw new Error(`Corrupt loop lease: ${path}: ${error.message}`); }
-  if (!value || value.schemaVersion !== 1 || !idPattern.test(value.taskId) || typeof value.runId !== "string" || !value.runId || !Number.isInteger(value.pid) || value.pid < 1 || typeof value.token !== "string" || !value.token || typeof value.createdAt !== "string" || Number.isNaN(Date.parse(value.createdAt))) throw new Error(`Corrupt loop lease: ${path}`);
-  return value;
+// Task lease handles held by this process, so a supervisor's lease is shared
+// with the runLoop it drives instead of being acquired twice.
+const held = new Map();
+const heldKey = (root, taskId) => `${resolve(root)}\0${taskId}`;
+
+function checkScope(entry, taskId) {
+  const holder = entry.holder;
+  if (!holder) return;
+  const scope = entry.version === 2 ? holder.scope : holder.taskId ? `task:${holder.taskId}` : null;
+  if (scope && scope !== `task:${taskId}`) throw new Error(`Conflicting loop lease in ${entry.path}: ${scope}`);
 }
 
-function alive(pid) {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { if (error?.code === "ESRCH") return false; return true; }
+/** Inspect the task lease (`loop/<task>.lease`) without changing it; see
+ * `readHolder` in loop-holder.mjs. */
+export function readTaskLease(root, taskId) {
+  const entry = readHolder(loopLeasePath(root, taskId), { ttlMs: LEASE_TTL_MS });
+  checkScope(entry, taskId);
+  return entry;
 }
 
-function withGuard(root, taskId, action) {
-  const path = guardPath(root, taskId);
-  mkdirSync(dirname(path), { recursive: true });
-  const guard = { schemaVersion: 1, taskId, runId: "guard", pid: process.pid, token: randomUUID(), createdAt: new Date().toISOString() };
-  const deadline = Date.now() + 5000;
-  for (;;) {
-    try {
-      const fd = openSync(path, "wx", 0o600);
-      try { writeFileSync(fd, `${JSON.stringify(guard)}\n`); fsyncSync(fd); } finally { closeSync(fd); }
-      break;
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      const current = parseLease(path);
-      if (current.taskId !== taskId) throw new Error(`Conflicting loop lease guard: ${path}`);
-      if (!alive(current.pid)) { try { if (parseLease(path).token === current.token) unlinkSync(path); } catch (unlinkError) { if (unlinkError?.code !== "ENOENT") throw unlinkError; } continue; }
-      if (Date.now() >= deadline) throw new Error(`Timed out waiting for loop lease guard: ${taskId}`);
-      sleep(10);
-    }
-  }
-  try { return action(); }
-  finally { if (parseLease(path).token === guard.token) unlinkSync(path); }
-}
-
+/** The live task lease holder while a loop turn runs (activity "turn"), else
+ * null. A supervisor waiting at a human gate (activity "waiting") does not
+ * count, so gate approval stays available. A v1 runner lease counts when its
+ * pid is alive. A corrupt lease fails closed. */
 export function readLiveLease(root, taskId) {
-  const path = loopLeasePath(root, taskId);
-  try { lstatSync(path); } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
-  const lease = parseLease(path);
-  if (lease.taskId !== taskId) throw new Error(`Conflicting loop lease: ${path}`);
-  return alive(lease.pid) ? lease : null;
+  const entry = readTaskLease(root, taskId);
+  if (entry.state === "corrupt") throw new Error(`Corrupt loop lease: ${describeHolder(entry)}`);
+  if (entry.state !== "live") return null;
+  if (entry.version === 2 && entry.holder.activity !== "turn") return null;
+  return entry.holder;
 }
 
-export function acquireLoopLease(root, taskId, runId) {
-  const path = loopLeasePath(root, taskId);
-  mkdirSync(dirname(path), { recursive: true });
-  const lease = { schemaVersion: 1, taskId, runId, pid: process.pid, token: randomUUID(), createdAt: new Date().toISOString() };
-  return withGuard(root, taskId, () => {
-  for (let attempt = 0; attempt < 4; attempt++) {
-    try {
-      const fd = openSync(path, "wx", 0o600);
-      try { writeFileSync(fd, `${JSON.stringify(lease)}\n`); fsyncSync(fd); }
-      finally { closeSync(fd); }
-      return () => withGuard(root, taskId, () => { try { if (parseLease(path).token === lease.token) unlinkSync(path); } catch (error) { if (error?.code !== "ENOENT") throw error; } });
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      const existing = parseLease(path);
-      if (existing.taskId !== taskId) throw new Error(`Conflicting loop lease: ${path}`);
-      if (alive(existing.pid)) throw new Error(`Task ${taskId} already has a live loop runner (pid ${existing.pid})`);
-      // A dead owner may be reclaimed. A competing reclaimer may win; retry with wx.
-      try { if (parseLease(path).token === existing.token) unlinkSync(path); }
-      catch (unlinkError) { if (unlinkError?.code !== "ENOENT") throw unlinkError; }
-    }
+// Older versions kept a separate `<task>.supervisor.lease` (+ `.supervisor.guard`).
+function migrateLegacySupervisorLease(root, taskId) {
+  const legacy = assertLoopPath(root, taskId, ".supervisor.lease");
+  const entry = readHolder(legacy, { ttlMs: LEASE_TTL_MS });
+  if (entry.state === "live") throw new Error(`A loop from a previous aidlc-kit version is still running for ${taskId} (pid ${entry.holder.pid}, ${legacy}); stop the loop daemon and any \`loop start\` before upgrading, then retry`);
+  if (entry.state !== "absent") {
+    const cleared = clearStaleHolder(legacy, { ttlMs: LEASE_TTL_MS });
+    if (!cleared && readHolder(legacy, { ttlMs: LEASE_TTL_MS }).state !== "absent") throw new Error(`${describeHolder(entry)} (legacy supervisor lease)`);
   }
-  throw new Error(`Could not acquire loop lease for ${taskId}`);
+  const legacyGuard = assertLoopPath(root, taskId, ".supervisor.guard");
+  try { if (Date.now() - lstatSync(legacyGuard).mtimeMs > GUARD_STALE_MS) unlinkSync(legacyGuard); }
+  catch (error) { if (error?.code !== "ENOENT") throw error; }
+}
+
+/** Acquire the task lease. `activity` is "waiting" (supervisor between runs,
+ * human may approve gates) or "turn" (a loop run is executing; gate approval is
+ * refused). `label` names the caller in the busy error. Returns the holder
+ * handle (`assertOwned`, `setActivity`, `heartbeat`, `release`). */
+export function acquireTaskLease(root, taskId, { activity = "waiting", label = "loop", purpose = `loop ${activity}`, onWarning } = {}) {
+  const path = loopLeasePath(root, taskId);
+  const key = heldKey(root, taskId);
+  if (held.has(key)) throw new Error(`Task ${taskId} already has a live ${label} in this process: ${describeHolder(readTaskLease(root, taskId))}`);
+  migrateLegacySupervisorLease(root, taskId);
+  const handle = acquireHolder({
+    path, kind: "lease", scope: `task:${taskId}`, activity, purpose, onWarning,
+    busyMessage: (entry) => `Task ${taskId} already has a live ${label} (pid ${entry.holder.pid}): ${describeHolder(entry)}`,
   });
+  const release = handle.release;
+  handle.release = () => { if (held.get(key) === handle) held.delete(key); release(); };
+  held.set(key, handle);
+  return handle;
+}
+
+/** The task lease handle this process already holds, or null. */
+export function heldTaskLease(root, taskId) {
+  return held.get(heldKey(root, taskId)) ?? null;
+}
+
+/** Compatibility wrapper: acquire the task lease for a loop run (activity
+ * "turn") and return its release function. */
+export function acquireLoopLease(root, taskId, runId) {
+  const handle = acquireTaskLease(root, taskId, { activity: "turn", label: "loop runner", purpose: `loop run ${runId}` });
+  return () => handle.release();
 }

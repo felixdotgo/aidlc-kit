@@ -6,6 +6,10 @@
  *   intake        create a loop-owned task from a stdin requirement (≤ 8192 bytes) without running it
  *   status        print the canonical task, loop record/checkpoint, and next action
  *   worker-image  build and record a provider worker image
+ *   leases        list loop leases, locks and claims: who holds what, until when,
+ *                 what it blocks, and how to clear it. Works with any loop mode.
+ *                 `leases [task-id] [root] [--json] [--clear-stale]`; --clear-stale
+ *                 removes only stale/old-corrupt lease, lock and guard files.
  * Dashboard JSON actions (fleet authority; local dashboards read local state in-process):
  *   tasks | task <id> | gate <id> | resume-task <id> | approve <id> (source on stdin,
  *   reviewer credential only from AIDLC_FLEET_REVIEWER_TOKEN of this process) |
@@ -26,6 +30,8 @@ import { runLoopDaemon } from "./lib/loop-daemon.mjs";
 import { streamLog } from "./lib/loop-stream.mjs";
 import * as localSupervisor from "./lib/loop-supervisor-run-local.mjs";
 import { buildWorkerImage, defaultWorkerImageTag, recordWorkerImage } from "./lib/loop-worker-image.mjs";
+import { formatLeases, runLeases } from "./lib/loop-leases.mjs";
+import { callRemoteTool } from "./lib/remote-state-client.mjs";
 
 const [action, taskArg, rootArg, modeArg, providerArg, tagArg, titleArg] = process.argv.slice(2);
 const root = resolve(rootArg || ".");
@@ -38,8 +44,29 @@ const readStdin = async (prompt) => {
 const requireTaskId = () => { if (!ID.test(taskArg ?? "")) throw new Error("Valid task ID required"); return taskArg; };
 const print = (value) => console.log(JSON.stringify(value, null, 2));
 
+/** `leases [task-id] [root] [--json] [--clear-stale]`; empty positionals are skipped. */
+async function runLeasesAction(argv) {
+  const flagSet = new Set(argv.filter((value) => value.startsWith("--")));
+  for (const flag of flagSet) if (!["--json", "--clear-stale"].includes(flag)) throw new Error(`Unknown leases option: ${flag}`);
+  const [taskValue = "", rootValue = ""] = argv.filter((value) => !value.startsWith("--"));
+  if (taskValue && !ID.test(taskValue)) throw new Error("Valid task ID required");
+  const leasesRoot = resolve(rootValue || ".");
+  let config = null;
+  try { config = JSON.parse(readFileSync(join(leasesRoot, ".agents", "config.json"), "utf8")); } catch { config = null; }
+  const env = process.env;
+  const fleetReader = config?.loop?.mode === "fleet" && env.AIDLC_FLEET_URL && env.AIDLC_FLEET_TOKEN && env.AIDLC_FLEET_WORKSPACE
+    ? () => callRemoteTool({ url: env.AIDLC_FLEET_URL, token: env.AIDLC_FLEET_TOKEN }, "fleet_get", { workspace: env.AIDLC_FLEET_WORKSPACE })
+    : undefined;
+  const report = await runLeases({ root: leasesRoot, taskId: taskValue || undefined, clearStale: flagSet.has("--clear-stale"), fleetReader });
+  if (config?.loop?.mode === "fleet" && !fleetReader) report.fleet = { revision: null, entries: [], error: "lead credential not set (AIDLC_FLEET_URL, AIDLC_FLEET_TOKEN, AIDLC_FLEET_WORKSPACE); fleet leases not shown" };
+  if (flagSet.has("--json")) print(report);
+  else console.log(formatLeases(report));
+}
+
 try {
-  if (action === "worker-image") {
+  if (action === "leases") {
+    await runLeasesAction(process.argv.slice(3));
+  } else if (action === "worker-image") {
     // Build (or rebuild) a worker image without requiring loop configuration.
     const provider = providerArg || "opencode";
     if (!isLoopProvider(provider)) throw new Error("Expected --provider codex, claude, or opencode");
@@ -49,7 +76,7 @@ try {
     console.log(`Built worker image: ${image}`);
     console.log("Recorded worker image; the loop supervisor will use it automatically.");
   } else {
-    if (!ACTIONS.includes(action)) throw new Error("Expected loop start, status, intake, or worker-image");
+    if (!ACTIONS.includes(action)) throw new Error("Expected loop start, status, intake, leases, or worker-image");
     const config = JSON.parse(readFileSync(join(root, ".agents", "config.json"), "utf8"));
     const mode = modeArg || config.loop?.mode || "off";
     if (!["local", "fleet"].includes(mode)) throw new Error("Loop mode is off; configure an enabled loop mode first");

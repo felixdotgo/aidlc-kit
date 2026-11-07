@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -81,11 +81,42 @@ test("daemon lock is a singleton: a live owner fails closed, a dead owner is rec
     assert.equal(readDaemonLock(root).pid, process.pid);
     reclaimed();
 
+    // A recent corrupt file fails closed and points at the leases command; an old one is reclaimed.
     writeFileSync(daemonLockPath(root), "{corrupt");
-    const fromCorrupt = acquireDaemonLock(root);
+    assert.equal(readDaemonLock(root).state, "corrupt");
+    assert.throws(() => acquireDaemonLock(root), /Corrupt lease file .*daemon\.lock \(modified .* ago\); .*leases --clear-stale/);
+    const old = (Date.now() - 120000) / 1000;
+    utimesSync(daemonLockPath(root), old, old);
+    const warnings: any[] = [];
+    const fromCorrupt = acquireDaemonLock(root, { onWarning: (w: any) => warnings.push(w) });
     assert.equal(readDaemonLock(root).pid, process.pid);
+    assert.equal(warnings[0]?.type, "holder_reclaimed");
     assert.equal(existsSync(`${daemonLockPath(root)}.guard`), false);
     fromCorrupt();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("daemon lock is a v2 lease with pid/startedAt top-level; an expired lease is stale even if its pid is alive", async () => {
+  const { acquireDaemonLock, readDaemonLock, daemonLockPath } = await load();
+  const root = mkdtempSync(join(tmpdir(), "aidlc-daemon-v2-"));
+  try {
+    const release = acquireDaemonLock(root);
+    const onDisk = JSON.parse(readFileSync(daemonLockPath(root), "utf8"));
+    assert.equal(onDisk.schemaVersion, 2);
+    assert.equal(onDisk.kind, "lease");
+    assert.equal(onDisk.scope, "daemon");
+    assert.equal(onDisk.pid, process.pid);
+    assert.ok(!Number.isNaN(Date.parse(onDisk.startedAt)));
+    assert.equal(Date.parse(onDisk.expiresAt) - Date.parse(onDisk.heartbeatAt), 60000);
+    assert.throws(() => acquireDaemonLock(root), /Loop daemon already running \(pid \d+\): lease daemon is held by pid .*Inspect: node \.agents\/aidlc\/scripts\/loop-entry\.mjs leases/);
+    // Simulate a recycled pid: the holder pid is alive but its lease is no longer renewed.
+    writeFileSync(daemonLockPath(root), JSON.stringify({ ...onDisk, token: "recycled", expiresAt: new Date(Date.now() - 1000).toISOString() }));
+    assert.equal(readDaemonLock(root).alive, false);
+    assert.equal(readDaemonLock(root).state, "stale");
+    const again = acquireDaemonLock(root);
+    assert.equal(readDaemonLock(root).alive, true);
+    again();
+    release();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

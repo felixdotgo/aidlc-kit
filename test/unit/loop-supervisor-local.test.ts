@@ -16,7 +16,7 @@ const fixture = async () => {
   return { root, store };
 };
 
-test("local supervisor owns separate lock, performs CAS, and cannot block human approval", async () => {
+test("local supervisor holds the task lease as waiting, performs CAS, and cannot block human approval", async () => {
   const { root, store } = await fixture();
   try {
     const { createLocalSupervisorAdapter } = await load();
@@ -58,9 +58,12 @@ test("local adapter rejects unsafe checkpoint links, foreign authority and repla
     const path = join(root, ".agents/data/loop/task-a.supervisor.json");
     symlinkSync(join(root, "outside"), path);
     await assert.rejects(adapter.loadCheckpoint(scope), /symlink/);
-    const lease = join(root, ".agents/data/loop/task-a.supervisor.lease");
-    writeFileSync(lease, JSON.stringify({ taskId: "task-a", pid: process.pid, token: "other" }));
-    await assert.rejects(ownership.assertOwned(), /ownership lost/);
+    const lease = join(root, ".agents/data/loop/task-a.lease");
+    const current = JSON.parse(readFileSync(lease, "utf8"));
+    assert.equal(current.scope, "task:task-a");
+    assert.equal(current.activity, "waiting");
+    writeFileSync(lease, JSON.stringify({ ...current, token: "other" }));
+    await assert.rejects(ownership.assertOwned(), /local supervisor ownership lost: lease ownership lost: lease task:task-a was taken over/);
     await ownership.release();
     assert.equal(JSON.parse(readFileSync(lease, "utf8")).token, "other");
   } finally { rmSync(root, { recursive: true, force: true }); }

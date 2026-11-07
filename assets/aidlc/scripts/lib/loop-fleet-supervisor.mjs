@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
+import { explainFleetConflict } from "./loop-holder.mjs";
 import { runFleetCoordinator, validateFleetLimits } from "./loop-fleet.mjs";
 
 const taskDigest = (task) => createHash("sha256").update(JSON.stringify(task)).digest("hex");
@@ -65,7 +66,7 @@ export async function runFleetSupervisor({ repository, taskId, limits: inputLimi
       await onEvent({ type: "gate", taskId, gate: result.gate, snapshotId: result.snapshotId, gateView: result.gateView });
       if (untilStop) return { status: "gate", taskId, gate: result.gate, snapshotId: result.snapshotId, gateView: result.gateView };
     }
-    if (failure) throw new Error(`Supervisor lease renewal failed: ${failure.message}`);
+    if (failure) throw new Error(`Supervisor lease renewal failed: ${explainFleetConflict(failure.message)}`);
     return { status: "stopped", taskId };
   } finally {
     clearInterval(timer); await pending;

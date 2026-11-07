@@ -38,7 +38,7 @@ Pick one of three ways to set `loop.mode` and `loop.agents`:
   npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init . \
     --loop-mode local --loop-lead codex --loop-workers a=codex,b=opencode
   ```
-- **Use the human-only `upgrade`** for an existing install, which preserves the existing config when you omit the loop flags and lets an authorised human review the change before applying:
+- **Use the human-only `upgrade`** for an existing install, which preserves the existing config when you omit the loop flags and lets an authorised human review the change before applying. Stop the loop daemon and any `loop start` first: lease files changed format, and a newer loop refuses to start while a loop from the previous version still holds a task (`A loop from a previous aidlc-kit version is still running …`):
   ```sh
   npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit upgrade . \
     --loop-mode local --loop-lead codex --loop-workers a=codex,b=opencode --dry-run
@@ -122,6 +122,15 @@ The daemon runs only loop-owned tasks (created through intake), one bounded run 
 ```sh
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop status --task-id <task-id>
 ```
+
+If something looks stuck ("already running", a gate that cannot be approved, a build item that is never dispatched), ask who holds what:
+
+```sh
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop leases [--task-id <task-id>]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop leases --clear-stale   # removes stale holders only
+```
+
+Each entry shows the holder (pid, host, command, activity), its expiry, what it blocks, and the exact fix. Leases left by a crashed process expire within 60 s and are reclaimed automatically; claims are never released for you — follow the printed `assignment.mjs reconcile` / `release` command. See [Troubleshooting](./troubleshooting.md#loop-leases-locks-and-claims).
 
 There is no `loop resume`. After a gate approval the daemon continues the task on its next poll. A **paused** task is not actionable: fix the cause, then press **resume** on the dashboard or run `node .agents/aidlc/scripts/state.mjs task status <task-id> --status active`.
 

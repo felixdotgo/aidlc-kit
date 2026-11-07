@@ -140,6 +140,8 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
       return onEvent({ taskId, actor: job.workerId, phase: "build", itemId: job.itemId, ...brief });
     };
     let renewalError;
+    // The worker's claim ended (renewal stopped or the turn was aborted) before it finished.
+    const leaseLost = () => new Error(`Worker lease lost: the claim on assignment ${assignment.id} (item ${job.itemId}, worker ${job.workerId}, paths ${job.ownedPaths.join(", ")}) ended before the worker finished; its result is not integrated. Run node .agents/aidlc/scripts/assignment.mjs reconcile ${taskId}`);
     const controller = new AbortController();
     // An external cancel (daemon shutdown stage 2) aborts every worker turn the
     // same way a lost lease does; the batch then fails and is not integrated.
@@ -151,7 +153,7 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
       let sessionId, previousFingerprint, stalls=0, result;
       try {
         for (let turn=0; turn<maxTurns; turn++) {
-          if (renewalError || controller.signal.aborted) throw renewalError ?? new Error("Worker lease lost");
+          if (renewalError || controller.signal.aborted) throw renewalError ?? leaseLost();
           const containerName = `aidlc-worker-${randomUUID()}`;
           const spawnProcess = (command, args, options) => {
             const invocation = workerDockerInvocation({ workspace: snapshot, image: resolvedImages[job.agent], command, args, credentialEnv: docker.credentials[job.agent], hostEnv: process.env, uid, gid, containerName, sessionHome:home });
@@ -167,7 +169,7 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
               catch (error) { if (error.cleanupUncertain) throw error; }
             }
           }
-          if (renewalError || controller.signal.aborted) throw renewalError ?? new Error("Worker lease lost");
+          if (renewalError || controller.signal.aborted) throw renewalError ?? leaseLost();
           sessionId=result.sessionId;
           const changed=inspectWorkerSnapshot(snapshot,baseline,job.ownedPaths);
           if (result.resultText?.split(/\r?\n/).some((line) => line.trim() === "AI-DLC-ITEM-COMPLETE")) break;
@@ -181,7 +183,7 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
       const snapshotChanges = inspectWorkerSnapshot(snapshot, baseline, job.ownedPaths);
       if (!snapshotChanges.length) throw new Error(`Worker ${job.workerId} changed no files`);
       await heartbeat(root, taskId, assignment.id, leaseMs);
-      if (renewalError || controller.signal.aborted) throw renewalError ?? new Error("Worker lease lost");
+      if (renewalError || controller.signal.aborted) throw renewalError ?? leaseLost();
       for (const path of snapshotChanges) {
         const destination = join(workspace, path), from = join(snapshot, path);
         let parent = workspace;

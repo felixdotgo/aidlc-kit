@@ -161,7 +161,7 @@ test("local dispatch refuses to auto-release an uncertain assignment of an unfin
     const path = assignmentStore.assignmentPath(root, taskId), record = JSON.parse(readFileSync(path, "utf8"));
     record.assignments[0].leaseExpiresAt = "2020-01-01T00:00:00.000Z"; writeFileSync(path, JSON.stringify(record));
     const batches: any[][] = [];
-    await assert.rejects(dispatchLocalBuild({ root, taskId, task: readTask(), workers: { w1: "codex", w2: "codex" }, ...dispatchHooks(batches) }), new RegExp(`Unresolved assignment ${claim.id} \\(uncertain\\) for a holds src;.*assignment\\.mjs reconcile`));
+    await assert.rejects(dispatchLocalBuild({ root, taskId, task: readTask(), workers: { w1: "codex", w2: "codex" }, ...dispatchHooks(batches) }), new RegExp(`Unresolved assignment ${claim.id} \\(uncertain\\) for a holds src \\[worker w1, expired or outcome unknown; needs reconcile, claim expires [^\\]]+\\];.*assignment\\.mjs reconcile.*assignment\\.mjs release ${taskId} ${claim.id}`));
     assert.equal(batches.length, 0);
     assert.equal(assignmentStore.showLocalAssignments(root, taskId).assignments[0].state, "uncertain");
   } finally { rmSync(root, { recursive: true, force: true }); }

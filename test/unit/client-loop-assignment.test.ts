@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -50,6 +50,57 @@ test("local claims reject dependencies, overlap and duplicate dispatch; canonica
     writeFileSync(join(root, ".agents/data/state/aidlc-state.json"), JSON.stringify(raw));
     assert.equal(store.reconcileLocalAssignments(root, taskId).assignments.find((entry: { id: string }) => entry.id === api.id).state, "integrated");
     assert.throws(() => store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "retry", ownedPaths: ["src/api"] }), /not dispatchable/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("claim errors name the blocking assignment, worker, paths, expiry, and the reconcile/release commands", () => {
+  const { root, taskId } = fixture();
+  try {
+    const api = store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "worker-api", ownedPaths: ["src/api"] });
+    assert.throws(() => store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "w2", ownedPaths: ["src/other"] }), (error: any) => {
+      assert.match(error.message, new RegExp(`^Item already leased: api: claimed by assignment ${api.id} \\(item api, worker worker-api, paths src/api, state leased: claim held, claim expires ${api.leaseExpiresAt}\\)`));
+      assert.match(error.message, new RegExp(`assignment\\.mjs release ${taskId} ${api.id} to drop the claim \\(discards`));
+      return true;
+    });
+    assert.throws(() => store.claimLocalAssignment(root, { taskId, itemId: "docs", workerId: "w3", ownedPaths: ["src/api/x"] }), new RegExp(`Owned path overlaps active assignment: src/api/x: held by assignment ${api.id} .*worker worker-api`));
+    store.reportLocalAssignment(root, taskId, api.id, { changedPaths: ["src/api/a.ts"] });
+    assert.throws(() => store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "w2", ownedPaths: ["src/api"] }), new RegExp(`Item has unresolved assignment; reconcile before retry: api: assignment ${api.id} .*state reported: worker reported; awaiting integration.*assignment\\.mjs reconcile ${taskId}`));
+    assert.throws(() => store.heartbeatLocalAssignment(root, taskId, api.id, 5000), new RegExp(`Assignment is not leased: assignment ${api.id} .*state reported.*assignment\\.mjs reconcile ${taskId}`));
+    assert.throws(() => store.reportLocalAssignment(root, taskId, "missing-id", {}), /Assignment is not leased; reconcile before reporting: assignment missing-id does not exist .*assignment\.mjs show client-task/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("show reports an overdue claim as expired without writing; a mutation persists it as uncertain", () => {
+  const { root, taskId } = fixture();
+  try {
+    const api = store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "worker-api", ownedPaths: ["src/api"], leaseMs: 1000 });
+    const path = join(root, ".agents/data/loop/assignments", `${taskId}.json`);
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    raw.assignments[0].leaseExpiresAt = new Date(Date.now() - 1000).toISOString();
+    writeFileSync(path, JSON.stringify(raw));
+    const before = readFileSync(path, "utf8");
+    const shown = store.showLocalAssignments(root, taskId).assignments[0];
+    assert.equal(shown.state, "leased");
+    assert.equal(shown.effectiveState, "expired");
+    assert.equal(shown.stateLabel, "claim expired; needs reconcile");
+    assert.equal(readFileSync(path, "utf8"), before);
+    assert.throws(() => store.heartbeatLocalAssignment(root, taskId, api.id, 5000), /state uncertain: expired or outcome unknown/);
+    assert.equal(JSON.parse(readFileSync(path, "utf8")).assignments[0].state, "leased", "a failed mutation does not persist");
+    store.reconcileLocalAssignments(root, taskId);
+    assert.equal(store.showLocalAssignments(root, taskId).assignments[0].effectiveState, "uncertain");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("assignment lock is a v2 holder; a stale v1 lock is reclaimed and a recent corrupt one fails closed", () => {
+  const { root, taskId } = fixture();
+  try {
+    const lock = join(root, ".agents/data/loop/assignments", `${taskId}.lock`);
+    mkdirSync(join(root, ".agents/data/loop/assignments"), { recursive: true });
+    writeFileSync(lock, JSON.stringify({ pid: 2147483647, token: "dead" }));
+    store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "worker-api", ownedPaths: ["src/api"] });
+    assert.equal(existsSync(lock), false, "the lock is released after the mutation");
+    writeFileSync(lock, "{corrupt");
+    assert.throws(() => store.reconcileLocalAssignments(root, taskId), /Corrupt lock file .*\.lock \(modified .* ago\); .*leases --clear-stale/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

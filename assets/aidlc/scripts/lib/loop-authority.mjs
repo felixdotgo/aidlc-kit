@@ -26,6 +26,7 @@ import { isLoopProvider } from "./loop-drivers.mjs";
 import { deriveTaskIdentity, prepareLoopIntake } from "./loop-intake.mjs";
 import { readLoopRecord, validateLimits } from "./loop-runtime.mjs";
 import { createIsolatedLocalSupervisor } from "./loop-supervisor-run-local.mjs";
+import { explainFleetConflict } from "./loop-holder.mjs";
 import { loadState, loadTask, nextAction } from "./store.mjs";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -42,8 +43,8 @@ export function readIntakeRecord(root, taskId) {
 
 const stateError = (error) => {
   const stderr = String(error?.stderr ?? "").trim();
-  try { const parsed = JSON.parse(stderr); if (parsed?.error?.message) return new Error(parsed.error.message); } catch { /* not JSON */ }
-  return stderr ? new Error(stderr.split("\n").filter(Boolean).at(-1)) : error;
+  try { const parsed = JSON.parse(stderr); if (parsed?.error?.message) return new Error(explainFleetConflict(parsed.error.message)); } catch { /* not JSON */ }
+  return stderr ? new Error(explainFleetConflict(stderr.split("\n").filter(Boolean).at(-1))) : error;
 };
 
 /** Pick a unique, case-insensitive task id for an intake that did not name one. */

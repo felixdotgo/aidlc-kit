@@ -13,6 +13,7 @@ export const usage = `Usage:
   npx @felixdotgo/aidlc-kit profile validate [path]
   npx @felixdotgo/aidlc-kit loop start|status|intake [--task-id ID] [--title TITLE] [--root PATH] [--mode local|fleet]
   npx @felixdotgo/aidlc-kit loop worker-image [--provider ${LOOP_PROVIDERS.join("|")}] [--tag TAG] [--root PATH]
+  npx @felixdotgo/aidlc-kit loop leases [--task-id ID] [--root PATH] [--json] [--clear-stale]
   npx @felixdotgo/aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--token-file PATH] [--reviewer-token-file PATH]
   npx @felixdotgo/aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
   npx @felixdotgo/aidlc-kit version
