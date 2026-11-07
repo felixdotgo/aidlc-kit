@@ -2,6 +2,7 @@
 import { resolvedAdapters } from "./adapters.js";
 import { assertKnownOptions, flags, INIT_FLAGS, rootArg, UNINSTALL_FLAGS, UPGRADE_FLAGS, usage } from "./cli/argv.js";
 import { runDoctor, runLoopCommand, runMcp, runProfile, runStatus, runUi } from "./cli/commands.js";
+import { recordInstallerCli } from "./cli/loop-launcher.js";
 import { initOptions } from "./cli/options.js";
 import { chooseLoop, confirmGeneral, interactive } from "./cli/prompt.js";
 import { applyPlan, detectedAgents, formatPlan, planInit, planUninstall, selectAgents } from "./installer.js";
@@ -54,6 +55,7 @@ const runInit = async (args: string[]): Promise<void> => {
     applyPlan(options.root, plan);
     console.log("Installed local AI-DLC workflow assets.");
   }
+  recordInstallerCli(options.root);
 };
 
 const runUninstall = async (args: string[]): Promise<void> => {
@@ -80,6 +82,7 @@ const runUpgrade = async (args: string[]): Promise<void> => {
   if ((await input({ message: `Type ${expected} to apply this user-initiated upgrade` })).trim() !== expected) throw new Error("Upgrade confirmation did not match the target version");
   const result = applyUpgrade(root, plan);
   console.log(`Upgrade complete. Backup: ${result.backup}; changed: ${result.changed}`);
+  recordInstallerCli(root);
 };
 
 /* --- Command registry and entry --------------------------------------------- */

@@ -58,7 +58,7 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit doctor . --strict
 ./.agents/aidlc/scripts/loop.sh up      # Windows: .agents\aidlc\scripts\loop.cmd up
 ```
 
-`up` checks the environment first and stops with the exact variable to set; `loop.sh check` prints the same report, never showing secret values. `Ctrl-C` closes only the dashboard; `loop.sh down` stops both. The launcher looks for the CLI in the project's `node_modules`, then `PATH`, then `npx --no-install`, so install the package in the project (`npm install --save-dev @felixdotgo/aidlc-kit@0.2.0`) or globally. The dashboard has a **Docs** page with these guides. Local mode needs Docker on a Linux host; the `.cmd` launcher works on Windows, but local workers are only verified on Linux. See the [Loop setup runbook](./docs/loop-runbook.md).
+`up` checks the environment first and stops with the exact variable to set; `loop.sh check` prints the same report, never showing secret values. `Ctrl-C` closes only the dashboard; `loop.sh down` stops both. The launcher runs the CLI from the project's `node_modules` when present, otherwise the CLI that last ran `init`/`upgrade` (recorded in `.agents/data/loop/cli.json`, so an `npx --package …` or local `.tgz` install works as-is), then `aidlc-kit` on `PATH`, then `npx --no-install`. The dashboard has a **Docs** page with these guides. Local mode needs Docker on a Linux host; the `.cmd` launcher works on Windows, but local workers are only verified on Linux. See the [Loop setup runbook](./docs/loop-runbook.md).
 
 ## Documentation
 

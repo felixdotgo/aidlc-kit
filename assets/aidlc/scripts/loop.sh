@@ -35,16 +35,19 @@ command -v node >/dev/null 2>&1 || { echo "loop.sh: Node.js 20.17 or newer is re
 
 # The installed workflow version, so hints name the matching package.
 VERSION=$(node -p 'require(process.argv[1]).packageVersion' "$ROOT/.agents/aidlc/manifest.json" 2>/dev/null || echo latest)
-INSTALL_HINT="npm install --save-dev @felixdotgo/aidlc-kit@$VERSION"
+INSTALL_HINT="install it in this project (npm install --save-dev @felixdotgo/aidlc-kit@$VERSION), or rerun init/upgrade from the package or .tgz you want"
+# The CLI that installed this workflow (recorded by init/upgrade), if it still exists.
+RECORDED_CLI=$(node -e 'try{const r=require(process.argv[1]);if(typeof r.cli==="string"&&require("fs").statSync(r.cli).isFile())process.stdout.write(r.cli)}catch{}' "$ROOT/.agents/data/loop/cli.json" 2>/dev/null || true)
 
 run_cli() {
   if [ -x "$ROOT/node_modules/.bin/aidlc-kit" ]; then exec "$ROOT/node_modules/.bin/aidlc-kit" "$@"; fi
+  if [ -n "$RECORDED_CLI" ]; then exec node "$RECORDED_CLI" "$@"; fi
   if command -v aidlc-kit >/dev/null 2>&1; then exec aidlc-kit "$@"; fi
   if command -v npx >/dev/null 2>&1; then
-    echo "loop.sh: aidlc-kit is not installed in this project; trying npx --no-install (if it fails: $INSTALL_HINT)" >&2
+    echo "loop.sh: aidlc-kit was not found in this project or recorded by init/upgrade; trying npx --no-install (if it fails: $INSTALL_HINT)" >&2
     exec npx --no-install @felixdotgo/aidlc-kit "$@"
   fi
-  echo "loop.sh: the aidlc-kit CLI was not found. Install it in this project: $INSTALL_HINT" >&2
+  echo "loop.sh: the aidlc-kit CLI was not found: $INSTALL_HINT" >&2
   exit 1
 }
 

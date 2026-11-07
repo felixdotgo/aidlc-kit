@@ -53,6 +53,12 @@ if exist "%ROOT%\node_modules\.bin\aidlc-kit.cmd" (
   call "%ROOT%\node_modules\.bin\aidlc-kit.cmd" %*
   goto :eof
 )
+set "RECORDED_CLI="
+for /f "usebackq delims=" %%P in (`node -e "try{const r=require(process.argv[1]);if(typeof r.cli==='string'&&require('fs').statSync(r.cli).isFile())process.stdout.write(r.cli)}catch{}" "%ROOT%\.agents\data\loop\cli.json" 2^>nul`) do set "RECORDED_CLI=%%P"
+if defined RECORDED_CLI (
+  node "%RECORDED_CLI%" %*
+  goto :eof
+)
 where aidlc-kit >nul 2>nul
 if not errorlevel 1 (
   call aidlc-kit %*
@@ -62,11 +68,11 @@ set "VERSION=latest"
 for /f "usebackq delims=" %%V in (`node -p "require(process.argv[1]).packageVersion" "%ROOT%\.agents\aidlc\manifest.json" 2^>nul`) do set "VERSION=%%V"
 where npx >nul 2>nul
 if not errorlevel 1 (
-  echo loop.cmd: aidlc-kit is not installed in this project; trying npx --no-install ^(if it fails: npm install --save-dev @felixdotgo/aidlc-kit@%VERSION%^) 1>&2
+  echo loop.cmd: aidlc-kit was not found in this project or recorded by init/upgrade; trying npx --no-install ^(if it fails: npm install --save-dev @felixdotgo/aidlc-kit@%VERSION%, or rerun init/upgrade from the package or .tgz you want^) 1>&2
   call npx --no-install @felixdotgo/aidlc-kit %*
   goto :eof
 )
-echo loop.cmd: the aidlc-kit CLI was not found. Install it in this project: npm install --save-dev @felixdotgo/aidlc-kit@%VERSION% 1>&2
+echo loop.cmd: the aidlc-kit CLI was not found: install it in this project ^(npm install --save-dev @felixdotgo/aidlc-kit@%VERSION%^), or rerun init/upgrade from the package or .tgz you want 1>&2
 exit /b 1
 
 :logs

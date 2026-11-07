@@ -10,6 +10,8 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { packageVersion } from "../workflow.js";
 import { daemonHealth, daemonStatus, ensureDaemon, pidAlive, stopDaemon } from "../ui/daemon.js";
 import { daemonLogPath, loopDataDir, loopEntryPath, openBrowser, readUiTokenFile, scrubbedEnv } from "../ui/options.js";
 import { startUiServer } from "../ui/server.js";
@@ -65,6 +67,22 @@ const envReport = (root: string, overlay: Record<string, string>, options: { jso
   });
   if (result.error) throw result.error;
   return { status: result.status ?? 1, stdout: result.stdout ?? "" };
+};
+
+/* ---- Installing CLI record (`.agents/data/loop/cli.json`) ----
+ * `init`/`upgrade` record the CLI that wrote `.agents/`, so `loop.sh`/`loop.cmd` run that
+ * exact build even when it came from the npx cache or a local `.tgz` (npx caches those by
+ * spec, so `npx --no-install @felixdotgo/aidlc-kit` cannot find them). Machine-local data,
+ * next to daemon.lock and daemon.log; never part of the managed manifest. */
+export const installerCliPath = (root: string): string => join(loopDataDir(root), "cli.json");
+export const recordInstallerCli = (root: string): void => {
+  try {
+    mkdirSync(loopDataDir(root), { recursive: true });
+    const cli = fileURLToPath(new URL("../cli.js", import.meta.url));
+    writeFileSync(installerCliPath(root), `${JSON.stringify({ cli, version: packageVersion(), recordedAt: new Date().toISOString() }, null, 2)}\n`);
+  } catch (error) {
+    console.warn(`warning: could not record the aidlc-kit CLI for the loop launcher (${error instanceof Error ? error.message : String(error)}); install the package in the project to use loop.sh`);
+  }
 };
 
 /* ---- Dashboard process record (`.agents/data/loop/ui.json`) ---- */

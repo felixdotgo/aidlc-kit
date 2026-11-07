@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { applyPlan, planInit } from "../../src/installer.js";
 import { applyUpgrade, planUpgrade } from "../../src/upgrade.js";
@@ -69,5 +69,29 @@ test("loop.sh forwards to the project CLI with --root and maps check to loop env
     assert.equal(unknown.status, 2);
     assert.match(unknown.stderr, /unknown command: bogus/);
     assert.match(run("logs").stdout, /No daemon log yet/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("init records the installing CLI so loop.sh runs that exact build without a project install", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "aidlc-launch-recorded-"));
+  try {
+    const cli = resolve("dist/src/cli.js");
+    const installed = spawnSync(process.execPath, [cli, "init", root, "--agent", "codex", "--yes", "--loop-mode", "local", "--loop-lead", "codex", "--loop-workers", "worker-a=codex"], { encoding: "utf8" });
+    assert.equal(installed.status, 0, installed.stderr);
+    const record = JSON.parse(readFileSync(join(root, ".agents/data/loop/cli.json"), "utf8"));
+    assert.equal(record.cli, cli);
+    assert.equal(typeof record.version, "string");
+    // No node_modules in the project and no aidlc-kit on PATH: only the recorded CLI can answer.
+    const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, OPENAI_API_KEY: "x" };
+    const sh = join(root, ".agents/aidlc/scripts/loop.sh");
+    const check = spawnSync(sh, ["check"], { encoding: "utf8", env });
+    assert.equal(check.status, 0, check.stdout + check.stderr);
+    assert.match(check.stdout, /Loop environment \(local mode\)/);
+    assert.doesNotMatch(check.stderr, /npx --no-install/);
+    // A recorded CLI that no longer exists (npx cache cleaned) is skipped with a hint.
+    writeFileSync(join(root, ".agents/data/loop/cli.json"), JSON.stringify({ cli: join(root, "gone/cli.js"), version: "0.0.0" }));
+    const stale = spawnSync(sh, ["check"], { encoding: "utf8", env: { ...env, PATH: `${dirname(process.execPath)}:/bin` } });
+    assert.notEqual(stale.status, 0);
+    assert.match(stale.stderr, /rerun init\/upgrade from the package or \.tgz you want/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
