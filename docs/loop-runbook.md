@@ -125,9 +125,9 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop status --task-id <task-
 
 There is no `loop resume`. After a gate approval the daemon continues the task on its next poll. A **paused** task is not actionable: fix the cause, then press **resume** on the dashboard or run `node .agents/aidlc/scripts/state.mjs task status <task-id> --status active`.
 
-As an alternative to typing these commands repeatedly, `aidlc-kit ui` starts a web dashboard to view task status, add tasks, resume paused tasks, and approve gates; it prints a login URL that signs the browser in. See [Command reference](./command-reference.md#ui) and [Loop local run](./loop-local-run.md#57-web-dashboard-aidlc-kit-ui).
+As an alternative to typing these commands repeatedly, `aidlc-kit ui` starts a web dashboard to view task status, add tasks, resume paused tasks, send gate feedback, and approve gates; it prints a login URL that signs the browser in. See [Command reference](./command-reference.md#ui) and [Loop local run](./loop-local-run.md#57-web-dashboard-aidlc-kit-ui).
 
-### Step 5 — Approve gates from the trusted host terminal
+### Step 5 — Approve gates, or send feedback, from the trusted host terminal
 
 Gate approval happens only through a human — the trusted host terminal or the signed-in dashboard — never from a lead or worker container, and never via piped input:
 
@@ -135,7 +135,9 @@ Gate approval happens only through a human — the trusted host terminal or the 
 node .agents/aidlc/scripts/loop-gate.mjs <task-id>
 ```
 
-The command prints the exact review (task, phase, gate, artifact digests, and — at `G2_codereview` — the integration commit), then prompts `Type approve to approve this exact review:`. Type `approve` to approve that exact review. If the review changes while you type, it fails closed and asks you to inspect the new review.
+The command prints the exact review (task, phase, gate, artifact digests, and — at `G2_codereview` — the integration commit), then prompts `Type approve to approve this exact review, or type feedback to send guidance back to the loop:`. Type `approve` to approve that exact review. Any other text is feedback: the task stays at the same gate, goes back to `active` with evidence `Cancelled gate wait at <gate>: <feedback>`, and the daemon's next lead turn revises the review artifact and re-presents the gate. If the review changes while you type, it fails closed and asks you to inspect the new review.
+
+On the dashboard the task detail page offers the same two actions: **Send feedback (stay at gate)** and **✓ Approve** (which asks for confirmation in a popup before sending). A **feedback pending** pill on the card and detail page shows feedback that has not yet been followed by an approval of that gate.
 
 ## Fleet (multi-machine)
 
@@ -224,6 +226,8 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve <task-id> --snapshot <s
 ```
 
 The approve command checks that the snapshot is still current and uses the reviewer-only service operation. Run it only after the human explicitly approves the packet. Alternatively, start `aidlc-kit ui` with the fleet environment from Step 2 plus the reviewer credential (`AIDLC_FLEET_REVIEWER_TOKEN` or `--reviewer-token-file`): the dashboard then approves the current snapshot itself, passing the credential only to that one approve process. Without a reviewer credential the dashboard shows these commands instead and its approve API returns `403`.
+
+To send the loop back to work instead of approving, use **Send feedback (stay at gate)** on the dashboard detail page. Feedback needs **no reviewer credential** in fleet mode: the dashboard runs `loop-entry.mjs feedback <task-id>`, which records the feedback under the lead claim through `remote-state.mjs task status <task-id> --status active --mode audited`; the task stays at the same gate, the supervisor sees the pending feedback on its next poll, revises the review artifact, and publishes a new snapshot for the reviewer.
 
 ## Authority boundary
 

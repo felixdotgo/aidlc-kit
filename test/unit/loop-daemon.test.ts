@@ -259,6 +259,49 @@ test("fleet authority lists only actionable fleet-owned tasks and runs bounded s
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("fleet authority feedback re-activates a gated task under a lead claim without the reviewer credential", async () => {
+  const { createFleetAuthority } = await loadAuthority();
+  const { mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "aidlc-fleet-feedback-"));
+  try {
+    applyPlan(root, planInit({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false }));
+    mkdirSync(join(root, ".agents/data/tasks/fleet-a"), { recursive: true });
+    writeFileSync(join(root, ".agents/data/tasks/fleet-a/loop-intake.json"), JSON.stringify({ schemaVersion: 1, taskId: "fleet-a", authority: "fleet", requirementHash: "x" }));
+    // Record what the lead-side lifecycle CLI receives instead of talking to a coordination service.
+    const record = join(root, "remote-state-calls.json");
+    writeFileSync(join(root, ".agents/aidlc/scripts/remote-state.mjs"), `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env })); console.log(JSON.stringify({ ok: true, result: { id: "fleet-a", status: "active" } }));\n`);
+    const mk = (id: string, status: string, gate: string) => ({ id, title: id, type: "infra", phase: "clarify", gate, status, language: "en", risk: "normal", areas: ["root"], branch: "—", artifacts: {}, decisions: [], tasks: [], evidence: [], createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z" });
+    const tasks: Record<string, any> = { "fleet-a": mk("fleet-a", "blocked_on_user", "G0_confirm"), "fleet-active": mk("fleet-active", "active", "G0_confirm"), "fleet-wrap": mk("fleet-wrap", "blocked_on_user", "none") };
+    const calls: any[] = [];
+    const callTool = async ({ name, args }: any) => {
+      calls.push({ name, args });
+      if (name === "fleet_get") return { revision: 1, fleet: { leads: {}, supervisors: {}, jobs: {}, features: {} } };
+      if (name === "task_get") { if (!tasks[args.taskId]) throw new Error("task not found"); return { task: tasks[args.taskId], nextAction: null, revision: 1 }; }
+      if (name === "run_claim") return { revision: 2, fleet: { leads: { [args.taskId]: { epoch: 3, ownerToken: args.ownerToken } } } };
+      if (name === "run_release") return { revision: 3, fleet: { leads: {} } };
+      throw new Error(`unexpected ${name}`);
+    };
+    const env = { AIDLC_FLEET_URL: "https://fleet.example/mcp", AIDLC_FLEET_WORKSPACE: "ws", AIDLC_FLEET_TOKEN: "lead", AIDLC_FLEET_INTEGRATION_BRANCH: "main", AIDLC_FLEET_REVIEWER_TOKEN: "r".repeat(32), AIDLC_UI_TOKEN: "ui" };
+    const authority = await createFleetAuthority({ root, agent: "codex", workers: { w1: "codex" }, env, callTool, runCli: async () => ({}) });
+    const result = await authority.feedback({ taskId: "fleet-a", reason: "Tighten the scope to the API only", source: "dashboard: felix" });
+    assert.deepEqual(result, { ok: true, result: { id: "fleet-a", status: "active" } });
+    const recorded = JSON.parse(readFileSync(record, "utf8"));
+    assert.deepEqual(recorded.argv, ["task", "status", "fleet-a", "--status", "active", "--mode", "audited", "--reason", "Tighten the scope to the API only", "--source", "dashboard: felix"]);
+    assert.equal(recorded.env.AIDLC_FLEET_LEAD_EPOCH, "3", "runs under the lead claim");
+    assert.ok(recorded.env.AIDLC_FLEET_LEAD_OWNER_TOKEN, "carries the lead owner token");
+    assert.equal(recorded.env.AIDLC_FLEET_REVIEWER_TOKEN, undefined, "feedback never receives the reviewer credential");
+    assert.equal(recorded.env.AIDLC_UI_TOKEN, undefined);
+    assert.deepEqual(calls.filter((call) => ["run_claim", "run_release"].includes(call.name)).map((call) => call.name), ["run_claim", "run_release"], "claims and releases the lead around the command");
+    assert.equal(calls.find((call) => call.name === "run_release")?.args.epoch, 3);
+    await assert.rejects(() => authority.feedback({ taskId: "fleet-active", reason: "why", source: "who" }), /not waiting at a human gate/);
+    await assert.rejects(() => authority.feedback({ taskId: "fleet-wrap", reason: "why", source: "who" }), /not waiting at a human gate/);
+    await assert.rejects(() => authority.feedback({ taskId: "missing", reason: "why", source: "who" }), /Unknown task/);
+    await assert.rejects(() => authority.feedback({ taskId: "fleet-a", reason: "  ", source: "who" }), /reason is required/);
+    await assert.rejects(() => authority.feedback({ taskId: "fleet-a", reason: "why", source: "" }), /source is required/);
+    assert.equal(calls.filter((call) => call.name === "run_claim").length, 1, "rejected feedback never claims the lead");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("createLoopAuthority fails fast on a bad roster or limits and never falls back between modes", async () => {
   const { createLoopAuthority } = await loadAuthority();
   const root = mkdtempSync(join(tmpdir(), "aidlc-authority-config-"));

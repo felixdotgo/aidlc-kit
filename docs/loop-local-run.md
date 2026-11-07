@@ -185,15 +185,22 @@ node dist/src/cli.js loop status --task-id <task-id> --root .
 Prints `authority`, `record` (run record), and `nextAction`
 (`classification` = `run_phase` / `await_user` / `blocked` / `complete`...).
 
-### 5.4 Approve a gate (trusted terminal or dashboard — never the agent)
+### 5.4 Approve a gate, or send feedback (trusted terminal or dashboard — never the agent)
 
 ```sh
 node .agents/aidlc/scripts/loop-gate.mjs <task-id>
-# type: approve
+# type: approve            -> approves this exact review and advances the phase
+# type: <any other text>   -> feedback: the task stays at this gate
 ```
 
+Approve is not the only answer at a gate. Typing anything other than `approve` is
+**feedback**: it is recorded as evidence `Cancelled gate wait at <gate>: <feedback>`, the task
+goes back to `active` at the same phase/gate, and the daemon's next lead turn revises the
+review artifact and re-presents the **same** gate. Only `approve` moves the task forward.
+
 Never approve from the lead/worker, and never pipe input. The signed-in dashboard (§5.7)
-offers the same approval on the task detail page.
+offers both actions on the task detail page: **Send feedback (stay at gate)** and
+**✓ Approve** (behind a confirmation popup).
 
 ### 5.5 Resume after stopping at a gate / pause
 
@@ -263,7 +270,7 @@ node dist/src/cli.js ui .
 The dashboard is branded **Loop**. It binds `127.0.0.1:4173` by default and prints a **login
 URL** (`http://127.0.0.1:4173/#token=…`). Open it (or pass `--open` to launch the browser):
 the page stores the token in `localStorage` and strips it from the address bar, so mutating
-actions (new task, resume, gate approve) work without pasting anything. The token is new on
+actions (new task, resume, gate feedback, gate approve) work without pasting anything. The token is new on
 every start; use `--token-file ~/.aidlc-ui-token` (outside the project, mode `600`, created
 if missing) to keep the browser signed in across restarts. **⚙ Settings** still
 accepts a pasted token. Requests from another origin or with a foreign `Host` header are
@@ -281,8 +288,19 @@ Where things live (this is the #1 source of confusion):
   open it in the **side panel** (it slides in from the right and adds `?task=<task-id>` to the
   URL, so refresh or a shared link reopens it and Back closes it) and press **Open full page ↗**,
   or ctrl/cmd-click / middle-click the task link. Both the side panel and the detail page show a
-  horizontal **progress** stepper (clarify → plan → build → wrap → done) above the artifacts. On the detail page the **Approve · `<review step>`** panel (approval note + green
-  **✓ Approve** button) appears only while the task is `blocked_on_user`. If the gate's
+  horizontal **progress** stepper (clarify → plan → build → wrap → done) above the artifacts. On the detail page the **`<review step>`** panel appears only while the task is
+  `blocked_on_user` and has two blocks, in this order:
+  - **Feedback** (textarea + **Send feedback (stay at gate)**): records
+    `Cancelled gate wait at <gate>: <feedback>`, sets the task back to `active`, and the loop
+    revises the review artifact and re-presents the same gate — the same mechanism as typing
+    feedback in `loop-gate.mjs` (§5.4). Nothing advances.
+  - **Approve** (required approval note + green **✓ Approve**): clicking the button opens a
+    **confirmation popup** showing the review step and your note; only **Confirm approve** in
+    that popup sends the request. The note is audit provenance, not feedback — text typed
+    there does not reach the loop.
+  While feedback has been sent and that gate has not been approved since, the task card and
+  the detail page show a **feedback pending** pill with the pending feedback, and the Approve
+  block shows a warning (approval is still allowed). If the gate's
   structural checks no longer pass, the page lists the failing checks instead of the gate view.
 - **New task → Create task** runs loop intake (§5.2) and starts the daemon only if none is
   running (its stderr goes to `.agents/data/loop/daemon.log`). A toast shows the new task id,
@@ -290,7 +308,8 @@ Where things live (this is the #1 source of confusion):
 - **Stat cards, search, and the status/risk filters** narrow the Kanban and List views in the
   browser only; they never call the API or change state.
 - **Task buttons follow the status:** a `paused` task shows **resume** (sets it back to
-  `active`); a `blocked_on_user` task shows **approve**, which opens the detail page.
+  `active`); a `blocked_on_user` task shows **review**, which opens the detail page (where
+  both feedback and approve live).
 - **The live log (bottom of the detail page)** shows only that task's events (on connect, the
   last 200 of them found in the most recent 256 KB of the file, then live). It reads the fixed file `.agents/data/loop/ui-events.jsonl`, which
   rotates to `.jsonl.1` at 5 MB. The daemon only writes there when `AIDLC_LOOP_EVENT_LOG`
@@ -458,10 +477,18 @@ gate; raise `loop.limits.maxTurns` if the phase legitimately needs more turns. T
    node .agents/aidlc/scripts/state.mjs task status <task-id> --status active
    ```
 
-### 9.8 Clicking "approve" (or "resume") on the web UI does nothing
+### 9.8 Clicking "approve", "send feedback", or "resume" on the web UI does nothing
 
-- The gate **approve** form exists only on the full detail page `/tasks/<id>`; the
-  dashboard's **approve** button on a `blocked_on_user` card just opens that page.
+- The gate **feedback** and **approve** forms exist only on the full detail page
+  `/tasks/<id>`; the dashboard's **review** button on a `blocked_on_user` card just opens
+  that page.
+- **✓ Approve** does not send anything by itself: it opens a confirmation popup, and only
+  **Confirm approve** there sends the request. If you meant to give the loop guidance, use
+  **Send feedback (stay at gate)** instead — the approval note is provenance only.
+- **Send feedback** is blocked in the browser while the textarea is empty (the API returns `400`) and `409` when the task is not
+  waiting at a gate (status other than `blocked_on_user`). After a successful send the task
+  shows `active` with a **feedback pending** pill; it only runs again if a daemon is polling
+  (§5.2) — the feedback itself is already recorded as evidence.
 - Mutating actions need the session token; without it they return `401` (shown inline under
   the button). Open the login URL printed by `aidlc-kit ui` (the token changes on every
   restart unless you use `--token-file`), or paste the token into **Settings**.

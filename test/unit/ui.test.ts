@@ -138,6 +138,9 @@ test("mutating endpoints fail closed without the session token", async () => {
 
     const approve = await fetch(`${fixture.base}/api/gate/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: "task-a", source: "ok" }) });
     assert.equal(approve.status, 401);
+
+    const feedback = await fetch(`${fixture.base}/api/gate/feedback`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: "task-a", feedback: "scope is wrong" }) });
+    assert.equal(feedback.status, 401);
   } finally {
     await fixture.close();
   }
@@ -200,6 +203,90 @@ test("approve proxy validates inputs and rejects a non-blocked task", async () =
     assert.equal(activeTask.status, 409);
   } finally {
     await fixture.close();
+  }
+});
+
+test("feedback proxy validates inputs and rejects a task that is not waiting at a gate", async () => {
+  const fixture = await startFixture(makeTask(), true);
+  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  try {
+    const missingFeedback = await fetch(`${fixture.base}/api/gate/feedback`, { method: "POST", headers, body: JSON.stringify({ taskId: "task-a", feedback: "   " }) });
+    assert.equal(missingFeedback.status, 400);
+    assert.match(((await missingFeedback.json()) as { error: string }).error, /feedback is required/);
+
+    const missingTask = await fetch(`${fixture.base}/api/gate/feedback`, { method: "POST", headers, body: JSON.stringify({ feedback: "scope is wrong" }) });
+    assert.equal(missingTask.status, 400);
+
+    const unknownTask = await fetch(`${fixture.base}/api/gate/feedback`, { method: "POST", headers, body: JSON.stringify({ taskId: "missing", feedback: "scope is wrong" }) });
+    assert.equal(unknownTask.status, 404);
+
+    const activeTask = await fetch(`${fixture.base}/api/gate/feedback`, { method: "POST", headers, body: JSON.stringify({ taskId: "task-a", feedback: "scope is wrong" }) });
+    assert.equal(activeTask.status, 409);
+
+    // An active task shows neither the feedback nor the approve controls.
+    const detail = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    assert.doesNotMatch(detail, /id="feedback-button"/);
+    assert.doesNotMatch(detail, /id="approve-button"/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("gate detail page offers feedback before approve, and approve only opens a confirmation dialog", async () => {
+  const fixture = await startFixture(makeTask({ status: "blocked_on_user" }), true);
+  try {
+    const detail = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    const feedbackAt = detail.indexOf('id="feedback-panel"');
+    const approveAt = detail.indexOf('id="approve-panel"');
+    assert.ok(feedbackAt > 0 && approveAt > feedbackAt, "feedback block renders before the approve block");
+    assert.match(detail, /id="feedback-button"[^>]*>✎ Send feedback \(stay at gate\)</);
+    assert.match(detail, /id="approve-button"[^>]*>✓ Approve</);
+    assert.match(detail, /id="approve-modal" class="modal"/);
+    assert.match(detail, /id="approve-confirm"[^>]*>✓ Confirm approve</);
+    assert.match(detail, /openModal\("approve-modal"\)/, "the approve button opens the dialog");
+    // Only the dialog's confirm handler posts the approval.
+    const confirmHandler = detail.slice(detail.indexOf('getElementById("approve-confirm")'));
+    assert.match(confirmHandler, /post\("\/api\/gate\/approve"/);
+    const approveHandler = detail.slice(detail.indexOf('getElementById("approve-button")'), detail.indexOf('getElementById("approve-confirm")'));
+    assert.doesNotMatch(approveHandler, /post\("\/api\/gate\/approve"/);
+    assert.doesNotMatch(detail, /feedback pending/);
+
+    // The side-panel fragment stays read-only: no feedback/approve controls, no dialog.
+    const fragment = await (await fetch(`${fixture.base}/partial/tasks/task-a`)).text();
+    assert.doesNotMatch(fragment, /id="feedback-button"|id="approve-button"|id="approve-modal"/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("pending feedback shows on the dashboard and the detail page until that gate is approved", async () => {
+  const feedback = (gate: string, text: string) => ({ kind: "diagnostic" as const, result: "pass" as const, source: "Dashboard feedback", detail: `Cancelled gate wait at ${gate}: ${text}`, recordedAt: new Date().toISOString() });
+  const approval = (gate: "G0_confirm" | "G1_review") => ({ kind: "approval" as const, gate, result: "pass" as const, source: "ok", recordedAt: new Date().toISOString() });
+  const fixture = await startFixture(makeTask({ status: "active", evidence: [feedback("G0_confirm", "handled earlier"), approval("G0_confirm"), feedback("G0_confirm", "the scope misses the fleet path")] }), true);
+  try {
+    const home = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(home, /data-feedback-pending="1"/);
+    const detail = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    const panelStart = detail.indexOf('id="feedback-pending-panel"');
+    assert.ok(panelStart > 0, "pending panel renders");
+    const panel = detail.slice(panelStart, detail.indexOf("</section>", panelStart));
+    assert.match(panel, /the scope misses the fleet path/);
+    assert.doesNotMatch(panel, /handled earlier/, "feedback followed by that gate's approval is no longer pending");
+    assert.match(panel, /The loop lead is revising the review artifact/);
+    assert.match(panel, /ad-panel-tools">1</, "only the unapproved feedback counts");
+  } finally {
+    await fixture.close();
+  }
+
+  // Waiting again after feedback: the approve panel warns but still renders.
+  const waiting = await startFixture(makeTask({ status: "blocked_on_user", evidence: [feedback("G0_confirm", "tighten the scope")] }), true);
+  try {
+    const detail = await (await fetch(`${waiting.base}/tasks/task-a`)).text();
+    assert.match(detail, /id="approve-pending-warning"/);
+    assert.match(detail, /id="approve-button"/);
+    assert.match(detail, /Check that the review artifact reflects it before approving/);
+  } finally {
+    await waiting.close();
   }
 });
 
@@ -417,10 +504,59 @@ test("resume re-activates only a paused task and points gate waits to approval",
     assert.equal(res.status, 409);
     assert.match(((await res.json()) as { error: string }).error, /approve it on the task detail page/);
     const home = await (await fetch(`${gated.base}/`)).text();
-    assert.match(home, /href="\/tasks\/task-a">approve<\/a>/);
+    assert.match(home, /href="\/tasks\/task-a"[^>]*>review<\/a>/);
     assert.doesNotMatch(home, /data-resume="task-a"/);
   } finally {
     await gated.close();
+  }
+});
+
+test("dashboard feedback keeps the task at its gate and records the loop's feedback evidence", { skip: process.platform === "win32" }, async () => {
+  const fixture = await startInstalledFixture();
+  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  try {
+    fixture.state("task", "create", "gated", "--title", "Gated");
+    writeTaskDir(fixture.root, "gated");
+    fixture.state("task", "status", "gated", "--status", "blocked_on_user");
+    const before = fixture.state("task", "show", "gated").result;
+    assert.deepEqual({ phase: before.phase, gate: before.gate, status: before.status }, { phase: "clarify", gate: "G0_confirm", status: "blocked_on_user" });
+
+    const detail = await (await fetch(`${fixture.base}/tasks/gated`)).text();
+    assert.match(detail, /id="feedback-button"/);
+    assert.match(detail, /id="approve-button"/);
+
+    const sent = await fetch(`${fixture.base}/api/gate/feedback`, { method: "POST", headers, body: JSON.stringify({ taskId: "gated", feedback: "The scope misses the fleet path; add it." }) });
+    const sentText = await sent.text();
+    assert.equal(sent.status, 200, sentText);
+    const payload = JSON.parse(sentText) as { ok: boolean; result: { nextAction?: { classification: string; phase: string } } };
+    assert.equal(payload.ok, true);
+    assert.equal(payload.result.nextAction?.classification, "run_phase", "the loop continues the same phase (no gate advance)");
+    assert.equal(payload.result.nextAction?.phase, "clarify");
+
+    const after = fixture.state("task", "show", "gated").result;
+    assert.deepEqual({ phase: after.phase, gate: after.gate, status: after.status }, { phase: "clarify", gate: "G0_confirm", status: "active" }, "feedback never approves or advances the gate");
+    assert.equal(after.evidence.some((entry: { kind: string }) => entry.kind === "approval"), false);
+    const last = after.evidence[after.evidence.length - 1];
+    assert.deepEqual({ kind: last.kind, result: last.result, source: last.source, detail: last.detail }, { kind: "diagnostic", result: "pass", source: "Dashboard feedback", detail: "Cancelled gate wait at G0_confirm: The scope misses the fleet path; add it." });
+
+    const home = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(home, /data-feedback-pending="1"/);
+    const revised = await (await fetch(`${fixture.base}/tasks/gated`)).text();
+    assert.match(revised, /id="feedback-pending-panel"/);
+    assert.match(revised, /The scope misses the fleet path; add it\./);
+    assert.doesNotMatch(revised, /id="approve-button"/, "no approve control while the lead revises");
+
+    // A second feedback while active is rejected: the task is no longer waiting.
+    const again = await fetch(`${fixture.base}/api/gate/feedback`, { method: "POST", headers, body: JSON.stringify({ taskId: "gated", feedback: "more" }) });
+    assert.equal(again.status, 409);
+
+    // The installed loop-entry `feedback` action is fleet-only; local dashboards go through state.mjs directly.
+    const { execFileSync } = await import("node:child_process");
+    assert.throws(
+      () => execFileSync(process.execPath, [join(fixture.root, ".agents/aidlc/scripts/loop-entry.mjs"), "feedback", "gated", fixture.root], { input: JSON.stringify({ reason: "x", source: "y" }), stdio: ["pipe", "pipe", "pipe"] }),
+      /loop feedback is a fleet dashboard action/);
+  } finally {
+    await fixture.close();
   }
 });
 
@@ -708,7 +844,7 @@ appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ action, taskId, input,
 const tasks = ${JSON.stringify([fleetTask, pausedTask])};
 if (action === "tasks") console.log(JSON.stringify({ ok: true, authority: "fleet", tasks }));
 else if (action === "gate") console.log(JSON.stringify({ ok: true, gate: "G0_confirm", status: "blocked_on_user", snapshot: { id: "snap-1", reviewText: "## Remote review\\nSnapshot body" } }));
-else if (action === "approve" || action === "resume-task") console.log(JSON.stringify({ ok: true, result: { action } }));
+else if (action === "approve" || action === "resume-task" || action === "feedback") console.log(JSON.stringify({ ok: true, result: { action } }));
 else { console.error("unexpected " + action); process.exit(1); }
 `);
   const read = () => readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
@@ -728,6 +864,13 @@ else { console.error("unexpected " + action); process.exit(1); }
     assert.match(detail, /remote-state\.mjs gate approve fleet-a/, "without a reviewer credential the page shows the reviewer command");
     const denied = await fetch(`${plain.base}/api/gate/approve`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": plain.token }, body: JSON.stringify({ taskId: "fleet-a", source: "ok" }) });
     assert.equal(denied.status, 403);
+    // Feedback never needs the reviewer credential: it goes through loop-entry's `feedback` action as JSON on stdin.
+    assert.match(detail, /id="feedback-button"/, "feedback is offered even without a reviewer credential");
+    assert.doesNotMatch(detail, /id="approve-modal"/, "no approve dialog without a reviewer credential");
+    const fed = await fetch(`${plain.base}/api/gate/feedback`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": plain.token }, body: JSON.stringify({ taskId: "fleet-a", feedback: "split the plan", source: "reviewer note" }) });
+    assert.equal(fed.status, 200, await fed.text());
+    const feedbackCall = read().find((call) => call.action === "feedback");
+    assert.deepEqual({ taskId: feedbackCall.taskId, input: JSON.parse(feedbackCall.input), reviewer: feedbackCall.reviewer }, { taskId: "fleet-a", input: { reason: "split the plan", source: "reviewer note" }, reviewer: null });
     const resumed = await fetch(`${plain.base}/api/loop/resume`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": plain.token }, body: JSON.stringify({ taskId: "fleet-b" }) });
     assert.equal(resumed.status, 200);
     assert.ok(read().some((call) => call.action === "resume-task" && call.taskId === "fleet-b"));

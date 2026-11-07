@@ -10,6 +10,8 @@
  *   resumeTask(taskId)                    re-activate a paused task
  *   listTasks() / getTask(id) / gate(id)  read models for the dashboard (fleet)
  *   approve({ taskId, source, reviewerToken })  fleet reviewer approval of the current snapshot
+ *   feedback({ taskId, reason, source })  fleet human feedback that keeps the task at its gate
+ *                                         (local dashboards call `state.mjs task status` directly)
  *
  * The adapters never approve a gate on their own and never fall back from one
  * authority to the other. Fleet credentials are scoped: the reviewer token is
@@ -226,6 +228,16 @@ export async function createFleetAuthority({ root, agent, workers = {}, limits, 
       if (status !== "blocked_on_user" || !snapshot) throw new Error("Task has no current gate snapshot to approve");
       try { return JSON.parse(execFileSync(process.execPath, [remoteState, "gate", "approve", taskId, "--snapshot", snapshot.id, "--source", source], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...leadEnv, AIDLC_FLEET_REVIEWER_TOKEN: reviewerToken } })); }
       catch (error) { throw stateError(error); }
+    },
+    /** Human feedback at a gate: records the `Cancelled gate wait` evidence and re-activates the task
+     * so the loop revises and re-presents the same gate. Runs as the lead; never needs the reviewer credential. */
+    async feedback({ taskId, reason, source }) {
+      if (typeof reason !== "string" || !reason.trim()) throw new Error("Feedback reason is required");
+      if (typeof source !== "string" || !source.trim()) throw new Error("Feedback source is required");
+      const task = await readTask(taskId);
+      if (!task) throw new Error(`Unknown task: ${taskId}`);
+      if (task.status !== "blocked_on_user" || task.gate === "none") throw new Error("Task is not waiting at a human gate");
+      return withLead(taskId, ["task", "status", taskId, "--status", "active", "--mode", "audited", "--reason", reason, "--source", source]);
     }
   };
 }

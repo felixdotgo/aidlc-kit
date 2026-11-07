@@ -4,13 +4,16 @@
  * Read-only over canonical local state (`.agents/data/state/aidlc-state.json`).
  * Loop start/resume are thin facades that spawn the installed `loop-entry.mjs`
  * exactly as `aidlc-kit loop` does; gate approval is a thin facade that spawns
- * the same atomic `state.mjs gate approve` command. This module never mutates
- * lifecycle state itself and never bypasses the fail-closed gate channel.
+ * the same atomic `state.mjs gate approve` command, and gate feedback spawns the
+ * audited `state.mjs task status … --status active --mode audited` cancel (the
+ * task stays at its gate; the loop lead revises and re-presents it). This module
+ * never mutates lifecycle state itself and never bypasses the fail-closed gate
+ * channel.
  *
  * Built on `node:http` only; Bulma CSS and the dashboard theme layer are
  * vendored static assets (no CDN, no runtime npm dependency). Mutating actions (loop start/resume, gate
- * approve) require a per-session token generated at server start and printed
- * once to the terminal.
+ * feedback, gate approve) require a per-session token generated at server start
+ * and printed once to the terminal.
  */
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -282,6 +285,31 @@ const loopStatusJson = async (root: string, taskId: string): Promise<unknown> =>
 const approveGate = async (root: string, taskId: string, gate: string, source: string): Promise<unknown> =>
   JSON.parse(await runNode(root, [stateScriptPath(root), "gate", "approve", taskId, "--gate", gate, "--source", source, "--root", root], { timeout: 30000 })) as unknown;
 
+/** Human feedback keeps the task at its current gate. The audited status cancel
+ * records `Cancelled gate wait at <gate>: <feedback>` evidence and sets the task
+ * `active`; the loop runtime turns that into a "revise the review artifact, then
+ * re-present the gate" prompt — the same mechanism as typing feedback in the
+ * trusted terminal (`loop-gate.mjs`). It never approves anything. */
+const feedbackGate = async (root: string, taskId: string, feedback: string, source: string): Promise<unknown> =>
+  JSON.parse(await runNode(root, [stateScriptPath(root), "task", "status", taskId, "--status", "active", "--mode", "audited", "--reason", feedback, "--source", source, "--root", root], { timeout: 30000 })) as unknown;
+
+const FEEDBACK_DETAIL = /^Cancelled gate wait at (G0_confirm|G1_review|G2_codereview): /;
+
+/** Feedback entries not yet followed by a passing approval of that gate
+ * (mirrors `pendingFeedback` in the installed `loop-runtime.mjs`). */
+const pendingFeedback = (task: Pick<TaskState, "evidence">): Array<{ gate: string; text: string; recordedAt: string }> => {
+  const pending: Array<{ gate: string; text: string; recordedAt: string }> = [];
+  task.evidence.forEach((entry, index) => {
+    if (entry.kind !== "diagnostic" || typeof entry.detail !== "string") return;
+    const match = FEEDBACK_DETAIL.exec(entry.detail);
+    if (!match) return;
+    const gate = match[1] ?? "";
+    const approvedAfter = task.evidence.slice(index + 1).some((later) => later.kind === "approval" && later.result === "pass" && later.gate === gate);
+    if (!approvedAfter) pending.push({ gate, text: entry.detail.slice(match[0].length), recordedAt: entry.recordedAt });
+  });
+  return pending;
+};
+
 /* Authority-neutral read model: local reads canonical state in-process; fleet asks
  * `loop-entry.mjs` (the only place that speaks to the coordination service). */
 const readUiState = async (options: UiOptions): Promise<WorkflowState> => {
@@ -490,6 +518,8 @@ const statusPill = (status: string, handedOff = false): string => {
 };
 
 const gatePill = (gate: string): string => gate && gate !== "none" ? pill(gateLabel(gate), "is-ghost", `gate: ${gate}`, false) : "";
+/** Human feedback recorded at a gate and not yet followed by that gate's approval. */
+const feedbackPill = (count: number): string => count > 0 ? `<span class="ad-pill is-info" data-feedback-pending="${count}" title="${count} human feedback item${count === 1 ? "" : "s"} not yet followed by an approval">✎ feedback pending${count > 1 ? ` · ${count}` : ""}</span>` : "";
 
 const riskPill = (risk: string): string => pill(`${risk} risk`, RISK_TONE[risk] ?? "", `risk: ${risk}`);
 
@@ -835,14 +865,14 @@ document.addEventListener("click", (event) => {
  * Dashboard: stats, review queue, filters, kanban (default) + list toggle.
  * ------------------------------------------------------------------------- */
 
-interface CardTask { id: string; title: string; phase: string; gate: string; status: string; risk: string; areas: string[]; updatedAt?: string }
+interface CardTask { id: string; title: string; phase: string; gate: string; status: string; risk: string; areas: string[]; updatedAt?: string; feedbackPending?: number }
 
 /** Per-status action: a paused task can be re-activated for the daemon; a task
  * waiting at a human gate links to the detail page that hosts gate approval. */
 const taskAction = (task: { id: string; status: string }, handedOff = false): string => {
   if (handedOff) return `<a class="button is-small is-danger ad-soft" href="/tasks/${encodeURIComponent(task.id)}" title="handed off: follow the handoff actions">handoff</a>`;
   if (task.status === "paused") return `<button class="button is-small is-link ad-soft" data-resume="${escapeHtml(task.id)}">resume</button>`;
-  if (task.status === "blocked_on_user") return `<a class="button is-small is-warning" href="/tasks/${encodeURIComponent(task.id)}">approve</a>`;
+  if (task.status === "blocked_on_user") return `<a class="button is-small is-warning" href="/tasks/${encodeURIComponent(task.id)}" title="open the review: send feedback or approve">review</a>`;
   return "";
 };
 
@@ -879,7 +909,7 @@ const renderTaskCard = (task: CardTask, handedOff = false): string => {
     <div class="ad-card-top"><a class="ad-card-id" href="${href}" data-task-link="${escapeHtml(task.id)}" title="${escapeHtml(task.id)}">${escapeHtml(task.id)}</a>${statusPill(task.status, handedOff)}</div>
     <div class="ad-card-title"><a href="${href}" data-task-link="${escapeHtml(task.id)}">${escapeHtml(task.title)}</a></div>
     ${phaseSteps(task.phase)}
-    <div class="ad-card-meta">${gatePill(task.gate)}${riskPill(task.risk)}</div>
+    <div class="ad-card-meta">${gatePill(task.gate)}${riskPill(task.risk)}${feedbackPill(task.feedbackPending ?? 0)}</div>
     <div class="ad-card-foot"><span class="ad-areas" title="areas: ${escapeHtml(task.areas.join(", "))}">${escapeHtml(task.areas.join(", "))}</span>${task.updatedAt ? `<span>· ${relativeTime(task.updatedAt)}</span>` : ""}${taskAction(task, handedOff)}</div>
   </article>`;
 };
@@ -889,7 +919,7 @@ const renderListRow = (task: CardTask, handedOff: boolean): string => `<tr ${ite
   <td class="has-text-weight-semibold">${escapeHtml(task.title)}</td>
   <td><div class="is-size-7 mb-1">${escapeHtml(task.phase)}</div>${phaseSteps(task.phase)}</td>
   <td>${gatePill(task.gate) || '<span class="has-text-grey">—</span>'}</td>
-  <td>${statusPill(task.status, handedOff)}</td>
+  <td>${statusPill(task.status, handedOff)}${feedbackPill(task.feedbackPending ?? 0)}</td>
   <td>${riskPill(task.risk)}</td>
   <td class="is-size-7">${escapeHtml(task.areas.join(", "))}</td>
   <td class="is-size-7 has-text-grey">${relativeTime(task.updatedAt)}</td>
@@ -959,7 +989,7 @@ const renderModals = (): string => `
       <div class="field">
         <label class="label" for="settings-token-input">Session token</label>
         <div class="control"><input id="settings-token-input" class="input" type="password" placeholder="paste the token printed by aidlc-kit ui" autocomplete="off" data-autofocus></div>
-        <p class="help">Printed once in the terminal that started this server. Required for New task, resume, and gate approve. Stored only in this browser's localStorage.</p>
+        <p class="help">Printed once in the terminal that started this server. Required for New task, resume, gate feedback, and gate approve. Stored only in this browser's localStorage.</p>
       </div>
     </section>
     <footer class="modal-card-foot">
@@ -1012,7 +1042,10 @@ const renderDashboard = async (options: UiOptions): Promise<string> => {
   const archived = active.length < DASHBOARD_LIMIT
     ? listTaskSummaries({ ...state, tasks: {} }, { includeArchive: true, limit: DASHBOARD_LIMIT - active.length }).items
     : [];
-  const items = [...active, ...archived];
+  const items: CardTask[] = [...active, ...archived].map((task) => {
+    const full = state.tasks[task.id];
+    return full ? { ...task, feedbackPending: pendingFeedback(full).length } : task;
+  });
   const handedOff = new Set(Object.values(state.tasks).filter((task) => task.handoff).map((task) => task.id));
 
   const kanban = PHASES.map((phase, index) => {
@@ -1050,7 +1083,7 @@ ${renderHeader(options.root, uiMode(options))}
     ${renderStats(items, handedOff)}
     ${renderReviewQueue(items, handedOff)}
     ${board}
-    <p class="ad-help">Click a task to open it in the side panel; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. Gate approval stays available on the detail page and on the trusted terminal (<code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close panel or dialog.</p>
+    <p class="ad-help">Click a task to open it in the side panel; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. Gate feedback and approval stay available on the detail page and on the trusted terminal (<code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close panel or dialog.</p>
   </div>
 </main>
 ${renderModals()}
@@ -1101,11 +1134,46 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
     }
   }
 
+  /* Pending feedback: `Cancelled gate wait` evidence with no later approval of
+   * that gate. While the task is active the lead is revising for it; while it
+   * waits again, the reviewer should check the revision reflects it. */
+  const pending = pendingFeedback(task);
+  const pendingBlock = !fragment && pending.length
+    ? `<section class="ad-panel is-info" id="feedback-pending-panel">
+        <header class="ad-panel-head"><h2>Feedback pending</h2><span class="ad-pill is-info ad-panel-tools">${pending.length}</span></header>
+        <div class="ad-panel-body">
+          <p class="mb-2">${waiting
+            ? "This gate was re-presented after human feedback. Check that the review artifact reflects it before approving; approving records the feedback as handled."
+            : "The task stays at its gate. The loop lead is revising the review artifact for this feedback and will re-present the same gate."}</p>
+          <ul class="ad-plain-list">${pending.map((entry) => `<li>${pill(gateLabel(entry.gate), "is-info", `gate: ${entry.gate}`, false)} ${escapeHtml(entry.text)} <span class="is-size-7 has-text-grey">· ${relativeTime(entry.recordedAt)}</span></li>`).join("")}</ul>
+        </div>
+      </section>`
+    : "";
+
+  /* Feedback never needs the fleet reviewer credential (it never approves), so
+   * the block renders in both modes whenever the task waits at a gate. */
+  const feedbackBlock = !fragment && waiting
+    ? `<section class="ad-panel is-info" id="feedback-panel">
+        <header class="ad-panel-head"><h2>Feedback · ${escapeHtml(gateLabel(task.gate))}</h2><span class="ad-pill is-ghost ad-panel-tools">stays at this gate</span></header>
+        <div class="ad-panel-body">
+          <p class="mb-2">Not ready to approve? Send guidance back to the loop. The task stays at <strong>${escapeHtml(gateLabel(task.gate))}</strong>; the lead revises the review artifact and re-presents this gate.</p>
+          <div class="field">
+            <label class="label is-small" for="feedback">Feedback <span class="has-text-grey has-text-weight-normal">(required, sent to the loop lead)</span></label>
+            <div class="control"><textarea id="feedback" class="textarea" rows="3" placeholder="e.g. the scope misses the fleet path; split item B; the assumption about X is wrong"></textarea></div>
+          </div>
+          <div class="is-flex is-align-items-center" style="gap:0.75rem">
+            <button id="feedback-button" class="button is-info">✎ Send feedback (stay at gate)</button>
+            <span id="feedback-result" class="help m-0" role="status"></span>
+          </div>
+        </div>
+      </section>`
+    : "";
+
   const approveBlock = !fragment && waiting && fleet && !options.reviewerToken
     ? `<section class="ad-panel" id="approve-panel">
         <header class="ad-panel-head"><h2>Approve · ${escapeHtml(gateLabel(task.gate))}</h2><span class="ad-pill is-ghost ad-panel-tools">${escapeHtml(task.gate)}</span></header>
         <div class="ad-panel-body">
-          <p class="mb-2">This dashboard has no fleet reviewer credential. Approve from a reviewer terminal, or restart <code>aidlc-kit ui</code> with <code>AIDLC_FLEET_REVIEWER_TOKEN</code> or <code>--reviewer-token-file</code>.</p>
+          <p class="mb-2">This dashboard has no fleet reviewer credential. Approve from a reviewer terminal, or restart <code>aidlc-kit ui</code> with <code>AIDLC_FLEET_REVIEWER_TOKEN</code> or <code>--reviewer-token-file</code>. Feedback above needs no reviewer credential.</p>
           <pre class="is-size-7">node .agents/aidlc/scripts/remote-state.mjs gate inbox
 node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} --snapshot &lt;snapshot-id&gt; --source "&lt;explicit approval&gt;"</pre>
         </div>
@@ -1114,6 +1182,8 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
     ? `<section class="ad-panel is-success" id="approve-panel">
         <header class="ad-panel-head"><h2>Approve · ${escapeHtml(gateLabel(task.gate))}</h2><span class="ad-pill is-ghost ad-panel-tools">${escapeHtml(task.gate)}</span></header>
         <div class="ad-panel-body">
+          <p class="mb-2">Approving moves the task to the next phase. To request changes instead, use <strong>Feedback</strong> above — the note below is provenance only, not guidance for the loop.</p>
+          ${pending.length ? `<p class="help is-warning mb-3" id="approve-pending-warning">⚠ ${pending.length} feedback item${pending.length === 1 ? "" : "s"} still pending — make sure the revised review addresses ${pending.length === 1 ? "it" : "them"} before approving.</p>` : ""}
           <div class="field">
             <label class="label is-small" for="source">Approval note <span class="has-text-grey has-text-weight-normal">(required, recorded as provenance)</span></label>
             <div class="control"><textarea id="source" class="textarea" rows="2" placeholder="e.g. reviewed intent and scope — ok"></textarea></div>
@@ -1124,6 +1194,29 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
           </div>
         </div>
       </section>`
+    : "";
+
+  /* Confirmation dialog: the only control that sends the approve request. */
+  const approveModal = !fragment && waiting && !(fleet && !options.reviewerToken)
+    ? `<div id="approve-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="approve-modal-title">
+  <div class="modal-background" data-close></div>
+  <div class="modal-card">
+    <header class="modal-card-head">
+      <p class="modal-card-title" id="approve-modal-title">Approve ${escapeHtml(gateLabel(task.gate))}?</p>
+      <button class="delete" aria-label="close" data-close></button>
+    </header>
+    <section class="modal-card-body">
+      <p>This approves <strong>${escapeHtml(gateLabel(task.gate))}</strong> (<code>${escapeHtml(task.gate)}</code>) for <code>${escapeHtml(task.id)}</code> and moves the task to the next phase. It cannot be undone from the dashboard.</p>
+      <p class="mt-2">To request changes instead, cancel and use <strong>Feedback</strong> — the task then stays at this gate.</p>
+      <p class="is-size-7 has-text-grey mt-3 mb-1">Approval note</p>
+      <blockquote id="approve-modal-note" class="box is-size-7 py-2 px-3 mb-0"></blockquote>
+    </section>
+    <footer class="modal-card-foot">
+      <button class="button" data-close data-autofocus>Cancel</button>
+      <button id="approve-confirm" class="button is-success">✓ Confirm approve</button>
+    </footer>
+  </div>
+</div>`
     : "";
 
   const openArtifact = waiting ? GATE_ARTIFACT[task.gate] : undefined;
@@ -1178,12 +1271,14 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
   </section>`;
 
   const body = `<h1 class="ad-page-title">${escapeHtml(task.title)}</h1>
-<div class="ad-page-sub"><code>${escapeHtml(task.id)}</code>${statusPill(task.status, Boolean(task.handoff))}${gatePill(task.gate)}${riskPill(task.risk)}</div>
+<div class="ad-page-sub"><code>${escapeHtml(task.id)}</code>${statusPill(task.status, Boolean(task.handoff))}${gatePill(task.gate)}${riskPill(task.risk)}${feedbackPill(pending.length)}</div>
 ${phaseStepper(task.phase, task.gate, task.status)}
 <div class="columns is-desktop">
   <div class="column is-8-desktop">
     ${handoff}
+    ${pendingBlock}
     ${gateBlock}
+    ${feedbackBlock}
     ${approveBlock}
     ${panel("Artifacts", artifacts || '<p class="ad-empty-line">No artifacts recorded</p>', `<span class="ad-count">${ARTIFACT_NAMES.filter((name) => task.artifacts?.[name]).length}</span>`, true)}
     ${panel("Decisions", decisions, `<span class="ad-count">${task.decisions.length}</span>`, true)}
@@ -1201,14 +1296,39 @@ ${phaseStepper(task.phase, task.gate, task.status)}
   if (fragment) return body;
 
   const detailScript = `<script>
-document.getElementById("approve-button")?.addEventListener("click", (event) => {
+// Feedback: keeps the task at this gate; the lead revises and re-presents it.
+document.getElementById("feedback-button")?.addEventListener("click", (event) => {
   const button = event.currentTarget;
+  const field = document.getElementById("feedback");
+  const result = document.getElementById("feedback-result");
+  if (result) result.textContent = "";
+  if (!field.value.trim()) { toast("Write the feedback first", "warning", "It is sent to the loop lead as guidance; the task stays at this gate."); field.focus(); return; }
+  withLoading(button, async () => {
+    const res = await post("/api/gate/feedback", { taskId: ${JSON.stringify(id)}, feedback: field.value });
+    if (res.status >= 200 && res.status < 300) {
+      toast(${JSON.stringify(`Feedback sent — task stays at ${gateLabel(task.gate)}`)}, "success", "The lead will revise the review artifact and re-present this gate.");
+      if (result) result.textContent = "Feedback recorded — reloading…";
+      setTimeout(() => location.reload(), 1500);
+    } else failureToast(res, "Feedback failed");
+  });
+});
+// Approve: the button only opens the confirmation dialog; "Confirm approve" sends.
+document.getElementById("approve-button")?.addEventListener("click", () => {
   const note = document.getElementById("source");
   const result = document.getElementById("approve-result");
   if (result) result.textContent = "";
-  if (!note.value.trim()) { toast("Add an approval note first", "warning", "It is recorded as the approval source."); note.focus(); return; }
+  if (!note.value.trim()) { toast("Add an approval note first", "warning", "It is recorded as the approval source. To request changes, use Feedback instead."); note.focus(); return; }
+  const quote = document.getElementById("approve-modal-note");
+  if (quote) quote.textContent = note.value.trim();
+  openModal("approve-modal");
+});
+document.getElementById("approve-confirm")?.addEventListener("click", (event) => {
+  const button = event.currentTarget;
+  const note = document.getElementById("source");
+  const result = document.getElementById("approve-result");
   withLoading(button, async () => {
     const res = await post("/api/gate/approve", { taskId: ${JSON.stringify(id)}, gate: ${JSON.stringify(task.gate)}, source: note.value });
+    closeAllModals();
     if (res.status >= 200 && res.status < 300) {
       const next = res.body && res.body.result && res.body.result.nextAction;
       toast(${JSON.stringify(`Approved ${gateLabel(task.gate)}`)}, "success", next && next.classification ? "Next: " + next.classification + (next.phase ? " · " + next.phase : "") : "");
@@ -1286,6 +1406,7 @@ ${renderHeader(options.root, uiMode(options))}
   </div>
 </main>
 ${renderModals()}
+${approveModal}
 ${sharedScript}
 ${detailScript}
 </body>
@@ -1482,6 +1603,28 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           try {
             const result = uiMode(options) === "fleet" ? JSON.parse(await runNode(options.root, loopArgs(options.root, "resume-task", taskId), { timeout: 30000 })) as unknown : await activateTask(options.root, taskId);
             return sendJson(res, 200, { ok: true, result, daemon: daemonStatus(options.root) });
+          } catch (error) {
+            return sendJson(res, 502, { ok: false, error: childError(error) });
+          }
+        }
+        if (method === "POST" && path === "/api/gate/feedback") {
+          if (!tokenMatches(options.token ?? "", suppliedToken(req))) return sendJson(res, 401, { ok: false, error: "Invalid or missing approve token" });
+          const body = await readBody(req);
+          const fields = readFields(body, req.headers["content-type"]);
+          const taskId = fields["taskId"] ?? "";
+          const feedback = (fields["feedback"] ?? "").trim();
+          const source = (fields["source"] ?? "").trim() || "Dashboard feedback";
+          if (!taskId.trim()) return sendJson(res, 400, { ok: false, error: "taskId is required" });
+          if (!feedback) return sendJson(res, 400, { ok: false, error: "feedback is required" });
+          const task = readUiTask(options, taskId, await readUiState(options));
+          if (!task) return sendJson(res, 404, { ok: false, error: `Task not found: ${taskId}` });
+          if (task.status !== "blocked_on_user" || task.gate === "none") return sendJson(res, 409, { ok: false, error: "Task is not waiting at a human gate" });
+          try {
+            // Feedback never approves, so it never needs the fleet reviewer credential.
+            const result = uiMode(options) === "fleet"
+              ? JSON.parse(await runNode(options.root, loopArgs(options.root, "feedback", taskId), { input: JSON.stringify({ reason: feedback, source }), timeout: 30000 })) as unknown
+              : await feedbackGate(options.root, taskId, feedback, source);
+            return sendJson(res, 200, { ok: true, result });
           } catch (error) {
             return sendJson(res, 502, { ok: false, error: childError(error) });
           }

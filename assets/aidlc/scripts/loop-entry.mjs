@@ -8,7 +8,9 @@
  *   worker-image  build and record a provider worker image
  * Dashboard JSON actions (fleet authority; local dashboards read local state in-process):
  *   tasks | task <id> | gate <id> | resume-task <id> | approve <id> (source on stdin,
- *   reviewer credential only from AIDLC_FLEET_REVIEWER_TOKEN of this process)
+ *   reviewer credential only from AIDLC_FLEET_REVIEWER_TOKEN of this process) |
+ *   feedback <id> (JSON `{ reason, source }` on stdin; keeps the task at its gate
+ *   and never needs the reviewer credential)
  *
  * Positional arguments: [action, taskId, root, mode, provider, tag, title].
  * Gate approval for local tasks stays on the trusted terminal (`loop-gate.mjs`).
@@ -28,7 +30,7 @@ import { buildWorkerImage, defaultWorkerImageTag, recordWorkerImage } from "./li
 const [action, taskArg, rootArg, modeArg, providerArg, tagArg, titleArg] = process.argv.slice(2);
 const root = resolve(rootArg || ".");
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const ACTIONS = ["start", "resume", "status", "intake", "tasks", "task", "gate", "resume-task", "approve"];
+const ACTIONS = ["start", "resume", "status", "intake", "tasks", "task", "gate", "resume-task", "approve", "feedback"];
 const readStdin = async (prompt) => {
   if (stdin.isTTY) { const rl = createInterface({ input: stdin, output: stdout }); try { return await rl.question(prompt); } finally { rl.close(); } }
   const chunks = []; for await (const chunk of stdin) { chunks.push(chunk); if (chunks.reduce((n, c) => n + c.length, 0) > 8192) throw new Error("Input exceeds 8192 bytes"); } return Buffer.concat(chunks).toString("utf8");
@@ -96,6 +98,13 @@ try {
       } else if (action === "approve") {
         const taskId = requireTaskId();
         print(await authority.approve({ taskId, source: (await readStdin("Approval source: ")).trim(), reviewerToken: process.env.AIDLC_FLEET_REVIEWER_TOKEN }));
+      } else if (action === "feedback") {
+        // Human guidance that keeps the task at its current gate; no reviewer credential is involved.
+        const taskId = requireTaskId();
+        let input; try { input = JSON.parse(await readStdin("Feedback JSON: ")); } catch { throw new Error("Feedback must be a JSON object { reason, source }"); }
+        const reason = typeof input?.reason === "string" ? input.reason.trim() : "", source = typeof input?.source === "string" ? input.source.trim() : "";
+        if (!input || typeof input !== "object" || Array.isArray(input) || !reason || !source) throw new Error("Feedback must be a JSON object { reason, source } with non-empty strings");
+        print(await authority.feedback({ taskId, reason, source }));
       }
     }
   }
