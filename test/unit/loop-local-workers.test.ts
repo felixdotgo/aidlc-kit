@@ -52,8 +52,15 @@ test("Docker worker isolates and integrates its scoped snapshot", { skip: !proce
   const prior = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = "test-only";
   t.after(() => { if (prior === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = prior; });
-  const result = await runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs, ...hooks, docker: { image: process.env.AIDLC_TEST_WORKER_IMAGE, credentials: { codex: ["OPENAI_API_KEY"] } } });
+  const events: any[] = [], recorded: string[][] = [];
+  const recordIntegration = async (_root: string, taskId: string, assignmentId: string, commit: string) => { recorded.push([taskId, assignmentId, commit]); };
+  const result = await runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs, ...hooks, recordIntegration, onEvent: (event: any) => { events.push(event); }, docker: { image: process.env.AIDLC_TEST_WORKER_IMAGE, credentials: { codex: ["OPENAI_API_KEY"] } } });
   assert.equal(result.length, 1); assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "isolated\n");
+  assert.deepEqual(recorded, [["task", "assignment", result[0].integrationCommit]]);
+  const integrated = events.find((event) => event.type === "job_integrated");
+  assert.equal(integrated.actor, "worker"); assert.equal(integrated.itemId, "one"); assert.equal(integrated.phase, "build");
+  assert.ok(events.some((event) => event.type === "worker_turn_start" && event.actor === "worker" && event.itemId === "one"));
+  for (const event of events.filter((candidate) => candidate.type === "agent_text")) { assert.equal(event.actor, "worker"); assert.ok(!/\n/.test(event.text) && event.text.length <= 240, "worker text is a one-line summary"); }
 });
 
 test("local worker stops without integrating when its turn limit is reached", { skip: !process.env.AIDLC_TEST_MULTITURN_IMAGE }, async (t) => {

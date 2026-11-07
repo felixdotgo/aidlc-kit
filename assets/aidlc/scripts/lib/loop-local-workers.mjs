@@ -5,10 +5,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { createWorkerSnapshot, inspectWorkerSnapshot } from "./loop-worker-snapshot.mjs";
 import { workerDockerInvocation } from "./loop-worker-docker.mjs";
-import { isLoopProvider, runAgentTurn } from "./loop-drivers.mjs";
+import { isLoopProvider, runAgentTurn, summarize } from "./loop-drivers.mjs";
 import { extractCommitMessage } from "./loop-commit-message.mjs";
 import { pathOverlaps } from "./store.mjs";
-import { claimLocalAssignment, heartbeatLocalAssignment, reportLocalAssignment, releaseLocalAssignment } from "./assignment-store.mjs";
+import { claimLocalAssignment, heartbeatLocalAssignment, recordLocalIntegration, reportLocalAssignment, releaseLocalAssignment } from "./assignment-store.mjs";
 
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000 });
 const lines = (value) => value.split("\0").filter(Boolean);
@@ -56,7 +56,7 @@ export async function releaseFailedAssignments({ root, taskId, outcomes, release
  * for certain are released (see releaseFailedAssignments); the rest are left
  * for reconciliation.
  */
-export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, worktreesRoot: inputWorktreesRoot, docker, timeoutMs = 600000, leaseMs = 300000, maxTurns = 12, maxStallTurns = 2, claim = claimLocalAssignment, heartbeat = heartbeatLocalAssignment, report = reportLocalAssignment, release = releaseLocalAssignment, onEvent = () => {}, signal } = {}) {
+export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, worktreesRoot: inputWorktreesRoot, docker, timeoutMs = 600000, leaseMs = 300000, maxTurns = 12, maxStallTurns = 2, claim = claimLocalAssignment, heartbeat = heartbeatLocalAssignment, report = reportLocalAssignment, release = releaseLocalAssignment, recordIntegration = recordLocalIntegration, onEvent = () => {}, signal } = {}) {
   const root = resolve(inputRoot), worktreesRoot = resolve(inputWorktreesRoot);
   if (!identifier(taskId) || !Array.isArray(jobs) || !jobs.length) throw new Error("Valid task and non-empty jobs are required");
   if (root === worktreesRoot || worktreesRoot.startsWith(`${root}${sep}`)) throw new Error("Worker worktree root must be outside the integration checkout");
@@ -131,6 +131,14 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
   }
   const execute = async (entry) => {
     const { job, assignment, workspace, snapshot, baseline, branch } = entry;
+    // Live-log context: worker events name the worker, its item, and the build phase.
+    // Worker output is never logged in full: agent text is reduced to a redacted
+    // first-line summary (tool and command events already carry summaries only).
+    const workerEvent = (event) => {
+      if (!event || typeof event !== "object" || Array.isArray(event)) return onEvent(event);
+      const brief = event.type === "agent_text" ? { type: "agent_text", text: summarize(String(event.text ?? "").split(/\r?\n/).find((line) => line.trim()) ?? "") ?? "" } : event;
+      return onEvent({ taskId, actor: job.workerId, phase: "build", itemId: job.itemId, ...brief });
+    };
     let renewalError;
     const controller = new AbortController();
     // An external cancel (daemon shutdown stage 2) aborts every worker turn the
@@ -149,7 +157,8 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
             const invocation = workerDockerInvocation({ workspace: snapshot, image: resolvedImages[job.agent], command, args, credentialEnv: docker.credentials[job.agent], hostEnv: process.env, uid, gid, containerName, sessionHome:home });
             return spawn(invocation.command, invocation.args, { ...options, cwd: snapshot, env: invocation.env, shell: false });
           };
-          try { result = await runAgentTurn({ agent: job.agent, root: "/workspace", sessionId, spawnProcess, prompt: `${job.prompt}\n\nOnly modify assigned paths: ${job.ownedPaths.join(", ")}. Do not modify AI-DLC lifecycle state or approve gates. End with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs, signal: controller.signal, onSessionId: async (id) => { await heartbeat(root, taskId, assignment.id, leaseMs, id); } }); }
+          await workerEvent({ type: "worker_turn_start", iteration: turn, agent: job.agent, summary: summarize(`turn ${turn + 1} on ${job.ownedPaths.join(", ")}`) });
+          try { result = await runAgentTurn({ agent: job.agent, root: "/workspace", sessionId, spawnProcess, onEvent: workerEvent, prompt: `${job.prompt}\n\nOnly modify assigned paths: ${job.ownedPaths.join(", ")}. Do not modify AI-DLC lifecycle state or approve gates. End with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs, signal: controller.signal, onSessionId: async (id) => { await heartbeat(root, taskId, assignment.id, leaseMs, id); } }); }
           finally {
             try { dockerCheck("rm", "-f", containerName); }
             catch {
@@ -195,6 +204,7 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
       if (commit === base || !committed.length || !scoped(committed, job.ownedPaths)) throw new Error("Worker commit is outside assignment scope");
       await report(root, taskId, assignment.id, { commit, changedPaths: committed, checkpoint: `provider=${job.agent}` });
       entry.reported = true;
+      await workerEvent({ type: "worker_reported", commit, changedPaths: committed, summary: summarize(`changed ${committed.length} file(s): ${committed.join(", ")}`) });
       return { assignmentId: assignment.id, itemId: job.itemId, workerId: job.workerId, agent: job.agent, baseCommit: base, branch, commit, changedPaths: committed, workspace };
     } finally { clearInterval(timer); signal?.removeEventListener("abort", onCancel); }
   };
@@ -216,7 +226,11 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
     git(root, "-c", "user.name=AI-DLC integrator", "-c", "user.email=aidlc-integrator@localhost", "cherry-pick", result.commit);
     result.integrationCommit = git(root, "rev-parse", "HEAD").trim();
     expectedHead = result.integrationCommit;
-    await onEvent({ type: "job_integrated", taskId, itemId: result.itemId, assignmentId: result.assignmentId, commit: result.integrationCommit });
+    // Best-effort: the cherry-pick already happened, so a failed record must not
+    // fail the batch; the dashboard then falls back to the worker commit.
+    try { await recordIntegration(root, taskId, result.assignmentId, result.integrationCommit); }
+    catch (error) { await onEvent({ type: "diagnostic", taskId, itemId: result.itemId, message: `Could not record integration commit: ${error instanceof Error ? error.message : String(error)}` }); }
+    await onEvent({ type: "job_integrated", taskId, actor: result.workerId, phase: "build", itemId: result.itemId, assignmentId: result.assignmentId, commit: result.integrationCommit, summary: summarize(`integrated ${result.changedPaths.length} file(s) as ${result.integrationCommit.slice(0, 12)}`) });
   }
   return completed;
 }

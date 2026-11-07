@@ -53,6 +53,23 @@ test("local claims reject dependencies, overlap and duplicate dispatch; canonica
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("integration commit is recorded only on reported or integrated claims and never changes state", () => {
+  const { root, taskId } = fixture();
+  try {
+    const sha = "a".repeat(40);
+    const api = store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "worker-api", ownedPaths: ["src/api"] });
+    assert.throws(() => store.recordLocalIntegration(root, taskId, api.id, sha), /reported or integrated/);
+    store.reportLocalAssignment(root, taskId, api.id, { commit: "b".repeat(40), changedPaths: ["src/api/index.ts"] });
+    assert.throws(() => store.recordLocalIntegration(root, taskId, api.id, "HEAD"), /Invalid integration commit/);
+    assert.throws(() => store.recordLocalIntegration(root, taskId, api.id, "--output=x"), /Invalid integration commit/);
+    const recorded = store.recordLocalIntegration(root, taskId, api.id, sha);
+    assert.equal(recorded.state, "reported");
+    assert.equal(recorded.integrationCommit, sha);
+    assert.equal(store.showLocalAssignments(root, taskId).assignments[0].integrationCommit, sha);
+    assert.throws(() => store.recordLocalIntegration(root, taskId, "missing", sha), /reported or integrated/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("expired claim becomes uncertain and needs explicit release before retry", () => {
   const { root, taskId } = fixture();
   try {

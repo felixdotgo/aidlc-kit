@@ -1,0 +1,177 @@
+/**
+ * Page chrome shared by the dashboard and task pages: document head, live-region
+ * wrappers, header (daemon pill, review bell), dialogs, and client script tags.
+ */
+import { createHash } from "node:crypto";
+import type { WorkflowState } from "../../model.js";
+import { scriptTag, type ClientScript } from "../assets.js";
+import { daemonHealth, daemonStatus, type DaemonError } from "../daemon.js";
+import { pendingFeedback } from "../data.js";
+import { escapeHtml } from "../http.js";
+import type { UiAuthorityMode } from "../options.js";
+import { feedbackPill, gateLabel, pill, relativeTime } from "./components.js";
+
+/** `task` marks a task detail page: live updates refresh that task's regions. The
+ * inline head script applies the saved kanban/list view before first paint. */
+export const pageHead = (title: string, task = ""): string => `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="/assets/bulma.css">
+<link rel="stylesheet" href="/assets/dashboard.css">
+<script>try { document.documentElement.setAttribute("data-view", localStorage.getItem("aidlc-view") === "list" ? "list" : "kanban"); } catch (error) { /* storage disabled */ }</script>
+</head>
+<body${task ? ` data-task="${escapeHtml(task)}"` : ""} data-notify-page="${NOTIFY_PAGE}">`;
+
+/** Classic `<script src>` tags in load order (`common` first; page scripts after it). */
+export const pageScripts = (...names: ClientScript[]): string => names.map(scriptTag).join("\n");
+
+/* ---------------------------------------------------------------------------
+ * Live regions: server-rendered fragments the client polls and morphs in place.
+ * Each region carries a content hash; `/api/live` returns only regions whose
+ * hash differs from the one the client already shows.
+ * ------------------------------------------------------------------------- */
+
+/** Region names `/api/live` can render; anything else in `known` is ignored. */
+export const LIVE_REGIONS = ["notify", "daemon", "board", "detail", "drawer"] as const;
+export type LiveRegion = (typeof LIVE_REGIONS)[number];
+export const regionHash = (html: string): string => createHash("sha1").update(html).digest("base64url").slice(0, 16);
+/** Wrapper is `display: contents`, so it never affects layout (e.g. header flex items). */
+export const liveRegion = (name: LiveRegion, html: string): string => `<div class="ad-live" data-live="${name}" data-live-hash="${regionHash(html)}">${html}</div>`;
+
+/** Daemon state for the header: running/stopped, plus unresolved turn or poll
+ * errors (from the event log) while it runs, so failures are not buried in logs. */
+export const renderDaemonPill = (root: string): string => {
+  const daemon = daemonStatus(root);
+  if (!daemon.running) return `<span class="ad-pill is-ghost" data-daemon="stopped" title="start it with: aidlc-kit loop start (or New task)"><span class="ad-dot"></span>daemon stopped</span>`;
+  const errors = daemonHealth(root);
+  if (!errors.length) return `<span class="ad-pill is-success is-live" data-daemon="running" title="started ${escapeHtml(daemon.startedAt ?? "")}"><span class="ad-dot"></span>daemon running · pid ${daemon.pid}</span>`;
+  const describe = (error: DaemonError): string => `${error.taskId ? `${error.taskId}: ` : "poll: "}${error.message}${error.retryInMs ? ` (retry in ${Math.round(error.retryInMs / 1000)}s)` : ""}`;
+  const title = `daemon running · pid ${daemon.pid}\n${errors.map(describe).join("\n")}`;
+  const label = `<span class="ad-dot"></span>daemon · ${errors.length} error${errors.length === 1 ? "" : "s"}`;
+  const only = errors.length === 1 ? errors[0]?.taskId : undefined;
+  return only
+    ? `<a class="ad-pill is-warning is-live" data-daemon="error" href="/tasks/${encodeURIComponent(only)}" title="${escapeHtml(title)}">${label}</a>`
+    : `<span class="ad-pill is-warning is-live" data-daemon="error" title="${escapeHtml(title)}">${label}</span>`;
+};
+
+/** A task waiting at a human gate (not handed off): shown as a header notification. */
+export interface ReviewItem { id: string; title: string; gate: string; updatedAt?: string; feedbackPending: number }
+
+/** Every task waiting at a human gate, newest first. Handed-off tasks follow their
+ * handoff actions instead, and terminal (archived) tasks never wait at a gate. */
+export const reviewQueue = (state: WorkflowState): ReviewItem[] =>
+  Object.values(state.tasks)
+    .filter((task) => task.status === "blocked_on_user" && task.gate !== "none" && !task.handoff)
+    .map((task) => ({ id: task.id, title: task.title, gate: task.gate, updatedAt: task.updatedAt, feedbackPending: pendingFeedback(task).length }))
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+
+/** Notifications shown at first; "Load more" adds this many at a time. The client
+ * reads it from `<body data-notify-page>` (see pageHead). */
+export const NOTIFY_PAGE = 5;
+const NOTIFY_MAX = 100;
+export const notifyLimit = (raw: string | null): number => {
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? Math.min(NOTIFY_MAX, Math.max(NOTIFY_PAGE, value)) : NOTIFY_PAGE;
+};
+
+/** Header bell: a count badge plus a dropdown whose items open the task detail
+ * page (where gate feedback and approval live). Shows `limit` items and a
+ * "Load more" button for the rest. The panel's `hidden` and the toggle's
+ * `aria-expanded` are client state that live updates preserve. */
+export const renderNotifications = (reviews: ReviewItem[], currentTask = "", limit = NOTIFY_PAGE): string => {
+  const count = reviews.length;
+  const shown = reviews.slice(0, limit);
+  const remaining = count - shown.length;
+  const label = count ? `${count} task${count === 1 ? "" : "s"} waiting for your review` : "Nothing waiting for your review";
+  const items = count
+    ? `<ul class="ad-notify-list">${shown.map((task) => `<li data-key="review:${escapeHtml(task.id)}"><a class="ad-notify-item" href="/tasks/${encodeURIComponent(task.id)}" data-review-item="${escapeHtml(task.id)}"${task.id === currentTask ? ' aria-current="page"' : ""}>
+        <span class="ad-notify-row">${pill(gateLabel(task.gate), "is-warning", `gate: ${task.gate}`, false)}${task.feedbackPending ? feedbackPill(task.feedbackPending) : ""}<span class="ad-notify-time">${relativeTime(task.updatedAt)}</span></span>
+        <span class="ad-notify-title">${escapeHtml(task.title)}</span>
+        <code class="ad-notify-id">${escapeHtml(task.id)}</code>
+      </a></li>`).join("")}</ul>${remaining > 0 ? `<button type="button" class="ad-notify-more" data-notify-more>Load more <span class="has-text-grey">(${remaining} more)</span></button>` : ""}`
+    : '<p class="ad-notify-empty">Nothing waiting for your review.</p>';
+  return `<div class="ad-notify" data-notify>
+      <button type="button" class="button is-small ad-notify-toggle${count ? " has-reviews" : ""}" id="notify-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="notify-panel" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}" data-live-preserve="aria-expanded">
+        <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8a5 5 0 0 1 10 0c0 4 1.5 5.5 1.5 5.5h-13S5 12 5 8Z"/><path d="M8.5 16.5a1.6 1.6 0 0 0 3 0"/></svg>
+        ${count ? `<span class="ad-notify-badge" data-review-count="${count}">${count}</span>` : ""}
+      </button>
+      <div class="ad-notify-panel" id="notify-panel" role="region" aria-label="Needs your review" hidden data-live-preserve="hidden">
+        <header class="ad-notify-head"><strong>Needs your review</strong><span class="ad-count">${count}</span></header>
+        ${items}
+      </div>
+    </div>`;
+};
+
+export const renderHeader = (root: string, mode: UiAuthorityMode = "local", reviews: ReviewItem[] = [], currentTask = ""): string => `<header class="ad-header">
+  <div class="container is-fluid ad-header-inner">
+    <a class="ad-brand" href="/" title="Loop · AI-DLC dashboard"><span class="ad-logo" aria-hidden="true">L</span>Loop</a>
+    <span class="ad-pill ${mode === "fleet" ? "is-link" : "is-ghost"}" data-authority="${mode}" title="${mode === "fleet" ? "Canonical state lives in the coordination service" : "Canonical state lives in this checkout"}">authority · ${mode}</span>
+    ${liveRegion("daemon", renderDaemonPill(root))}
+    <span id="live-status" class="ad-pill is-warning" role="status" title="Live updates paused: the dashboard server is unreachable; retrying" hidden><span class="ad-dot"></span>reconnecting…</span>
+    <div class="ad-header-actions">
+      ${liveRegion("notify", renderNotifications(reviews, currentTask))}
+      <button class="button is-small" data-open="settings-modal" title="Settings">⚙<span class="ad-hide-mobile ml-1">Settings</span></button>
+      <button class="button is-small is-primary" data-open="new-task-modal">＋ New task<kbd class="ad-hide-mobile">N</kbd></button>
+    </div>
+  </div>
+</header>`;
+
+export const renderModals = (): string => `
+<div id="settings-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+  <div class="modal-background" data-close></div>
+  <div class="modal-card">
+    <header class="modal-card-head">
+      <p class="modal-card-title" id="settings-title">Settings</p>
+      <button class="delete" aria-label="close" data-close></button>
+    </header>
+    <section class="modal-card-body">
+      <div class="field">
+        <label class="label" for="settings-token-input">Session token</label>
+        <div class="control"><input id="settings-token-input" class="input" type="password" placeholder="paste the token printed by aidlc-kit ui" autocomplete="off" data-autofocus></div>
+        <p class="help">Printed once in the terminal that started this server. Required for New task, resume, gate feedback, and gate approve. Stored only in this browser's localStorage.</p>
+      </div>
+    </section>
+    <footer class="modal-card-foot">
+      <span class="ad-foot-start" id="settings-token-state"></span>
+      <button id="settings-token-clear" class="button is-light">Clear</button>
+      <button id="settings-token-save" class="button is-primary">Save</button>
+    </footer>
+  </div>
+</div>
+<div id="new-task-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="new-task-title">
+  <div class="modal-background" data-close></div>
+  <div class="modal-card">
+    <header class="modal-card-head">
+      <p class="modal-card-title" id="new-task-title">Start a new task</p>
+      <button class="delete" aria-label="close" data-close></button>
+    </header>
+    <section class="modal-card-body">
+      <div class="field">
+        <label class="label" for="new-task-requirement">Requirement</label>
+        <div class="control"><textarea id="new-task-requirement" class="textarea" rows="6" placeholder="Describe the feature, bug fix, or change. The first line becomes the task title." data-autofocus></textarea></div>
+        <div class="ad-field-hint"><span>The loop creates the task and starts the daemon if it is not running.</span><span id="new-task-count">0 / 8192 bytes</span></div>
+      </div>
+    </section>
+    <footer class="modal-card-foot">
+      <span class="ad-foot-start"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to submit</span>
+      <button class="button" data-close>Cancel</button>
+      <button id="new-task-submit" class="button is-primary">Create task</button>
+    </footer>
+  </div>
+</div>
+<div id="task-drawer" class="ad-drawer" role="dialog" aria-modal="true" aria-labelledby="task-drawer-title" hidden>
+  <div class="ad-drawer-backdrop" data-drawer-close></div>
+  <aside class="ad-drawer-panel" tabindex="-1">
+    <header class="ad-drawer-head">
+      <code id="task-drawer-title" class="ad-drawer-id">Task</code>
+      <a id="task-drawer-open" class="button is-small" href="#" target="_blank" rel="noopener">Open full page ↗</a>
+      <button type="button" class="delete" aria-label="Close task panel" data-drawer-close></button>
+    </header>
+    <div class="ad-drawer-body" id="task-drawer-body" data-live="drawer" data-live-hash=""><p class="has-text-grey">Loading…</p></div>
+  </aside>
+</div>
+<div id="toasts" class="ad-toasts" aria-live="polite"></div>`;

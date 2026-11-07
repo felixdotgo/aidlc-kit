@@ -149,14 +149,15 @@ test("daemonLoop backs off a failing task, stamps task ids on run events, and fo
       if (calls.length === 1) throw new Error("transient failure");
       return { status: "gate", gate: "G0_confirm" };
     };
-    const onEvent = (event: any) => {
-      events.push(event);
-      if (event.type !== "daemon_poll") return;
+    const onEvent = (event: any) => { events.push(event); };
+    // `daemon_poll` is emitted only on change, so count polls at the ownership probe (once per poll for t1).
+    const isOwned = () => {
       polls += 1;
       if (polls === 3) clock = 1000; // past the 10ms backoff window
       if (polls === 4) stop.abort();
+      return true;
     };
-    const result = await daemonLoop({ root, agent: "codex", workers: { w: "codex" }, poll: 10, signal: stop.signal, cancelSignal: cancel.signal, onEvent, now: () => clock, turn, isOwned: () => true });
+    const result = await daemonLoop({ root, agent: "codex", workers: { w: "codex" }, poll: 10, signal: stop.signal, cancelSignal: cancel.signal, onEvent, now: () => clock, turn, isOwned });
     assert.equal(result.status, "stopped");
     // poll 1: fails; poll 2: skipped (backing off); poll 3: retried and succeeds.
     assert.equal(calls.length, 2);
@@ -167,6 +168,70 @@ test("daemonLoop backs off a failing task, stamps task ids on run events, and fo
     assert.deepEqual(events.filter((event) => event.type === "daemon_poll")[1].backingOff, ["t1"]);
     assert.ok(events.filter((event) => event.type === "agent_text").every((event) => event.taskId === "t1"));
     assert.ok(events.some((event) => event.type === "daemon_turn" && event.status === "gate" && event.taskId === "t1"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/** Mirror of the dashboard's `daemonHealth` reduction (src/task-ui.ts): a turn
+ * error stays open until a `daemon_turn` for the task or a `daemon_poll` that no
+ * longer lists it; a poll error stays open until the next `daemon_poll`. */
+const health = (events: any[]) => {
+  const turnErrors = new Map<string, any>();
+  let pollError: any = null;
+  for (const event of events) {
+    switch (event.type) {
+      case "daemon_start": turnErrors.clear(); pollError = null; break;
+      case "daemon_poll_error": pollError = event; break;
+      case "daemon_poll": pollError = null; for (const id of [...turnErrors.keys()]) if (!(event.actionable ?? []).includes(id)) turnErrors.delete(id); break;
+      case "daemon_turn": turnErrors.delete(event.taskId); break;
+      case "daemon_turn_error": turnErrors.set(event.taskId, event); break;
+      default: break;
+    }
+  }
+  return [...(pollError ? ["poll"] : []), ...turnErrors.keys()];
+};
+
+test("daemonLoop emits daemon_poll only on change and keeps the dashboard health semantics", async () => {
+  const { daemonLoop } = await load();
+  const root = mkdtempSync(join(tmpdir(), "aidlc-daemon-poll-"));
+  try {
+    const stop = new AbortController();
+    const events: any[] = [];
+    const marks: number[] = [];
+    let polls = 0;
+    const lists: Record<number, string[] | Error> = {
+      1: new Error("service unreachable"), 2: ["a", "b"], 3: ["a", "b"], 4: ["a", "b"],
+      5: ["b"], 6: ["b"], 7: new Error("service unreachable"), 8: ["b"], 9: ["b"],
+    };
+    const listActionable = async () => {
+      polls += 1;
+      marks[polls] = events.length;
+      if (polls >= 9) stop.abort();
+      const value = lists[polls] ?? ["b"];
+      if (value instanceof Error) throw value;
+      return value.map((id) => ({ id }));
+    };
+    const turn = async ({ taskId }: any) => {
+      if (taskId === "a") throw new Error("a keeps failing");
+      return { status: "stopped" };
+    };
+    const result = await daemonLoop({ root, poll: 1, signal: stop.signal, onEvent: (event: any) => events.push(event), now: () => 0, turn, listActionable });
+    assert.equal(result.status, "stopped");
+    const emitted = events.filter((event) => event.type === "daemon_poll");
+    // poll 2: first after an error; 3: `a` starts backing off; 4: unchanged (skipped);
+    // 5: `a` left the actionable set; 6: unchanged; 7: error; 8: first after the error; 9: unchanged.
+    assert.deepEqual(emitted.map((event) => [event.actionable, event.backingOff ?? []]), [
+      [["a", "b"], []],
+      [["a", "b"], ["a"]],
+      [["b"], []],
+      [["b"], []],
+    ]);
+    assert.equal(events.filter((event) => event.type === "daemon_poll_error").length, 2);
+    assert.deepEqual(health(events.slice(0, marks[2])), ["poll"], "a poll error is open before the next poll");
+    assert.deepEqual(health(events.slice(0, marks[3])), ["a"], "the first successful poll after an error clears it; the turn error opens");
+    assert.deepEqual(health(events.slice(0, marks[5])), ["a"], "an unchanged poll is not emitted and leaves the turn error open");
+    assert.deepEqual(health(events.slice(0, marks[6])), [], "a poll that no longer lists the task clears its turn error");
+    assert.deepEqual(health(events.slice(0, marks[8])), ["poll"], "a poll error after a quiet stretch is open");
+    assert.deepEqual(health(events), [], "the first poll after the error is emitted even with an unchanged set");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

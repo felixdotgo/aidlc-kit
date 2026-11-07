@@ -126,6 +126,19 @@ test("local dispatch runs only the non-overlapping first item and emits build_de
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("local dispatch forwards its live-log event sink to the worker batch", async () => {
+  const { root, taskId, readTask } = buildFixture([{ id: "a", ownedPaths: ["src"] }]);
+  try {
+    const { dispatchLocalBuild } = await load();
+    const events: any[] = [];
+    const onEvent = (event: any) => { events.push(event); };
+    let forwarded: unknown;
+    await dispatchLocalBuild({ root, taskId, task: readTask(), workers: { w1: "codex" }, onEvent, ...dispatchHooks([]), runBatch: async (input: any) => { forwarded = input.onEvent; await input.onEvent({ type: "worker_turn_start", taskId, actor: "w1", itemId: "a" }); return []; } });
+    assert.equal(forwarded, onEvent);
+    assert.deepEqual(events.filter((event) => event.type === "worker_turn_start"), [{ type: "worker_turn_start", taskId, actor: "w1", itemId: "a" }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("local dispatch reconciles a done item's reported assignment so its dependent can claim the same path", async () => {
   const { root, taskId, readTask, writeTask } = buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src"], dependsOn: ["a"] }]);
   try {

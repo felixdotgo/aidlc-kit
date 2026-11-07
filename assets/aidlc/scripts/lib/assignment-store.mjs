@@ -158,6 +158,20 @@ export function reportLocalAssignment(root, taskId, assignmentId, { checkpoint =
   });
 }
 
+/** Record the integration-branch commit created for a reported assignment, so
+ * the dashboard can show exactly what the item changed. It never changes the
+ * assignment state; `reconcile` still marks the item integrated. */
+export function recordLocalIntegration(root, taskId, assignmentId, integrationCommit) {
+  safeId(taskId, "task id");
+  if (typeof integrationCommit !== "string" || !/^[a-f0-9]{40,64}$/.test(integrationCommit)) throw new Error("Invalid integration commit");
+  return locked(root, taskId, () => {
+    const value = read(root, taskId);
+    const item = value.assignments.find((entry) => entry.id === assignmentId);
+    if (!item || !["reported", "integrated"].includes(item.state)) throw new Error("Only a reported or integrated assignment can record its integration commit");
+    item.integrationCommit = integrationCommit; item.updatedAt = iso(); write(root, taskId, value); return item;
+  });
+}
+
 export function reconcileLocalAssignments(root, taskId) {
   const task = canonical(root, taskId);
   return locked(root, taskId, () => {

@@ -270,10 +270,13 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
         prompt = `Human feedback (revise the current review artifact accordingly, then re-present the gate):\n${feedback.map((text) => `- ${text}`).join("\n")}\n\n${prompt}`;
       }
       const beforeApprovals = approvalCount(current.task);
-      onEvent({ type: "turn_start", taskId, iteration: record.iteration, phase: current.action.phase, agent: record.agent });
+      // Live-log context: every event of this lead turn names its actor, phase, and item.
+      const turnContext = { taskId, actor: "lead", phase: current.action.phase, ...(typeof current.action.itemId === "string" && current.action.itemId ? { itemId: current.action.itemId } : {}) };
+      const leadEvent = (event) => onEvent(event && typeof event === "object" && !Array.isArray(event) ? { ...turnContext, ...event } : event);
+      leadEvent({ type: "turn_start", iteration: record.iteration, agent: record.agent });
       let observedId = record.sessionId;
       try {
-        const result = await driver({ agent: record.agent, root, sessionId: record.sessionId ?? undefined, prompt: `${prompt}\n\nLoop supervisor: complete the current authorized phase or item. Use canonical lifecycle commands for evidence and gates. Never approve a human gate. Stop at a gate and report progress.`, timeoutMs: limits.turnTimeoutMs, ...(cancelSignal ? { signal: cancelSignal } : {}), onSessionId: (id) => { if (typeof id !== "string" || !id) throw new Error("Invalid agent session id"); observedId = id; record.sessionId = id; record.updatedAt = iso(); writeLoopRecord(root, record); }, onEvent: (event) => { onEvent(event); if (event?.type === "lifecycle_command") { const observed = readCanonical(root, taskId); const signal = fingerprint(root, observed.task, observed.action); record.checkpoint = checkpoint(observed.task, observed.action, signal.tree, record.iteration); record.updatedAt = iso(); writeLoopRecord(root, record); } } });
+        const result = await driver({ agent: record.agent, root, sessionId: record.sessionId ?? undefined, prompt: `${prompt}\n\nLoop supervisor: complete the current authorized phase or item. Use canonical lifecycle commands for evidence and gates. Never approve a human gate. Stop at a gate and report progress.`, timeoutMs: limits.turnTimeoutMs, ...(cancelSignal ? { signal: cancelSignal } : {}), onSessionId: (id) => { if (typeof id !== "string" || !id) throw new Error("Invalid agent session id"); observedId = id; record.sessionId = id; record.updatedAt = iso(); writeLoopRecord(root, record); }, onEvent: (event) => { leadEvent(event); if (event?.type === "lifecycle_command") { const observed = readCanonical(root, taskId); const signal = fingerprint(root, observed.task, observed.action); record.checkpoint = checkpoint(observed.task, observed.action, signal.tree, record.iteration); record.updatedAt = iso(); writeLoopRecord(root, record); } } });
         if (!observedId && result?.sessionId) { observedId = result.sessionId; record.sessionId = observedId; record.updatedAt = iso(); writeLoopRecord(root, record); }
         if (!observedId) throw new Error("Agent turn ended without a resumable session id");
       } catch (error) {
@@ -282,7 +285,7 @@ export async function runLoop({ root: rootInput, taskId, agent, mode = "run", li
         if (stopping()) return stop(cancelSignal?.aborted ? "daemon cancelled the in-flight turn" : "daemon shutdown interrupted the turn");
         return pause(`agent transport failure: ${error.message}`);
       }
-      onEvent({ type: "turn_end", taskId, iteration: record.iteration });
+      leadEvent({ type: "turn_end", iteration: record.iteration });
       const refreshed = readCanonical(root, taskId);
       if (approvalCount(refreshed.task) !== beforeApprovals) return pause("Approval evidence changed during an agent turn");
       const signal = fingerprint(root, refreshed.task, refreshed.action);

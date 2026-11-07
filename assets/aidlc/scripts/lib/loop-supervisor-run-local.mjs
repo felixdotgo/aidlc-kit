@@ -133,7 +133,7 @@ export async function dispatchLocalBuild({ root, taskId, task, workers, images =
   for (const provider of new Set(jobs.map((job) => job.agent))) {
     resolvedImages[provider] = ensureImage({ root, provider, image: images[provider] ?? defaultWorkerImageTag(provider), onEvent });
   }
-  const completed = await runBatch({ root, taskId, jobs, worktreesRoot, docker: { images: resolvedImages, credentials }, signal: cancelSignal });
+  const completed = await runBatch({ root, taskId, jobs, worktreesRoot, docker: { images: resolvedImages, credentials }, onEvent, signal: cancelSignal });
   for (const result of completed) markDone(root, taskId, result.itemId);
 }
 

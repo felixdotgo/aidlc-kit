@@ -190,11 +190,13 @@ const RETRY_STATUSES = new Set(["blocked", "reconcile"]);
 /** Poll/run loop. Exported for tests (inject `turn`, `now`, and optionally `listActionable`). */
 export async function daemonLoop({ root, agent, workers, workerImages, limits, poll, signal, cancelSignal, onEvent, now = Date.now, turn = runTaskTurn, isOwned, listActionable }) {
   const backoff = new Map();
+  let lastPollKey = null; // null forces the next successful poll to be emitted
   for (;;) {
     if (signal?.aborted) return { status: "stopped" };
     let actionable;
     try { actionable = listActionable ? await listActionable() : actionableTasks(loadState(root), root, isOwned ? { isOwned } : {}); }
     catch (error) {
+      lastPollKey = null;
       // An unreachable authority (e.g. the fleet service) must not stop the daemon.
       onEvent({ type: "daemon_poll_error", message: error instanceof Error ? error.message : String(error) });
       try { await sleep(poll, undefined, { signal }); } catch (sleepError) { if (sleepError?.name === "AbortError") return { status: "stopped" }; throw sleepError; }
@@ -203,7 +205,14 @@ export async function daemonLoop({ root, agent, workers, workerImages, limits, p
     // Forget backoff for tasks that are no longer actionable (e.g. a human
     // paused or approved them), so they start fresh when they come back.
     for (const id of [...backoff.keys()]) if (!actionable.some((task) => task.id === id)) backoff.delete(id);
-    onEvent({ type: "daemon_poll", actionable: actionable.map((task) => task.id), ...(backoff.size ? { backingOff: [...backoff.keys()] } : {}) });
+    // Emit a poll only when it carries news: the first poll, the first poll
+    // after a poll error (that clears the dashboard's poll error), or a change
+    // in the actionable or backing-off sets (that clears stale turn errors).
+    const pollKey = JSON.stringify([actionable.map((task) => task.id).sort(), [...backoff.keys()].sort()]);
+    if (pollKey !== lastPollKey) {
+      onEvent({ type: "daemon_poll", actionable: actionable.map((task) => task.id), ...(backoff.size ? { backingOff: [...backoff.keys()] } : {}) });
+      lastPollKey = pollKey;
+    }
     for (const task of actionable) {
       if (signal?.aborted) return { status: "stopped" };
       const delay = backoff.get(task.id);

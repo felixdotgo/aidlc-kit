@@ -11,6 +11,8 @@ const MAX_STDERR_BYTES = 4096;
 const MAX_RESULT_CHARS = 8192;
 const MAX_STREAM_CHARS = 4096;
 const MAX_DIAGNOSTICS = 16;
+/** Upper bound for the human-readable `summary` carried by live-log events. */
+export const MAX_SUMMARY_CHARS = 240;
 
 /** One runtime enumeration for every loop provider. Host gates import this
  * list; container paths reject providers that need file-based credentials. */
@@ -20,11 +22,56 @@ export const isLoopProvider = (value) => typeof value === "string" && LOOP_PROVI
 const OPENCODE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
 
 const record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : null;
+// Best-effort secret redaction for diagnostics and live-log summaries (commands
+// now reach the event log). Over-redaction is acceptable; leaks are not.
+const SECRET_NAME = String.raw`[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASS|PWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?|AUTH)[A-Z0-9_.-]*`;
 const redact = (value) => String(value ?? "")
-  .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY))=([^\s]+)/gi, "$1=[REDACTED]")
+  // HTTP auth headers first, so the scheme word is not mistaken for the secret.
+  .replace(/\b(Authorization\s*:\s*(?:Basic|Bearer|Token|Digest)?\s*)[^\s'"]+/gi, "$1[REDACTED]")
+  .replace(/\b(x-api-key|api-key|x-auth-token|private-token|x-access-token)(\s*:\s*)[^\s'"]+/gi, "$1$2[REDACTED]")
+  .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/gi, "$1 [REDACTED]")
+  // NAME=value / NAME: value for secret-looking names (env assignments, config, JSON-ish).
+  .replace(new RegExp(`\\b(${SECRET_NAME})(\\s*[=:]\\s*)("[^"]*"|'[^']*'|[^\\s'"]+)`, "gi"), "$1$2[REDACTED]")
+  // --password value / --token=value style flags.
+  .replace(/((?<![\w-])--?(?:password|passwd|pass|pwd|token|secret|api-?key|access-?key|private-?key|auth|credentials?)(?:[= ]+))("[^"]*"|'[^']*'|[^\s'"]+)/gi, "$1[REDACTED]")
+  // Credentials embedded in URLs (scheme://user:pass@host).
+  .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[REDACTED]@")
+  // curl -u user:pass / --user user:pass.
+  .replace(/(\s(?:-u|--user)(?:\s+|=))[^\s:]+:[^\s]+/g, "$1[REDACTED]")
+  // mysql -pSECRET (password glued to -p).
+  .replace(/(\bmysql(?:dump|admin)?\b[^\n]*?\s-p)(\S+)/gi, "$1[REDACTED]")
+  // Well-known token formats.
   .replace(/\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+  .replace(/\b(?:sk|gh[pousr]|github_pat|npm|pypi|glpat|hf|xox[abposr])[_-][A-Za-z0-9_-]{8,}/g, "[REDACTED]")
+  .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED]")
+  .replace(/\bAIza[0-9A-Za-z_-]{30,}/g, "[REDACTED]")
+  .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+/g, "[REDACTED]")
+  .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[REDACTED]")
   .replace(/\s+/g, " ").trim();
 const diagnostic = (value) => redact(value).slice(0, 512);
+/** Human-readable, secret-redacted, single-line event summary (at most
+ * MAX_SUMMARY_CHARS). Returns undefined for empty input so callers can omit the
+ * field. Shared by every live-log event producer (lead drivers and workers). */
+const SUMMARY_SCAN_CHARS = 4096;
+export function summarize(value) {
+  if (value === undefined || value === null) return undefined;
+  // Only the first MAX_SUMMARY_CHARS survive, so redacting a bounded prefix leaks
+  // nothing and keeps the regexes linear-time on huge inputs (e.g. base64 blobs).
+  const raw = typeof value === "string" ? value : JSON.stringify(value) ?? "";
+  const text = redact(raw.slice(0, SUMMARY_SCAN_CHARS));
+  if (!text) return undefined;
+  return text.length > MAX_SUMMARY_CHARS ? `${text.slice(0, MAX_SUMMARY_CHARS - 1)}…` : text;
+}
+const SUMMARY_INPUT_FIELDS = ["command", "file_path", "filePath", "path", "notebook_path"];
+/** Summary of a tool invocation from its structured input: the shell command or
+ * the touched file when present, otherwise the tool name and its input keys
+ * (never the values of unknown inputs). */
+export function toolSummary(name, input) {
+  const fields = record(input);
+  for (const key of SUMMARY_INPUT_FIELDS) if (typeof fields?.[key] === "string" && fields[key].trim()) return summarize(fields[key]);
+  const keys = fields ? Object.keys(fields).slice(0, 8) : [];
+  return summarize(keys.length ? `${name ?? "tool"} ${JSON.stringify(keys)}` : name);
+}
 const isId = (value) => typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\s\x00-\x1f]/.test(value);
 const emit = async (callback, event) => { if (callback) await callback(event); };
 
@@ -53,7 +100,15 @@ registerAgentAdapter("codex", {
     if (event.type === "turn.failed" || event.type === "error") throw new Error(`codex reported ${event.type}: ${diagnostic(JSON.stringify(event.error ?? event.message ?? "unknown"))}`);
     const item = record(event.item);
     if (event.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") { context.result(item.text); await context.stream(item.text); }
-    if (event.type === "item.completed" && item?.type === "command_execution") await context.commandEvent(item.exit_code, item.status);
+    if (event.type === "item.completed" && item?.type === "command_execution") {
+      const command = typeof item.command === "string" ? item.command : undefined;
+      await context.tool("shell", summarize(command));
+      await context.commandEvent(item.exit_code, item.status, command);
+    }
+    if (event.type === "item.completed" && item?.type === "file_change" && Array.isArray(item.changes)) {
+      const paths = item.changes.map((change) => record(change)?.path).filter((path) => typeof path === "string" && path);
+      await context.tool("file_change", summarize(paths.join(", ")));
+    }
   }
 });
 registerAgentAdapter("claude", {
@@ -70,10 +125,15 @@ registerAgentAdapter("claude", {
     const message = record(event.message);
     if (Array.isArray(message?.content)) for (const block of message.content) {
       if (!record(block)) continue;
-      if (block.type === "tool_use" && typeof block.id === "string" && block.name === "Bash") context.toolUses.set(block.id, true);
+      if (block.type === "tool_use" && typeof block.name === "string" && block.name) {
+        await context.tool(block.name, toolSummary(block.name, block.input));
+        // Only shell commands map to lifecycle_command; remember the command for the result.
+        if (typeof block.id === "string" && block.name === "Bash") context.toolUses.set(block.id, typeof record(block.input)?.command === "string" ? block.input.command : "");
+      }
       if (block.type === "tool_result" && typeof block.tool_use_id === "string" && context.toolUses.has(block.tool_use_id)) {
+        const command = context.toolUses.get(block.tool_use_id);
         context.toolUses.delete(block.tool_use_id);
-        await context.commandEvent(block.is_error === true ? 1 : 0, block.is_error === true ? "failed" : "completed");
+        await context.commandEvent(block.is_error === true ? 1 : 0, block.is_error === true ? "failed" : "completed", command);
       }
     }
   }
@@ -95,11 +155,12 @@ registerAgentAdapter("opencode", {
     }
     const part = record(event.part);
     if (event.type === "text" && typeof part?.text === "string") { context.result(part.text); await context.stream(part.text); }
-    if (event.type === "tool_use" && typeof part?.tool === "string") await context.tool(part.tool);
+    const state = record(part?.state);
+    if (event.type === "tool_use" && typeof part?.tool === "string") await context.tool(part.tool, toolSummary(part.tool, state?.input));
     if (event.type === "tool_use" && part?.tool === "shell") {
-      const state = record(part.state);
       const metadata = record(record(state?.metadata)?.metadata);
-      await context.commandEvent(metadata?.exit, state?.status === "error" ? "failed" : state?.status);
+      const command = record(state?.input)?.command;
+      await context.commandEvent(metadata?.exit, state?.status === "error" ? "failed" : state?.status, typeof command === "string" ? command : undefined);
     }
     if (event.type === "step_finish" && part?.reason === "stop") context.complete();
   }
@@ -168,24 +229,27 @@ export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, 
       await emit(onSessionId, value);
     }
   };
-  const commandEvent = async (exitCode, status) => {
+  const commandEvent = async (exitCode, status, command) => {
     const safeExitCode = Number.isSafeInteger(exitCode) ? exitCode : null;
     const safeStatus = ["completed", "failed", "in_progress"].includes(status) ? status : "unknown";
-    await emit(onEvent, { type: "lifecycle_command", exitCode: safeExitCode, status: safeStatus });
+    // The command string is a redacted summary only; command output never leaves the adapter.
+    const summary = summarize(command);
+    await emit(onEvent, { type: "lifecycle_command", exitCode: safeExitCode, status: safeStatus, ...(summary ? { summary } : {}) });
     if ((safeExitCode !== null && safeExitCode !== 0) || safeStatus === "failed") addDiagnostic(`commandFailed exitCode=${String(safeExitCode ?? "unknown")} status=${safeStatus}`);
   };
   const stream = async (text) => {
     if (typeof text === "string" && text.trim()) await emit(onEvent, { type: "agent_text", text: text.slice(0, MAX_STREAM_CHARS) });
   };
-  const tool = async (name) => {
-    if (typeof name === "string" && name) await emit(onEvent, { type: "agent_tool", tool: name });
+  const tool = async (name, summary) => {
+    if (typeof name !== "string" || !name) return;
+    const safeSummary = typeof summary === "string" ? summarize(summary) : undefined;
+    await emit(onEvent, { type: "agent_tool", tool: name, ...(safeSummary ? { summary: safeSummary } : {}) });
   };
   const parseEvent = async (line) => {
     let event;
     try { event = JSON.parse(line); } catch { throw new Error(`${agent} emitted malformed JSONL`); }
     if (!record(event) || typeof event.type !== "string") throw new Error(`${agent} emitted malformed event`);
     await adapter.parse(event, { captureId, commandEvent, toolUses, stream, tool, complete: () => { completed = true; resultSeen = true; }, result: (value) => { resultText = value.slice(0, MAX_RESULT_CHARS); } });
-    await emit(onEvent, { type: "agent_event", eventType: event.type });
   };
   const queueLine = (line) => {
     processing = processing.then(() => parseEvent(line)).catch((error) => fail(error.message));

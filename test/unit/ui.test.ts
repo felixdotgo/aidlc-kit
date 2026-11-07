@@ -49,6 +49,20 @@ const startFixture = async (task: TaskState = makeTask(), withIntent = false): P
   return { base, token, root, close };
 };
 
+/** Client script URLs a page references, in load order. */
+const scriptSources = (html: string): string[] => [...html.matchAll(/<script src="([^"]+)"><\/script>/g)].map((match) => match[1] ?? "");
+
+/** A page followed by the bodies of the client scripts it loads (served from /assets), so
+ * assertions about client behaviour see the same code the browser runs. */
+const withScripts = async (base: string, html: string): Promise<string> => {
+  const bodies = await Promise.all(scriptSources(html).map(async (src) => {
+    const res = await fetch(`${base}${src}`);
+    assert.equal(res.status, 200, `${src} is served`);
+    return res.text();
+  }));
+  return [html, ...bodies].join("\n");
+};
+
 test("usage documents the ui command", () => {
   assert.match(source("src/cli/argv.ts"), /aidlc-kit ui \[path\] \[--port 4173\] \[--host 127\.0\.0\.1\]/);
 });
@@ -235,7 +249,7 @@ test("feedback proxy validates inputs and rejects a task that is not waiting at 
 test("gate detail page offers feedback before approve, and approve only opens a confirmation dialog", async () => {
   const fixture = await startFixture(makeTask({ status: "blocked_on_user" }), true);
   try {
-    const detail = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    const detail = await withScripts(fixture.base, await (await fetch(`${fixture.base}/tasks/task-a`)).text());
     const feedbackAt = detail.indexOf('id="feedback-panel"');
     const approveAt = detail.indexOf('id="approve-panel"');
     assert.ok(feedbackAt > 0 && approveAt > feedbackAt, "feedback block renders before the approve block");
@@ -349,7 +363,7 @@ test("markdownToHtml renders a minimal subset and escapes HTML", async () => {
 test("dashboard renders kanban as the default view with phase columns, modals, and the task side panel", async () => {
   const fixture = await startFixture(makeTask());
   try {
-    const html = await (await fetch(`${fixture.base}/`)).text();
+    const html = await withScripts(fixture.base, await (await fetch(`${fixture.base}/`)).text());
     assert.match(html, /id="kanban-view"/);
     assert.match(html, /<div id="task-drawer" class="ad-drawer" role="dialog" aria-modal="true"[^>]*hidden>/);
     assert.match(html, /id="task-drawer-open"/);
@@ -401,13 +415,40 @@ test("task detail page declares `post` exactly once so the approve handler is no
   const fixture = await startFixture(makeTask({ status: "blocked_on_user" }), true);
   try {
     const html = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
-    // The shared script and the detail script are both inlined on the detail
-    // page. A second top-level `const post` in the detail script would throw
-    // "Identifier 'post' has already been declared" at parse time, silently
-    // disabling the approve-button handler (regression guard for the UI bug).
-    assert.equal((html.match(/const post\s*=/g) ?? []).length, 1);
+    // The shared script and the detail scripts are classic scripts sharing one
+    // global scope. Loading the shared script twice, or a second top-level
+    // `const post` in a detail script, would throw "Identifier 'post' has already
+    // been declared" at parse time, silently disabling the approve-button handler
+    // (regression guard for the UI bug).
+    const sources = scriptSources(html);
+    assert.equal(sources.filter((src) => src.startsWith("/assets/common.js?")).length, 1, "the shared script is referenced exactly once");
+    assert.deepEqual(sources.map((src) => src.replace(/\?v=[0-9a-f]+$/, "")), ["/assets/common.js", "/assets/detail.js", "/assets/live-log.js"], "shared script first, then the detail-page scripts");
+    const common = await (await fetch(`${fixture.base}${sources[0]}`)).text();
+    assert.equal((common.match(/const post\s*=/g) ?? []).length, 1, "the shared script defines post");
+    const all = await withScripts(fixture.base, html);
+    assert.equal((all.match(/const post\s*=/g) ?? []).length, 1);
     assert.match(html, /approve-button/);
-    assert.match(html, /\/api\/gate\/approve/);
+    assert.match(all, /\/api\/gate\/approve/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("client scripts are whitelisted static assets served as JavaScript with cache-busting URLs", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const home = await (await fetch(`${fixture.base}/`)).text();
+    assert.doesNotMatch(home.slice(home.indexOf("<body")), /<script>/, "no inline script in the page body");
+    assert.deepEqual(scriptSources(home).map((src) => src.replace(/\?v=[0-9a-f]{12}$/, "")), ["/assets/common.js", "/assets/dashboard.js", "/assets/live-log.js"], "dashboard loads the shared script, then its own (live-log for the side panel's compact log)");
+    assert.match(home, /<body data-notify-page="5">/, "the notification page size comes from the server");
+    for (const name of ["common", "dashboard", "detail", "live-log"]) {
+      const res = await fetch(`${fixture.base}/assets/${name}.js`);
+      assert.equal(res.status, 200, name);
+      assert.equal(res.headers.get("content-type"), "text/javascript; charset=utf-8", name);
+      assert.ok((await res.text()).length > 0, `${name}.js is not empty`);
+    }
+    assert.equal((await fetch(`${fixture.base}/assets/x.js`)).status, 404);
+    assert.equal((await fetch(`${fixture.base}/assets/common.js`, { method: "POST" })).status, 404);
   } finally {
     await fixture.close();
   }
@@ -652,6 +693,220 @@ test("SSE resumes from a Last-Event-ID offset and restarts after truncation", as
   }
 });
 
+/** Every complete SSE event block: its `event:` name (default `message`), `id`, and raw `data`. */
+const sseEvents = (text: string): Array<{ event: string; id: string; data: string }> => text.split("\n\n").slice(0, -1)
+  .map((block) => block.split("\n").filter((line) => !line.startsWith(":")))
+  .filter((lines) => lines.some((line) => line.startsWith("data: ")))
+  .map((lines) => ({
+    event: lines.find((line) => line.startsWith("event: "))?.slice(7) ?? "message",
+    id: lines.find((line) => line.startsWith("id: "))?.slice(4) ?? "",
+    data: lines.filter((line) => line.startsWith("data: ")).map((line) => line.slice(6)).join("\n"),
+  }));
+/** `n` of every message event (reset events skipped). */
+const sseNumbers = (text: string): unknown[] => sseEvents(text).filter((event) => event.event === "message").map((event) => (JSON.parse(event.data) as { n: unknown }).n);
+const sleep = (ms: number): Promise<void> => new Promise((resolveWait) => setTimeout(resolveWait, ms));
+const jsonl = (...values: unknown[]): string => values.map((n) => `${JSON.stringify({ type: "agent_text", taskId: "task-a", n })}\n`).join("");
+
+test("SSE streams a task's own event log: replays .1 then the current file, resumes across rotation", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const loop = join(fixture.root, ".agents", "data", "loop");
+    const events = join(loop, "events");
+    const path = join(events, "task-a.jsonl");
+    mkdirSync(events, { recursive: true });
+    // The global log also has task-a events: the per-task file wins when it exists.
+    writeFileSync(join(loop, "ui-events.jsonl"), jsonl("global"));
+    writeFileSync(`${path}.1`, jsonl(1, 2, 3));
+    writeFileSync(path, jsonl(4, 5));
+    const url = `${fixture.base}/api/events?task-id=task-a`;
+
+    const first = await readSse(url, (text) => sseNumbers(text).length >= 5);
+    assert.deepEqual(sseNumbers(first), [1, 2, 3, 4, 5], "older generation first, then the current file");
+    assert.equal(sseEvents(first)[0]?.event, "reset", "a replay starts with a reset event");
+    const ids = sseEvents(first).filter((event) => event.event === "message").map((event) => event.id);
+    assert.ok(ids.every((id) => /^t:\d+:\d+$/.test(id)), `per-task ids are marked: ${ids.join(",")}`);
+
+    // Resume from the last id: only new lines, no reset.
+    appendFileSync(path, jsonl(6));
+    const resumed = await readSse(url, (text) => sseNumbers(text).length >= 1, { "last-event-id": ids.at(-1)! });
+    assert.deepEqual(sseNumbers(resumed), [6]);
+    assert.ok(sseEvents(resumed).every((event) => event.event === "message"));
+
+    // The file rotated after the client's last id: the rest of `.1`, then the new file.
+    const lastId = sseEvents(resumed).at(-1)!.id;
+    appendFileSync(path, jsonl(7));
+    const { renameSync } = await import("node:fs");
+    renameSync(path, `${path}.1`);
+    writeFileSync(path, jsonl(8));
+    const acrossRotation = await readSse(url, (text) => sseNumbers(text).length >= 2, { "last-event-id": lastId });
+    assert.deepEqual(sseNumbers(acrossRotation), [7, 8]);
+
+    // A global-log id or an unknown inode is stale: reset and replay the tail.
+    for (const stale of ["1:10", "t:1:999999"]) {
+      const replayed = await readSse(url, (text) => sseNumbers(text).length >= 4, { "last-event-id": stale });
+      assert.equal(sseEvents(replayed)[0]?.event, "reset", stale);
+      assert.deepEqual(sseNumbers(replayed), [4, 5, 6, 7, 8].slice(-sseNumbers(replayed).length), stale);
+    }
+
+    // Rotation while streaming: lines appended just before the rename are not lost.
+    const controller = new AbortController();
+    const response = await fetch(url, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    const pump = (async () => { try { for (;;) { const next = await reader.read(); if (next.done) break; text += decoder.decode(next.value, { stream: true }); } } catch { /* aborted */ } })();
+    await sleep(300);
+    const before = sseNumbers(text).length;
+    appendFileSync(path, jsonl(9));
+    renameSync(path, `${path}.1`);
+    writeFileSync(path, jsonl(10));
+    await sleep(800);
+    assert.deepEqual(sseNumbers(text).slice(before), [9, 10]);
+    controller.abort();
+    await pump;
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("SSE without a per-task log filters the global log; bad task ids and symlinked task logs are refused", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const loop = join(fixture.root, ".agents", "data", "loop");
+    mkdirSync(loop, { recursive: true });
+    writeFileSync(join(loop, "ui-events.jsonl"), `${JSON.stringify({ type: "agent_text", taskId: "other", n: 0 })}\n${jsonl("global")}`);
+
+    // Old logs (no per-task file): today's behaviour, global ids, no reset event.
+    const fallback = await readSse(`${fixture.base}/api/events?task-id=task-a`, (text) => sseNumbers(text).length >= 1);
+    assert.deepEqual(sseNumbers(fallback), ["global"]);
+    assert.ok(sseEvents(fallback).every((event) => event.event === "message" && /^\d+:\d+$/.test(event.id)));
+
+    for (const bad of ["..", "-x", "a/b", "a b", "x".repeat(129)]) {
+      const res = await fetch(`${fixture.base}/api/events?task-id=${encodeURIComponent(bad)}`);
+      assert.equal(res.status, 400, bad);
+      assert.match(res.headers.get("content-type") ?? "", /application\/json/);
+      await res.text();
+    }
+
+    // A planted symlink is never followed: the stream falls back to the global log.
+    const { symlinkSync } = await import("node:fs");
+    const outside = mkdtempSync(join(tmpdir(), "aidlc-events-outside-"));
+    try {
+      writeFileSync(join(outside, "secret.jsonl"), jsonl("secret"));
+      mkdirSync(join(loop, "events"));
+      symlinkSync(join(outside, "secret.jsonl"), join(loop, "events", "task-a.jsonl"));
+      const linkedFile = await readSse(`${fixture.base}/api/events?task-id=task-a`, (text) => sseNumbers(text).length >= 1, {}, 1500);
+      assert.deepEqual(sseNumbers(linkedFile), ["global"]);
+      rmSync(join(loop, "events"), { recursive: true });
+      // A symlinked events directory is refused as well.
+      writeFileSync(join(outside, "task-a.jsonl"), jsonl("secret"));
+      symlinkSync(outside, join(loop, "events"));
+      const linkedDir = await readSse(`${fixture.base}/api/events?task-id=task-a`, (text) => sseNumbers(text).length >= 1, {}, 1500);
+      assert.deepEqual(sseNumbers(linkedDir), ["global"]);
+    } finally { rmSync(outside, { recursive: true, force: true }); }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("task page hosts the full live log with filter and raw controls; the side panel a compact one", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const page = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    const full = page.slice(page.indexOf('id="live-log"'), page.indexOf("</section>", page.indexOf('id="live-log"')));
+    assert.match(full, /data-live-ignore data-live-log data-log-mode="full"/);
+    assert.match(full, /data-task-id="task-a"/);
+    assert.match(full, /data-log-filter="important" aria-pressed="true"/);
+    assert.match(full, /data-log-filter="all" aria-pressed="false"/);
+    assert.match(full, /data-log-raw aria-pressed="false"[^>]*>Raw JSON</);
+    assert.match(full, /id="log-follow"/);
+    assert.match(full, /id="log-clear"/);
+    assert.match(full, /id="log" class="log-panel" data-log-body/);
+    assert.equal((page.match(/data-live-log/g) ?? []).length, 1, "the task page has one log");
+
+    const fragment = await (await fetch(`${fixture.base}/partial/tasks/task-a`)).text();
+    assert.match(fragment, /data-key="drawer-log:task-a" data-live-ignore data-live-log data-log-mode="compact" data-log-limit="20"/);
+    assert.match(fragment, /<a href="\/tasks\/task-a#live-log" data-log-open>Open full log/);
+    assert.doesNotMatch(fragment, /id="live-log"|id="log"|data-log-filter|data-log-raw/, "no page ids or full-log controls in the side panel");
+    assert.ok(fragment.indexOf("data-live-log") < fragment.indexOf("<h2>Artifacts</h2>"), "the compact log sits near the top of the side panel");
+
+    const script = await fetch(`${fixture.base}/assets/live-log.js`);
+    assert.equal(script.status, 200);
+    assert.equal(script.headers.get("content-type"), "text/javascript; charset=utf-8");
+    const body = await script.text();
+    assert.match(body, /new EventSource\("\/api\/events\?task-id="/);
+    assert.match(body, /MutationObserver/, "logs injected later (side panel) are started");
+    assert.match(body, /addEventListener\("reset"/);
+    assert.doesNotMatch(body, /innerHTML/, "event data never goes through innerHTML");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("live-log client turns events into short human sentences", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const code = await (await fetch(`${fixture.base}/assets/live-log.js`)).text();
+    const { runInNewContext } = await import("node:vm");
+    const window: Record<string, any> = { addEventListener: () => undefined };
+    runInNewContext(code, {
+      window,
+      document: { querySelectorAll: () => [], body: { getAttribute: () => null } },
+      MutationObserver: class { observe(): void { /* no DOM */ } },
+      localStorage: { getItem: () => null, setItem: () => undefined },
+      queueMicrotask,
+    });
+    // Results cross the vm realm: re-parse them so deepEqual compares plain values.
+    const describe = (event: Record<string, unknown>, ctx?: Record<string, unknown>): { actor: string; parts: any[]; tone: string; full?: string; turn?: string; noise: boolean; system: boolean; title?: string } =>
+      JSON.parse(JSON.stringify(window.aidlcLiveLog.describe(event, ctx)));
+    const sentence = (event: Record<string, unknown>): string => describe(event, { taskId: "task-a" }).parts.map((part) => typeof part === "string" ? part : part.code ?? part.link).join("");
+
+    assert.equal(sentence({ type: "agent_tool", tool: "Bash", summary: "npm test" }), "ran npm test");
+    assert.equal(sentence({ type: "agent_tool", tool: "Edit", summary: "src/ui/server.ts" }), "edited src/ui/server.ts");
+    assert.equal(sentence({ type: "agent_tool", tool: "Read", summary: "README.md" }), "read README.md");
+    assert.equal(sentence({ type: "agent_tool", tool: "Edit" }), "used tool Edit", "no summary: the tool name");
+    assert.deepEqual(describe({ type: "agent_tool", tool: "Bash", summary: "npm test" }).parts[1], { code: "npm test" });
+
+    const ok = describe({ type: "lifecycle_command", exitCode: 0, status: "completed", summary: "state.mjs task next t" });
+    assert.equal(sentence({ type: "lifecycle_command", exitCode: 0, status: "completed", summary: "state.mjs task next t" }), "command state.mjs task next t → exit 0");
+    assert.equal(ok.tone, "ok");
+    assert.equal(describe({ type: "lifecycle_command", exitCode: 2, status: "completed" }).tone, "error");
+    assert.equal(describe({ type: "lifecycle_command", exitCode: null, status: "failed" }).tone, "error");
+
+    const text = describe({ type: "agent_text", text: "Plan ready.\nDetails follow\nmore" });
+    assert.deepEqual(text.parts, ["Plan ready."]);
+    assert.equal(text.full, "Plan ready.\nDetails follow\nmore");
+    assert.equal(describe({ type: "agent_text", text: "one line" }).full, undefined);
+
+    assert.equal(sentence({ type: "job_integrated", itemId: "ui-split", commit: "abc1234def5678" }), "integrated item ui-split (abc1234)");
+    assert.equal(sentence({ type: "job_integrated", itemId: "x", commitSha: "fedcba987" }), "integrated item x (fedcba9)", "fleet field name");
+    assert.equal(sentence({ type: "worker_reported", commit: "1234567890", changedPaths: ["a", "b"] }), "worker reported 2 files (1234567)");
+    const gate = describe({ type: "gate", taskId: "task-a", gate: "G1_review" });
+    assert.equal(sentence({ type: "gate", gate: "G1_review" }), "waiting for your review at Approve plan · open review");
+    assert.deepEqual(gate.parts.at(-1), { link: "open review", href: "/tasks/task-a#approve-panel" });
+    assert.equal(gate.tone, "warn");
+    assert.equal(sentence({ type: "daemon_turn_error", message: "agent crashed", failures: 2, retryInMs: 30000 }), "loop turn failed: agent crashed — retry #2 in 30s");
+    assert.equal(sentence({ type: "loop_stopped", reason: "max turns" }), "loop stopped: max turns");
+    assert.equal(sentence({ type: "diagnostic", message: "Could not record integration commit" }), "Could not record integration commit");
+
+    // Turns: header label; old-schema events default their actor.
+    assert.equal(describe({ type: "turn_start", iteration: 2, phase: "build", agent: "claude", actor: "lead" }).turn, "Turn 3 · build · lead/claude");
+    assert.equal(describe({ type: "worker_turn_start", iteration: 0, agent: "codex", actor: "w1", phase: "build", itemId: "ui" }).turn, "Turn 1 · build · w1/codex · item ui");
+    assert.equal(describe({ type: "agent_tool", tool: "Bash" }).actor, "lead");
+    assert.equal(describe({ type: "agent_text", text: "x", actor: "w1" }).actor, "w1");
+    assert.equal(describe({ type: "daemon_turn", status: "gate", gate: "G0_confirm" }).actor, "loop");
+
+    // Important mode hides bookkeeping; unknown events never dump JSON.
+    for (const type of ["turn_completed", "daemon_poll", "agent_event", "resume", "context_changed"]) assert.equal(describe({ type }).noise, true, type);
+    for (const type of ["agent_tool", "lifecycle_command", "gate", "job_integrated", "turn_end"]) assert.equal(describe({ type }).noise, false, type);
+    assert.equal(sentence({ type: "mystery", message: "something happened", extra: { a: 1 } }), "something happened");
+    assert.equal(sentence({ type: "mystery", summary: "short summary" }), "short summary");
+    assert.equal(sentence({ type: "mystery", extra: { a: 1 } }), "mystery");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("loop-stream sidecar creates its directory and rotates at the size cap", async () => {
   const base = mkdtempSync(join(tmpdir(), "aidlc-events-rotate-"));
   const logPath = join(base, "nested", "dir", "events.jsonl");
@@ -738,7 +993,7 @@ test("live endpoint returns only changed regions and reflects daemon-side state 
   const fixture = await startFixture(makeTask({ status: "active", phase: "plan", gate: "G1_review" }), true);
   try {
     const home = await (await fetch(`${fixture.base}/`)).text();
-    assert.doesNotMatch(home, /location\.reload/, "actions refresh regions in place, never the whole page");
+    assert.doesNotMatch(await withScripts(fixture.base, home), /location\.reload/, "actions refresh regions in place, never the whole page");
     const known = liveHashes(home, ["notify", "daemon", "board"]);
     assert.doesNotMatch(known, /missing/, "every dashboard region carries a hash");
     const live = async (query: string): Promise<any> => (await fetch(`${fixture.base}/api/live?${query}`)).json();
@@ -760,7 +1015,7 @@ test("live endpoint returns only changed regions and reflects daemon-side state 
 
     // Detail page: the region re-renders with the gate controls; the live log is client-owned.
     const detail = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
-    assert.match(detail, /<body data-task="task-a">/);
+    assert.match(detail, /<body data-task="task-a"[ >]/);
     assert.match(detail, /id="live-log" data-live-ignore/);
     assert.match(detail, /id="approve-modal"[^>]*data-live-preserve="class"/, "an open dialog survives a live update");
     const detailKnown = liveHashes(detail, ["notify", "detail"]);
@@ -973,7 +1228,7 @@ test("dashboard rejects foreign Host headers, cross-origin posts, and body-only 
     assert.equal(crossSite.status, 403);
     const bodyToken = await rawRequest(fixture.base, "/api/loop/resume", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", Host: `127.0.0.1:${port}` }, body: `taskId=task-a&token=${fixture.token}` });
     assert.equal(bodyToken.status, 401, "a token in a form body (CSRF-able) is not accepted");
-    const html = await (await fetch(`${fixture.base}/`)).text();
+    const html = await withScripts(fixture.base, await (await fetch(`${fixture.base}/`)).text());
     assert.match(html, /token=\(\[\^&\]\+\)/, "the page adopts the #token= login link");
     assert.match(html, /history\.replaceState\(history\.state, "", location\.pathname \+ location\.search\)/);
   } finally { await fixture.close(); }

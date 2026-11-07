@@ -325,11 +325,21 @@ Where things live (this is the #1 source of confusion):
 - **Task buttons follow the status:** a `paused` task shows **resume** (sets it back to
   `active`); a `blocked_on_user` task shows **review**, which opens the detail page (where
   both feedback and approve live).
-- **The live log (bottom of the detail page)** shows only that task's events (on connect, the
-  last 200 of them found in the most recent 256 KB of the file, then live). It reads the fixed file `.agents/data/loop/ui-events.jsonl`, which
-  rotates to `.jsonl.1` at 5 MB. The daemon only writes there when `AIDLC_LOOP_EVENT_LOG`
-  points at that exact path: a daemon started from the dashboard sets it automatically; a
-  **manually started** daemon needs the export from §5.1.
+- **The live log (bottom of the detail page)** shows only that task's events as readable
+  lines (`time · actor · what happened`, grouped by turn): which command the lead or a worker
+  ran and its exit code, which files it edited, what a worker reported, which item was
+  integrated, and when the task waits for your review. **Important** (default) hides
+  bookkeeping events; **All** shows everything; **Raw JSON** shows the original events. The
+  side panel shows the last 20 important lines. On connect it replays the last 200 events of
+  the task's own history file `.agents/data/loop/events/<task-id>.jsonl` (1 MiB, one `.1`
+  generation), then follows live; older tasks without that file fall back to the global
+  `.agents/data/loop/ui-events.jsonl` (rotated to `.jsonl.1` at 5 MB). The daemon only writes
+  events when `AIDLC_LOOP_EVENT_LOG` points at the global file: a daemon started from the
+  dashboard sets it automatically; a **manually started** daemon needs the export from §5.1.
+- **Changes** (work-items panel, side panel, and the Review implementation gate panel) opens
+  `/tasks/<id>/changes`: the files each work item changed and their diff, taken from the
+  commits the local workers recorded; a task without loop records shows the uncommitted
+  working tree instead.
 
 Gate approval stays equally available on the trusted terminal (`loop-gate.mjs`, §5.4), which
 needs no token.
@@ -457,17 +467,22 @@ without it keeps failing until restarted.
 
 ### 9.6 Web dashboard live log is empty / stuck on "connecting…"
 
-- The live log reads a **fixed** file `.agents/data/loop/ui-events.jsonl`; the daemon only
-  writes there when `AIDLC_LOOP_EVENT_LOG` points at that exact path. A manually started
+- The live log reads `.agents/data/loop/events/<task-id>.jsonl`, falling back to the
+  **fixed** global file `.agents/data/loop/ui-events.jsonl`; the daemon only writes either
+  when `AIDLC_LOOP_EVENT_LOG` points at that exact path. A manually started
   daemon without that export produces no events — see §5.1. Restart the daemon after setting
   it.
-- The live log is only on the task **detail** page (`/tasks/<id>`), not the dashboard.
+- The full live log is on the task **detail** page (`/tasks/<id>`); the side panel shows only
+  the last 20 important lines.
 - A stopped daemon produces no events. The dashboard header shows whether it is running;
   check `.agents/data/loop/daemon.log` for start-up errors.
-- The detail-page log is filtered to that task; daemon-wide events (`daemon_poll`) appear
-  only in the raw file.
-- Check `tail -f .agents/data/loop/ui-events.jsonl` directly: if the file grows with
-  `daemon_poll` lines, the daemon is healthy and only the browser side is stale (hard refresh).
+- The detail-page log is filtered to that task; daemon-wide events (`daemon_poll`, written
+  only when the actionable set or error state changes) appear only in the global file. If
+  **Important** shows little, switch to **All** or **Raw JSON**.
+- Check `tail -f .agents/data/loop/events/<task-id>.jsonl` (or the global
+  `ui-events.jsonl`) directly: if it grows while the page does not, only the browser side is
+  stale (hard refresh). A quiet global file is normal when nothing changes, because idle
+  polls are no longer logged.
 
 ### 9.7 Task pauses immediately after I approve a gate; daemon polls `actionable: []`
 
