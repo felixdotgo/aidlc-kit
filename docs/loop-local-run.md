@@ -275,7 +275,7 @@ every start; use `--token-file ~/.aidlc-ui-token` (outside the project, mode `60
 if missing) to keep the browser signed in across restarts. **⚙ Settings** still
 accepts a pasted token. Requests from another origin or with a foreign `Host` header are
 rejected `403` (see [Command reference](./command-reference.md#dashboard-authentication)).
-The header shows the authority (`authority · local`) and whether the daemon is running. The page follows the system light/dark preference
+The header shows the authority (`authority · local`), whether the daemon is running, and a bell listing tasks that need your review. The page follows the system light/dark preference
 automatically (Bulma plus the flat `assets/ui/dashboard.css` theme layer) and uses the full
 window width; results of actions appear as toasts in the bottom-right corner. Shortcuts:
 <kbd>N</kbd> new task, <kbd>/</kbd> search, <kbd>Esc</kbd> close the side panel or a dialog.
@@ -283,8 +283,8 @@ window width; results of actions appear as toasts in the bottom-right corner. Sh
 Where things live (this is the #1 source of confusion):
 
 - **Gate approval button is only on the full task detail page** (`/tasks/<task-id>`), **not
-  on the dashboard**. Tasks waiting at a gate are listed under **Needs your review** at the
-  top of the dashboard; **Open review →** jumps to their detail page. Otherwise click a task to
+  on the dashboard**. Tasks waiting at a gate appear under the **bell** in the header (on every
+  page; the badge shows how many); click an entry to jump to its detail page. Otherwise click a task to
   open it in the **side panel** (it slides in from the right and adds `?task=<task-id>` to the
   URL, so refresh or a shared link reopens it and Back closes it) and press **Open full page ↗**,
   or ctrl/cmd-click / middle-click the task link. Both the side panel and the detail page show a

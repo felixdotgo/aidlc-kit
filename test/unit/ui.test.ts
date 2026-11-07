@@ -692,26 +692,36 @@ test("malformed or non-object JSON bodies are client errors, and a failing loop 
   }
 });
 
-test("dashboard shows stats, the review queue, filters, and phase steppers", async () => {
+test("dashboard drops the stat cards and lists gate reviews as header notifications", async () => {
   const fixture = await startFixture(makeTask({ status: "blocked_on_user", phase: "plan", gate: "G1_review" }));
   try {
     const html = await (await fetch(`${fixture.base}/`)).text();
-    assert.match(html, /class="ad-stats"/);
-    assert.match(html, /data-stat-filter="blocked_on_user"/);
-    assert.match(html, /Needs your review/);
-    assert.match(html, /href="\/tasks\/task-a">Open review →<\/a>/);
+    assert.doesNotMatch(html, /class="ad-stats"|data-stat-filter/, "status stat cards are gone");
+    assert.doesNotMatch(html, /class="ad-attention"/, "the inline review queue is gone");
+    const header = html.slice(html.indexOf('<header class="ad-header">'), html.indexOf("<main"));
+    assert.match(header, /id="notify-toggle"[^>]*aria-expanded="false"[^>]*aria-label="1 task waiting for your review"/);
+    assert.match(header, /data-review-count="1">1</);
+    assert.match(header, /<a class="ad-notify-item" href="\/tasks\/task-a" data-review-item="task-a">/, "a notification opens the task detail page");
+    assert.match(header, /Approve plan/);
     assert.match(html, /id="task-search"/);
     assert.match(html, /id="filter-status"/);
     assert.match(html, /aria-label="Phase 2 of 5: plan"/);
     assert.match(html, /data-status="blocked_on_user"/);
     assert.match(html, /id="toasts"/);
+
+    const detail = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    assert.match(detail, /data-review-item="task-a" aria-current="page"/, "the detail page header marks the open review");
+    assert.doesNotMatch(await (await fetch(`${fixture.base}/partial/tasks/task-a`)).text(), /id="notify-panel"/, "the side-panel fragment has no header");
   } finally {
     await fixture.close();
   }
 
   const quiet = await startFixture(makeTask());
   try {
-    assert.doesNotMatch(await (await fetch(`${quiet.base}/`)).text(), /Needs your review/);
+    const html = await (await fetch(`${quiet.base}/`)).text();
+    assert.match(html, /aria-label="Nothing waiting for your review"/);
+    assert.doesNotMatch(html, /data-review-count|data-review-item/);
+    assert.match(html, /class="ad-notify-empty"/);
   } finally {
     await quiet.close();
   }

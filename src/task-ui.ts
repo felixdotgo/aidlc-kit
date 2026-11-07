@@ -719,6 +719,19 @@ window.addEventListener("popstate", () => {
   const id = drawerTaskFromUrl();
   if (id) openTaskDrawer(id, { push: false }); else closeTaskDrawer({ push: false });
 });
+// Header notifications: the bell toggles a dropdown of tasks waiting at a gate;
+// each item is a plain link to the task detail page.
+const notifyToggle = () => document.getElementById("notify-toggle");
+const notifyOpen = () => { const panel = document.getElementById("notify-panel"); return !!panel && !panel.hidden; };
+const setNotify = (open, options = {}) => {
+  const button = notifyToggle();
+  const panel = document.getElementById("notify-panel");
+  if (!button || !panel) return;
+  panel.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  if (open) { const first = panel.querySelector("a[href]"); if (first && options.focus) first.focus(); }
+  else if (options.restore) button.focus();
+};
 const isTyping = (target) => !!target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 const REQUIREMENT_LIMIT = 8192;
 // Login link: \`aidlc-kit ui\` prints /#token=<token>. Store it and drop it from the address bar
@@ -738,8 +751,11 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("[data-open]").forEach((el) => el.addEventListener("click", () => openModal(el.getAttribute("data-open"))));
   document.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", () => closeAllModals()));
   document.querySelectorAll("[data-drawer-close]").forEach((el) => el.addEventListener("click", () => closeTaskDrawer()));
+  const bell = notifyToggle();
+  if (bell) bell.addEventListener("click", (event) => { event.stopPropagation(); setNotify(!notifyOpen(), { focus: event.detail === 0 }); });
+  document.addEventListener("click", (event) => { if (notifyOpen() && !event.target.closest("[data-notify]")) setNotify(false); });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { if (document.querySelector(".modal.is-active")) closeAllModals(); else closeTaskDrawer(); return; }
+    if (event.key === "Escape") { if (notifyOpen()) setNotify(false, { restore: true }); else if (document.querySelector(".modal.is-active")) closeAllModals(); else closeTaskDrawer(); return; }
     if (event.key === "Tab" && drawerOpen() && !document.querySelector(".modal.is-active")) {
       const panel = drawerEl().querySelector(".ad-drawer-panel");
       const focusable = [...panel.querySelectorAll("a[href], button:not([disabled]), input, select, textarea, summary, [tabindex]:not([tabindex='-1'])")].filter((node) => node.offsetParent !== null);
@@ -833,17 +849,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const filtered = terms.length || status || risk;
     if (resultCount) resultCount.textContent = filtered ? visible + " of " + total + " tasks" : total + (total === 1 ? " task" : " tasks");
     document.querySelectorAll("[data-no-match]").forEach((el) => el.classList.toggle("is-visible", !!filtered && visible === 0));
-    document.querySelectorAll("[data-stat-filter]").forEach((el) => el.setAttribute("aria-pressed", String(el.getAttribute("data-stat-filter") === status && !terms.length && !risk)));
   };
   [search, statusFilter, riskFilter].forEach((el) => { if (el) el.addEventListener("input", applyFilter); });
-  document.querySelectorAll("[data-stat-filter]").forEach((el) => el.addEventListener("click", () => {
-    if (!statusFilter) return;
-    const value = el.getAttribute("data-stat-filter") || "";
-    statusFilter.value = statusFilter.value === value ? "" : value;
-    if (search) search.value = "";
-    if (riskFilter) riskFilter.value = "";
-    applyFilter();
-  }));
   const clearFilters = document.getElementById("filter-clear");
   if (clearFilters) clearFilters.addEventListener("click", () => { if (search) search.value = ""; if (statusFilter) statusFilter.value = ""; if (riskFilter) riskFilter.value = ""; applyFilter(); });
   if (search || statusFilter) applyFilter();
@@ -862,7 +869,7 @@ document.addEventListener("click", (event) => {
 </script>`;
 
 /* ---------------------------------------------------------------------------
- * Dashboard: stats, review queue, filters, kanban (default) + list toggle.
+ * Dashboard: header notifications, filters, kanban (default) + list toggle.
  * ------------------------------------------------------------------------- */
 
 interface CardTask { id: string; title: string; phase: string; gate: string; status: string; risk: string; areas: string[]; updatedAt?: string; feedbackPending?: number }
@@ -883,12 +890,48 @@ const renderDaemonPill = (root: string): string => {
     : `<span class="ad-pill is-ghost" title="start it with: aidlc-kit loop start (or New task)"><span class="ad-dot"></span>daemon stopped</span>`;
 };
 
-const renderHeader = (root: string, mode: UiAuthorityMode = "local"): string => `<header class="ad-header">
+/** A task waiting at a human gate (not handed off): shown as a header notification. */
+interface ReviewItem { id: string; title: string; gate: string; updatedAt?: string; feedbackPending: number }
+
+/** Every task waiting at a human gate, newest first. Handed-off tasks follow their
+ * handoff actions instead, and terminal (archived) tasks never wait at a gate. */
+const reviewQueue = (state: WorkflowState): ReviewItem[] =>
+  Object.values(state.tasks)
+    .filter((task) => task.status === "blocked_on_user" && task.gate !== "none" && !task.handoff)
+    .map((task) => ({ id: task.id, title: task.title, gate: task.gate, updatedAt: task.updatedAt, feedbackPending: pendingFeedback(task).length }))
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+
+/** Header bell: a count badge plus a dropdown whose items open the task detail
+ * page (where gate feedback and approval live). */
+const renderNotifications = (reviews: ReviewItem[], currentTask = ""): string => {
+  const count = reviews.length;
+  const label = count ? `${count} task${count === 1 ? "" : "s"} waiting for your review` : "Nothing waiting for your review";
+  const items = count
+    ? `<ul class="ad-notify-list">${reviews.map((task) => `<li><a class="ad-notify-item" href="/tasks/${encodeURIComponent(task.id)}" data-review-item="${escapeHtml(task.id)}"${task.id === currentTask ? ' aria-current="page"' : ""}>
+        <span class="ad-notify-row">${pill(gateLabel(task.gate), "is-warning", `gate: ${task.gate}`, false)}${task.feedbackPending ? feedbackPill(task.feedbackPending) : ""}<span class="ad-notify-time">${relativeTime(task.updatedAt)}</span></span>
+        <span class="ad-notify-title">${escapeHtml(task.title)}</span>
+        <code class="ad-notify-id">${escapeHtml(task.id)}</code>
+      </a></li>`).join("")}</ul>`
+    : '<p class="ad-notify-empty">Nothing waiting for your review.</p>';
+  return `<div class="ad-notify" data-notify>
+      <button type="button" class="button is-small ad-notify-toggle${count ? " has-reviews" : ""}" id="notify-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="notify-panel" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
+        <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8a5 5 0 0 1 10 0c0 4 1.5 5.5 1.5 5.5h-13S5 12 5 8Z"/><path d="M8.5 16.5a1.6 1.6 0 0 0 3 0"/></svg>
+        ${count ? `<span class="ad-notify-badge" data-review-count="${count}">${count}</span>` : ""}
+      </button>
+      <div class="ad-notify-panel" id="notify-panel" role="region" aria-label="Needs your review" hidden>
+        <header class="ad-notify-head"><strong>Needs your review</strong><span class="ad-count">${count}</span></header>
+        ${items}
+      </div>
+    </div>`;
+};
+
+const renderHeader = (root: string, mode: UiAuthorityMode = "local", reviews: ReviewItem[] = [], currentTask = ""): string => `<header class="ad-header">
   <div class="container is-fluid ad-header-inner">
     <a class="ad-brand" href="/" title="Loop · AI-DLC dashboard"><span class="ad-logo" aria-hidden="true">L</span>Loop</a>
     <span class="ad-pill ${mode === "fleet" ? "is-link" : "is-ghost"}" data-authority="${mode}" title="${mode === "fleet" ? "Canonical state lives in the coordination service" : "Canonical state lives in this checkout"}">authority · ${mode}</span>
     ${renderDaemonPill(root)}
     <div class="ad-header-actions">
+      ${renderNotifications(reviews, currentTask)}
       <button class="button is-small" data-open="settings-modal" title="Settings">⚙<span class="ad-hide-mobile ml-1">Settings</span></button>
       <button class="button is-small is-primary" data-open="new-task-modal">＋ New task<kbd class="ad-hide-mobile">N</kbd></button>
     </div>
@@ -925,34 +968,6 @@ const renderListRow = (task: CardTask, handedOff: boolean): string => `<tr ${ite
   <td class="is-size-7 has-text-grey">${relativeTime(task.updatedAt)}</td>
   <td class="has-text-right">${taskAction(task, handedOff)}</td>
 </tr>`;
-
-const renderStats = (tasks: CardTask[], handedOff: Set<string>): string => {
-  const count = (predicate: (task: CardTask) => boolean): number => tasks.filter(predicate).length;
-  const stat = (label: string, value: number, tone: string, filter: string): string =>
-    `<button type="button" class="ad-stat ${tone}" data-stat-filter="${filter}" aria-pressed="false" title="${filter ? `Filter: ${escapeHtml(filter)}` : "Show all"}"><span class="ad-stat-label"><span class="ad-dot"></span>${escapeHtml(label)}</span><span class="ad-stat-value">${value}</span></button>`;
-  return `<div class="ad-stats">
-    ${stat("Total", tasks.length, "is-primary", "")}
-    ${stat("Active", count((t) => t.status === "active"), "is-info", "active")}
-    ${stat("Needs review", count((t) => t.status === "blocked_on_user" && !handedOff.has(t.id)), "is-warning", "blocked_on_user")}
-    ${stat("Paused", count((t) => t.status === "paused"), "", "paused")}
-    ${stat("Done", count((t) => t.status === "done"), "is-success", "done")}
-  </div>`;
-};
-
-const renderReviewQueue = (tasks: CardTask[], handedOff: Set<string>): string => {
-  const waiting = tasks.filter((task) => task.status === "blocked_on_user" && task.gate !== "none" && !handedOff.has(task.id));
-  if (!waiting.length) return "";
-  return `<section class="ad-attention" aria-labelledby="review-queue-title">
-    <div class="ad-attention-head"><span aria-hidden="true">⏳</span><span id="review-queue-title">Needs your review</span><span class="ad-count">${waiting.length}</span></div>
-    <ul class="ad-attention-list">${waiting.map((task) => `<li class="ad-attention-item">
-      ${pill(gateLabel(task.gate), "is-warning", `gate: ${task.gate}`, false)}
-      <code>${escapeHtml(task.id)}</code>
-      <span class="ad-title">${escapeHtml(task.title)}</span>
-      <span class="is-size-7 has-text-grey">${relativeTime(task.updatedAt)}</span>
-      <span class="ad-actions"><a class="button is-small is-warning ad-soft" href="/tasks/${encodeURIComponent(task.id)}">Open review →</a></span>
-    </li>`).join("")}</ul>
-  </section>`;
-};
 
 const renderToolbar = (): string => `<div class="ad-toolbar">
   <div class="ad-search">
@@ -1077,13 +1092,11 @@ const renderDashboard = async (options: UiOptions): Promise<string> => {
     </div>`;
 
   return `${pageHead("Loop")}
-${renderHeader(options.root, uiMode(options))}
+${renderHeader(options.root, uiMode(options), reviewQueue(state))}
 <main class="section ad-main">
   <div class="container is-fluid">
-    ${renderStats(items, handedOff)}
-    ${renderReviewQueue(items, handedOff)}
     ${board}
-    <p class="ad-help">Click a task to open it in the side panel; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. Gate feedback and approval stay available on the detail page and on the trusted terminal (<code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close panel or dialog.</p>
+    <p class="ad-help">Click a task to open it in the side panel; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. The bell in the header lists tasks waiting at a human gate; pick one to open its detail page, where gate feedback and approval live (also on the trusted terminal <code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close panel or dialog.</p>
   </div>
 </main>
 ${renderModals()}
@@ -1108,7 +1121,7 @@ const renderTaskDetail = async (options: UiOptions, id: string, fragment = false
   const fleet = uiMode(options) === "fleet";
   if (!task) {
     const body = `<p class="has-text-danger">Task not found: ${escapeHtml(id)}</p>`;
-    return fragment ? body : `${pageHead("Task not found · Loop")}${renderHeader(options.root, uiMode(options))}<main class="section ad-main"><div class="container is-fluid"><div class="ad-empty"><div class="ad-empty-icon" aria-hidden="true">🔍</div><h2>Task not found</h2><p><code>${escapeHtml(id)}</code> is not in the ${uiMode(options) === "fleet" ? "fleet" : "local"} canonical state.</p><a class="button" href="/">← Back to dashboard</a></div></div></main>${renderModals()}${sharedScript}</body></html>`;
+    return fragment ? body : `${pageHead("Task not found · Loop")}${renderHeader(options.root, uiMode(options), reviewQueue(state))}<main class="section ad-main"><div class="container is-fluid"><div class="ad-empty"><div class="ad-empty-icon" aria-hidden="true">🔍</div><h2>Task not found</h2><p><code>${escapeHtml(id)}</code> is not in the ${uiMode(options) === "fleet" ? "fleet" : "local"} canonical state.</p><a class="button" href="/">← Back to dashboard</a></div></div></main>${renderModals()}${sharedScript}</body></html>`;
   }
 
   const waiting = task.status === "blocked_on_user" && task.gate !== "none";
@@ -1398,7 +1411,7 @@ document.getElementById("approve-confirm")?.addEventListener("click", (event) =>
 </script>`;
 
   return `${pageHead(`${task.title} · Loop`)}
-${renderHeader(options.root, uiMode(options))}
+${renderHeader(options.root, uiMode(options), reviewQueue(state), task.id)}
 <main class="section ad-main">
   <div class="container is-fluid">
     <a class="ad-breadcrumb" href="/">← Dashboard</a>

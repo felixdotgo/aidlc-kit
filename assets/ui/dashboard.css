@@ -101,39 +101,36 @@ kbd, .ad-kbd {
 .button.ad-soft:hover { filter: brightness(0.96); }
 @media (prefers-color-scheme: dark) { .button.ad-soft:hover { filter: brightness(1.2); } }
 
-/* ---------- Stat cards ---------- */
-.ad-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); gap: 0.875rem; margin-bottom: 1.5rem; }
-.ad-stat {
-  display: flex; flex-direction: column; gap: 0.25rem; padding: 0.9rem 1rem; border-radius: var(--ad-radius);
-  background: var(--ad-surface); box-shadow: var(--ad-ring), var(--ad-shadow-sm); position: relative; overflow: hidden;
-  color: inherit; text-align: left; border: 0; font: inherit; cursor: pointer; transition: box-shadow var(--ad-transition), background var(--ad-transition);
+/* ---------- Header notifications (tasks waiting at a gate) ---------- */
+.ad-notify { position: relative; }
+.ad-notify-toggle { position: relative; }
+.ad-notify-toggle.has-reviews { color: var(--bulma-warning-bold); background: var(--bulma-warning-soft); border-color: transparent; }
+.ad-notify-badge {
+  position: absolute; top: -0.4rem; right: -0.4rem; min-width: 1.1rem; height: 1.1rem; padding: 0 0.3rem;
+  display: inline-grid; place-items: center; border-radius: 999px; font-size: 0.65rem; font-weight: 700; line-height: 1;
+  background: var(--bulma-warning); color: var(--bulma-warning-invert); box-shadow: 0 0 0 2px var(--ad-surface);
+  font-variant-numeric: tabular-nums;
 }
-.ad-stat:hover { box-shadow: var(--ad-ring-strong); background: var(--ad-subtle); }
-.ad-stat[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ad-accent, var(--bulma-link)); }
-.ad-stat::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--ad-accent, var(--bulma-border)); }
-.ad-stat-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ad-muted); display: flex; align-items: center; gap: 0.4rem; }
-.ad-stat-label .ad-dot { color: var(--ad-accent, var(--ad-muted)); }
-.ad-stat-value { font-size: 1.6rem; font-weight: 700; line-height: 1.1; color: var(--bulma-text-strong); font-variant-numeric: tabular-nums; }
-.ad-stat.is-info { --ad-accent: var(--bulma-info); }
-.ad-stat.is-warning { --ad-accent: var(--bulma-warning); }
-.ad-stat.is-success { --ad-accent: var(--bulma-success); }
-.ad-stat.is-danger { --ad-accent: var(--bulma-danger); }
-.ad-stat.is-primary { --ad-accent: var(--bulma-primary); }
-
-/* ---------- Needs your review ---------- */
-.ad-attention {
-  margin-bottom: 1.5rem; border-radius: var(--ad-radius); overflow: hidden;
-  background: var(--ad-surface); box-shadow: 0 0 0 1px var(--bulma-warning), var(--ad-shadow-sm);
+.ad-notify-panel {
+  position: absolute; right: 0; top: calc(100% + 0.5rem); z-index: 40; width: min(24rem, calc(100vw - 2rem));
+  max-height: min(28rem, 70vh); overflow-y: auto; border-radius: var(--ad-radius);
+  background: var(--ad-surface); box-shadow: var(--ad-ring), var(--ad-shadow-lg);
 }
-.ad-attention-head {
-  display: flex; align-items: center; gap: 0.6rem; padding: 0.7rem 1rem;
-  background: var(--bulma-warning-soft); color: var(--bulma-warning-bold); font-weight: 700; font-size: 0.9rem;
+.ad-notify-head {
+  position: sticky; top: 0; display: flex; align-items: center; gap: 0.5rem; padding: 0.65rem 0.9rem;
+  background: var(--ad-surface); border-bottom: 1px solid var(--bulma-border-weak); font-size: 0.85rem; color: var(--bulma-text-strong);
 }
-.ad-attention-head .ad-count { margin-left: auto; }
-.ad-attention-list { list-style: none; margin: 0; padding: 0; }
-.ad-attention-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.65rem 1rem; border-top: 1px solid var(--bulma-border-weak); flex-wrap: wrap; }
-.ad-attention-item .ad-title { font-weight: 600; color: var(--bulma-text-strong); flex: 1 1 14rem; min-width: 0; }
-.ad-attention-item .ad-actions { margin-left: auto; }
+.ad-notify-head .ad-count { margin-left: auto; }
+.ad-notify-list { list-style: none; margin: 0; padding: 0; }
+.ad-notify-list li + li { border-top: 1px solid var(--bulma-border-weak); }
+.ad-notify-item { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.65rem 0.9rem; color: inherit; }
+.ad-notify-item:hover, .ad-notify-item:focus-visible { background: var(--ad-subtle); color: inherit; }
+.ad-notify-item[aria-current="page"] { box-shadow: inset 3px 0 0 var(--bulma-warning); }
+.ad-notify-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.ad-notify-time { margin-left: auto; font-size: 0.72rem; color: var(--ad-muted); }
+.ad-notify-title { font-weight: 600; color: var(--bulma-text-strong); font-size: 0.875rem; overflow-wrap: anywhere; }
+.ad-notify-id { font-size: 0.72rem; color: var(--ad-muted); background: transparent; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-notify-empty { padding: 1rem 0.9rem; font-size: 0.85rem; color: var(--ad-muted); }
 
 /* ---------- Toolbar ---------- */
 .ad-toolbar { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 1rem; flex-wrap: wrap; }
