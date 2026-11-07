@@ -20,7 +20,7 @@
  */
 export { openBrowser, readUiTokenFile, resolveUiMode, scrubbedEnv, type UiAuthorityMode, type UiOptions } from "./ui/options.js";
 export { requestAllowed } from "./ui/security.js";
-export { daemonHealth, daemonStatus, type DaemonError, type DaemonStatus } from "./ui/daemon.js";
+export { daemonHealth, daemonStatus, stopDaemon, type DaemonError, type DaemonStatus, type StopResult } from "./ui/daemon.js";
 export { markdownToHtml } from "./ui/markdown.js";
 export { NOTIFY_PAGE } from "./ui/views/layout.js";
 export { DONE_COLUMN_LIMIT } from "./ui/views/board.js";

@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { findAdapter, resolvedAdapters } from "./adapters.js";
 import { legacyV021AdapterContents, legacyV021Hashes } from "./legacy.js";
@@ -8,7 +8,7 @@ import { legacyManifest, managedContentHash, planLoopSelection, planManagedWrite
 import type { UpgradePlanPolicy } from "./managed-planning.js";
 import { resolveProjectPath, resolveProjectPathWithoutSymlinks } from "./project-path.js";
 import { prepareV4Migration, validateState } from "./state.js";
-import { contentHash, coreWorkflowFiles, initialProjectFiles, manifestSpec } from "./workflow.js";
+import { contentHash, coreWorkflowFiles, initialProjectFiles, isExecutableAsset, manifestSpec } from "./workflow.js";
 import { migrateLegacyBoard } from "./upgrade-board.js";
 
 const safePath = (root: string, relative: string): string => resolveProjectPath(root, relative, "Unsafe upgrade path");
@@ -152,6 +152,8 @@ const stageUpgradedWrites = (project: string, writes: PlannedWrite[], backup: st
       const staged = join(stage, item.path);
       mkdirSync(dirname(staged), { recursive: true });
       writeFileSync(staged, item.contentEncoding === "base64" ? Buffer.from(item.content, "base64") : item.content);
+      // The commit step renames the staged file, so its mode carries over to the target.
+      if (isExecutableAsset(item.path) && process.platform !== "win32") chmodSync(staged, 0o755);
       if (item.path.endsWith(".json") && item.contentEncoding !== "base64") JSON.parse(item.content);
     }
   }

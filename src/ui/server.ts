@@ -17,6 +17,9 @@ import { requestAllowed, suppliedToken, tokenMatches } from "./security.js";
 import { streamEvents } from "./sse.js";
 import { renderDashboard } from "./views/board.js";
 import { renderChangesPage } from "./views/changes.js";
+import { renderDocsPage } from "./views/docs.js";
+import { DEFAULT_DOC } from "./docs.js";
+import { markdownToHtml } from "./markdown.js";
 import { gateLabel } from "./views/components.js";
 import { renderTaskDetail } from "./views/task.js";
 
@@ -57,7 +60,10 @@ export const taskSubpath = (prefix: string, suffix: string) => (path: string): R
 const itemParam = (url: URL): string | null => url.searchParams.get("item") || null;
 
 /** A POST body's fields (JSON object or form-encoded, 8 KiB cap). */
-const fieldsOf = async (req: IncomingMessage): Promise<Record<string, string>> => readFields(await readBody(req), req.headers["content-type"]);
+const fieldsOf = async (req: IncomingMessage, limit?: number): Promise<Record<string, string>> => readFields(await readBody(req, limit), req.headers["content-type"]);
+/** Body cap for routes whose field is itself capped at 8192 bytes: JSON escaping can
+ * double it (every newline is two bytes), so the envelope gets room to spare. */
+const TEXT_BODY_LIMIT = 64 * 1024;
 
 const NOT_FOUND = { ok: false, error: "Not found" };
 
@@ -72,6 +78,18 @@ export const ROUTES: Route[] = [
     handle: ({ res, url }) => { const asset = staticAsset(url.pathname)!; sendAsset(res, asset.contentType, asset.body); },
   },
   { method: "GET", match: exact("/"), handle: async ({ options, res }) => sendHtml(res, await renderDashboard(options)) },
+  // In-app guides: whitelisted packaged docs by slug (see ./docs.ts); `/docs` is the landing guide.
+  {
+    method: "GET",
+    match: (path) => (path === "/docs" || path === "/docs/" ? { slug: DEFAULT_DOC } : prefixed("/docs/", "slug")(path)),
+    handle: async ({ options, res, params }) => {
+      const page = await renderDocsPage(options, params.slug ?? "");
+      if (page) sendHtml(res, page);
+      else sendHtml(res, `<!doctype html><meta charset="utf-8"><title>Not found · Docs</title><p>No such guide. <a href="/docs">Back to the docs</a></p>`, 404);
+    },
+  },
+  // Identity probe for the launcher's ui.json record; reveals nothing but a random id.
+  { method: "GET", match: exact("/api/instance"), handle: ({ options, res }) => sendJson(res, 200, { ok: true, instance: options.instance ?? null }) },
   { method: "GET", match: exact("/api/live"), handle: async ({ options, res, url }) => sendJson(res, 200, await livePayload(options, url)) },
   // Code changes: only a task id and an item id come from the request; SHAs come from records.
   {
@@ -153,12 +171,23 @@ export const ROUTES: Route[] = [
       catch (error) { sendJson(res, 502, { ok: false, error: childError(error) }); }
     },
   },
+  // Markdown preview for the New task editor: the same escaping renderer as artifacts.
+  {
+    method: "POST",
+    match: exact("/api/markdown"),
+    token: true,
+    handle: async ({ req, res }) => {
+      const markdown = (await fieldsOf(req, TEXT_BODY_LIMIT))["markdown"] ?? "";
+      if (Buffer.byteLength(markdown) > 8192) return sendJson(res, 400, { ok: false, error: "markdown exceeds 8192 bytes" });
+      sendJson(res, 200, { ok: true, html: markdownToHtml(markdown) });
+    },
+  },
   {
     method: "POST",
     match: exact("/api/loop/start"),
     token: true,
     handle: async ({ options, req, res }) => {
-      const fields = await fieldsOf(req);
+      const fields = await fieldsOf(req, TEXT_BODY_LIMIT);
       const requirement = fields["requirement"] ?? "";
       if (!requirement.trim()) return sendJson(res, 400, { ok: false, error: "requirement is required" });
       if (Buffer.byteLength(requirement) > 8192) return sendJson(res, 400, { ok: false, error: "requirement exceeds 8192 bytes" });

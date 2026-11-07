@@ -114,8 +114,9 @@ export const renderHeader = (root: string, mode: UiAuthorityMode = "local", revi
     <span id="live-status" class="ad-pill is-warning" role="status" title="Live updates paused: the dashboard server is unreachable; retrying" hidden><span class="ad-dot"></span>reconnecting…</span>
     <div class="ad-header-actions">
       ${liveRegion("notify", renderNotifications(reviews, currentTask))}
+      <a class="button is-small" href="/docs" title="Guides: setup, configuration, commands, troubleshooting">?<span class="ad-hide-mobile ml-1">Docs</span></a>
       <button class="button is-small" data-open="settings-modal" title="Settings">⚙<span class="ad-hide-mobile ml-1">Settings</span></button>
-      <button class="button is-small is-primary" data-open="new-task-modal">＋ New task<kbd class="ad-hide-mobile">N</kbd></button>
+      <button class="button is-small is-primary" data-open="new-task-drawer">＋ New task<kbd class="ad-hide-mobile">N</kbd></button>
     </div>
   </div>
 </header>`;
@@ -142,32 +143,41 @@ export const renderModals = (): string => `
     </footer>
   </div>
 </div>
-<div id="new-task-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="new-task-title">
-  <div class="modal-background" data-close></div>
-  <div class="modal-card">
-    <header class="modal-card-head">
-      <p class="modal-card-title" id="new-task-title">Start a new task</p>
-      <button class="delete" aria-label="close" data-close></button>
+<div id="new-task-drawer" class="ad-drawer is-compose" role="dialog" aria-modal="true" aria-labelledby="new-task-title" hidden>
+  <div class="ad-drawer-backdrop" data-drawer-close></div>
+  <aside class="ad-drawer-panel" tabindex="-1">
+    <header class="ad-drawer-head">
+      <h2 id="new-task-title" class="ad-drawer-heading">New task</h2>
+      <button type="button" class="delete" aria-label="Close the new task panel" data-drawer-close></button>
     </header>
-    <section class="modal-card-body">
-      <div class="field">
-        <label class="label" for="new-task-requirement">Requirement</label>
-        <div class="control"><textarea id="new-task-requirement" class="textarea" rows="6" placeholder="Describe the feature, bug fix, or change. The first line becomes the task title." data-autofocus></textarea></div>
-        <div class="ad-field-hint"><span>The loop creates the task and starts the daemon if it is not running.</span><span id="new-task-count">0 / 8192 bytes</span></div>
+    <div class="ad-drawer-body">
+      <p class="ad-compose-intro">Describe the feature, bug fix, or change. The first line becomes the task title; the loop creates the task and starts the daemon if it is not running.</p>
+      <div class="ad-editor" data-editor>
+        <div class="ad-editor-bar">
+          <div class="ad-editor-tabs" role="tablist" aria-label="Editor mode">
+            <button type="button" role="tab" id="new-task-tab-write" aria-selected="true" aria-controls="new-task-requirement" data-editor-tab="write">Write</button>
+            <button type="button" role="tab" id="new-task-tab-preview" aria-selected="false" aria-controls="new-task-preview" data-editor-tab="preview">Preview</button>
+          </div>
+          <div class="ad-editor-tools" role="toolbar" aria-label="Formatting"><button type="button" class="ad-editor-tool" data-md="heading" title="Heading" aria-label="Heading">H</button><button type="button" class="ad-editor-tool" data-md="bold" title="Bold (Ctrl+B)" aria-label="Bold"><b>B</b></button><button type="button" class="ad-editor-tool" data-md="italic" title="Italic (Ctrl+I)" aria-label="Italic"><i>I</i></button><button type="button" class="ad-editor-tool" data-md="code" title="Inline code" aria-label="Inline code">&lt;/&gt;</button><button type="button" class="ad-editor-tool" data-md="codeblock" title="Code block" aria-label="Code block">{ }</button><button type="button" class="ad-editor-tool" data-md="ul" title="Bulleted list" aria-label="Bulleted list">•≡</button><button type="button" class="ad-editor-tool" data-md="ol" title="Numbered list" aria-label="Numbered list">1≡</button><button type="button" class="ad-editor-tool" data-md="quote" title="Quote" aria-label="Quote">❝</button><button type="button" class="ad-editor-tool" data-md="link" title="Link (Ctrl+K)" aria-label="Link">🔗</button></div>
+        </div>
+        <label class="is-sr-only" for="new-task-requirement">Requirement (Markdown)</label>
+        <textarea id="new-task-requirement" class="ad-editor-input" rows="16" spellcheck="true" placeholder="Short title on the first line&#10;&#10;What should change, why, and how to tell it works. Markdown is supported." data-autofocus></textarea>
+        <div id="new-task-preview" class="ad-editor-preview content artifact" role="tabpanel" aria-labelledby="new-task-tab-preview" hidden></div>
       </div>
-    </section>
-    <footer class="modal-card-foot">
-      <span class="ad-foot-start"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to submit</span>
-      <button class="button" data-close>Cancel</button>
-      <button id="new-task-submit" class="button is-primary">Create task</button>
+      <div class="ad-field-hint"><span>Markdown · <kbd>Ctrl</kbd>+<kbd>B</kbd> <kbd>I</kbd> <kbd>K</kbd> · the draft is kept in this browser</span><span id="new-task-count">0 / 8192 bytes</span></div>
+    </div>
+    <footer class="ad-drawer-foot">
+      <span class="ad-foot-start"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to create</span>
+      <button type="button" class="button" data-drawer-close>Cancel</button>
+      <button type="button" id="new-task-submit" class="button is-primary">Create task</button>
     </footer>
-  </div>
+  </aside>
 </div>
 <div id="task-drawer" class="ad-drawer" role="dialog" aria-modal="true" aria-labelledby="task-drawer-title" hidden>
   <div class="ad-drawer-backdrop" data-drawer-close></div>
   <aside class="ad-drawer-panel" tabindex="-1">
     <header class="ad-drawer-head">
-      <code id="task-drawer-title" class="ad-drawer-id">Task</code>
+      <button type="button" id="task-drawer-title" class="ad-copy ad-drawer-id" data-copy="" title="Copy task ID"><code>Task</code><svg aria-hidden="true" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M10.5 5V3.5A1.5 1.5 0 0 0 9 2H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5H5"/></svg></button>
       <a id="task-drawer-open" class="button is-small" href="#" target="_blank" rel="noopener">Open full page ↗</a>
       <button type="button" class="delete" aria-label="Close task panel" data-drawer-close></button>
     </header>

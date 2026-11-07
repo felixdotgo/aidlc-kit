@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import { doctor, doctorData, status, statusData } from "../installer.js";
 import { applyMcpSetup, planMcpSetup, type McpSetupOptions } from "../mcp-setup.js";
 import { loadProjectConfig, resolveProfiles } from "../profiles.js";
-import { openBrowser, readUiTokenFile, startUiServer } from "../task-ui.js";
 import { assertKnownOptions, DOCTOR_FLAGS, flags, MCP_FLAGS, rootArg, STATUS_FLAGS, UI_FLAGS, value } from "./argv.js";
+import { loopDown, loopEnv, loopOverview, loopStop, loopUp, serveDashboard } from "./loop-launcher.js";
 import { confirmGeneral, mcpSetupSelections } from "./prompt.js";
 
 /** `loop leases [--task-id ID] [--root PATH] [--json] [--clear-stale]`. */
@@ -31,7 +31,12 @@ const loopLeasesArgs = (args: string[]): { root: string; argv: string[] } => {
 
 export const runLoopCommand = async (args: string[]): Promise<void> => {
   const action = args[0] ?? "";
-  if (!["start", "status", "resume", "intake", "worker-image", "leases"].includes(action)) throw new Error("Expected loop start, status, intake, leases, or worker-image");
+  if (!["up", "down", "stop", "env", "start", "status", "resume", "intake", "worker-image", "leases"].includes(action)) throw new Error("Expected loop up, down, stop, env, start, status, intake, leases, or worker-image");
+  if (action === "up") return loopUp(args.slice(1));
+  if (action === "down") return loopDown(args.slice(1));
+  if (action === "stop") return loopStop(args.slice(1));
+  if (action === "env") return loopEnv(args.slice(1));
+  if (action === "status" && !args.includes("--task-id")) return loopOverview(args.slice(1));
   if (action === "leases") {
     const { root, argv } = loopLeasesArgs(args.slice(1));
     const child = spawn(process.execPath, [join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs"), ...argv], { stdio: "inherit" });
@@ -43,12 +48,12 @@ export const runLoopCommand = async (args: string[]): Promise<void> => {
   for (let index = 1; index < args.length; index += 2) {
     const key = args[index];
     const entry = args[index + 1];
-    if (key === undefined || !["--task-id", "--title", "--root", "--mode", "--provider", "--tag"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
+    if (key === undefined || !["--task-id", "--title", "--root", "--mode", "--provider", "--tag", "--loop-env"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
     parsed.set(key, entry);
   }
   const root = resolve(parsed.get("--root") ?? ".");
   const script = join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs");
-  const child = spawn(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? "", parsed.get("--provider") ?? "", parsed.get("--tag") ?? "", parsed.get("--title") ?? ""], { stdio: "inherit" });
+  const child = spawn(process.execPath, [script, action, parsed.get("--task-id") ?? "", root, parsed.get("--mode") ?? "", parsed.get("--provider") ?? "", parsed.get("--tag") ?? "", parsed.get("--title") ?? ""], { stdio: "inherit", env: { ...process.env, ...(parsed.has("--loop-env") ? { AIDLC_ENV_FILE: resolve(parsed.get("--loop-env") ?? "") } : {}) } });
   // Stay alive while the child runs so its own staged shutdown (stop after the
   // current turn → cancel the turn → exit) stays reachable. A terminal Ctrl-C
   // already reaches the child through the process group, so SIGINT is only
@@ -72,24 +77,13 @@ export const runLoopCommand = async (args: string[]): Promise<void> => {
 
 export const runUi = async (args: string[]): Promise<void> => {
   assertKnownOptions(args, UI_FLAGS);
-  const root = resolve(rootArg(args));
+  const tokenFile = value(args, "--token-file");
+  const reviewerTokenFile = value(args, "--reviewer-token-file");
   const port = Number(value(args, "--port") ?? 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be an integer between 1 and 65535");
-  const host = value(args, "--host") ?? "127.0.0.1";
-  const tokenFile = value(args, "--token-file");
-  const reviewerFile = value(args, "--reviewer-token-file");
-  const token = tokenFile ? readUiTokenFile(root, tokenFile, { create: true }) : undefined;
-  const reviewerToken = reviewerFile ? readUiTokenFile(root, reviewerFile, { create: false }) : undefined;
-  const { server, port: boundPort, token: sessionToken } = await startUiServer({ root, host, port, ...(token ? { token } : {}), ...(reviewerToken ? { reviewerToken } : {}) });
-  const base = `http://${host.includes(":") ? `[${host}]` : host}:${boundPort}`;
-  const loginUrl = `${base}/#token=${encodeURIComponent(sessionToken)}`;
-  console.log(`Loop (AI-DLC UI) listening on ${base} (Ctrl-C to stop)`);
-  console.log(`Open (signs this browser in for loop actions and gate approval): ${loginUrl}`);
-  if (flags(args).has("--open")) openBrowser(loginUrl);
-  await new Promise<void>((resolve) => {
-    const close = (): void => { server.close(() => resolve()); };
-    process.once("SIGINT", close);
-    process.once("SIGTERM", close);
+  await serveDashboard({
+    root: resolve(rootArg(args)), host: value(args, "--host") ?? "127.0.0.1", port, open: flags(args).has("--open"),
+    ...(tokenFile ? { tokenFile } : {}), ...(reviewerTokenFile ? { reviewerTokenFile } : {}),
   });
 };
 

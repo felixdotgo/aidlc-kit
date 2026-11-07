@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { adapters, findAdapter, resolvedAdapters } from "./adapters.js";
 import type { AgentId, FileSpec, InitOptions, ManifestInventoryItem, PlannedWrite, WorkflowManifest } from "./model.js";
@@ -8,7 +8,7 @@ import { planProjectLayoutMigration } from "./project-migration.js";
 import { legacyManagedMarker, managedBlock, removeManagedBlock } from "./managed-content.js";
 import { hasOwnedManifest, managedContentHash, planLoopSelection, planManagedWrites, readManifest, readManifestFile, splitInventoryKey } from "./managed-planning.js";
 import { resolveProjectPathWithoutSymlinks } from "./project-path.js";
-import { contentHash, coreWorkflowFiles, initialProjectFiles, manifestSpec, packageVersion } from "./workflow.js";
+import { contentHash, coreWorkflowFiles, initialProjectFiles, isExecutableAsset, manifestSpec, packageVersion } from "./workflow.js";
 
 /** Manifest reading lives in the managed-planning core; this export path stays stable for existing importers. */
 export { readManifest } from "./managed-planning.js";
@@ -47,6 +47,7 @@ export const applyPlan = (root: string, plan: PlannedWrite[]): void => {
     const target = safeTarget(root, write.path);
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, write.content, "utf8");
+    if (isExecutableAsset(write.path) && process.platform !== "win32") chmodSync(target, 0o755);
   }
 };
 

@@ -46,6 +46,20 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit status .
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit doctor . --strict
 ```
 
+## Run the loop (optional, local mode)
+
+`init` and `upgrade` always install a one-command launcher, so enabling the loop is a configuration edit:
+
+1. In `.agents/config.json`, set `"loop": { "mode": "local", "agents": { "lead": "opencode", "workers": { "worker-a": "opencode" } } }` (providers: `codex`, `claude`, or `opencode`), or rerun `init` with `--loop-mode local`.
+2. Fill in `.agents/loop.env` (installed as a commented template and git-ignored through `.agents/.gitignore`). Values your tools already store are detected: the OpenCode `model` from `opencode.json`, and worker keys from OpenCode's `auth.json`, Codex's `auth.json`, or the `env` block of Claude Code settings. Exported shell variables always win.
+3. Start the daemon and the dashboard:
+
+```sh
+./.agents/aidlc/scripts/loop.sh up      # Windows: .agents\aidlc\scripts\loop.cmd up
+```
+
+`up` checks the environment first and stops with the exact variable to set; `loop.sh check` prints the same report, never showing secret values. `Ctrl-C` closes only the dashboard; `loop.sh down` stops both. The launcher looks for the CLI in the project's `node_modules`, then `PATH`, then `npx --no-install`, so install the package in the project (`npm install --save-dev @felixdotgo/aidlc-kit@0.2.0`) or globally. The dashboard has a **Docs** page with these guides. Local mode needs Docker on a Linux host; the `.cmd` launcher works on Windows, but local workers are only verified on Linux. See the [Loop setup runbook](./docs/loop-runbook.md).
+
 ## Documentation
 
 The detailed documentation is organised by task and audience:
@@ -58,6 +72,7 @@ The detailed documentation is organised by task and audience:
 - [Testing and release](./docs/testing-and-release.md) — verification, evaluator, package smoke test, and release readiness.
 - [Architecture](./docs/architecture.md) — package boundaries and the source-to-installed flow.
 - [AI-DLC Coordination service](./docs/coordination-service.md) — opt-in Docker/remote coordination, security, and polling contract.
+- [Loop setup runbook](./docs/loop-runbook.md) — enable the loop, run it locally with `loop.sh up`, or spread it across machines.
 
 ## Safety note
 

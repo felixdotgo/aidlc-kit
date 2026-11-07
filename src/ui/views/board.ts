@@ -32,21 +32,29 @@ const searchText = (task: CardTask): string =>
 const itemAttrs = (task: CardTask, handedOff: boolean): string =>
   `data-task-item data-task-id="${escapeHtml(task.id)}" data-status="${escapeHtml(task.status)}" data-risk="${escapeHtml(task.risk)}"${handedOff ? ' data-handoff="true"' : ""} data-search="${escapeHtml(searchText(task))}"`;
 
+/** Statuses a kanban column cannot express (the column already says the phase, and
+ * "needs review" is the card's attention ring plus its review button). */
+const CARD_FLAG_STATUSES = new Set(["paused", "closed", "superseded"]);
+const cardFlag = (status: string, handedOff: boolean): string =>
+  handedOff || CARD_FLAG_STATUSES.has(status) ? statusPill(status, handedOff) : "";
+
+/** Kanban card: the title leads; the column is the phase, so no id, phase bar, gate, or
+ * routine status badge. The whole card is a click target (`data-card-href`): a plain
+ * click opens the side panel, ctrl/cmd/middle-click a new tab, shift-click this tab. */
 const renderTaskCard = (task: CardTask, handedOff = false): string => {
   const href = `/tasks/${encodeURIComponent(task.id)}`;
   const attention = task.status === "blocked_on_user" && !handedOff;
-  return `<article class="ad-card${attention ? " is-attention" : ""}" data-key="card:${escapeHtml(task.id)}" ${itemAttrs(task, handedOff)}>
-    <div class="ad-card-top"><a class="ad-card-id" href="${href}" data-task-link="${escapeHtml(task.id)}" title="${escapeHtml(task.id)}">${escapeHtml(task.id)}</a>${statusPill(task.status, handedOff)}</div>
-    <div class="ad-card-title"><a href="${href}" data-task-link="${escapeHtml(task.id)}">${escapeHtml(task.title)}</a></div>
-    ${phaseSteps(task.phase)}
-    <div class="ad-card-meta">${gatePill(task.gate)}${riskPill(task.risk)}${feedbackPill(task.feedbackPending ?? 0)}</div>
+  const meta = [cardFlag(task.status, handedOff), task.risk !== "normal" ? riskPill(task.risk) : "", feedbackPill(task.feedbackPending ?? 0)].join("");
+  return `<article class="ad-card${attention ? " is-attention" : ""}" data-key="card:${escapeHtml(task.id)}" data-card-href="${href}" ${itemAttrs(task, handedOff)}>
+    <div class="ad-card-title"><a href="${href}" data-task-link="${escapeHtml(task.id)}" title="${escapeHtml(task.id)}">${escapeHtml(task.title)}</a></div>
+    ${meta ? `<div class="ad-card-meta">${meta}</div>` : ""}
     <div class="ad-card-foot"><span class="ad-areas" title="areas: ${escapeHtml(task.areas.join(", "))}">${escapeHtml(task.areas.join(", "))}</span>${task.updatedAt ? `<span>· ${relativeTime(task.updatedAt)}</span>` : ""}${taskAction(task, handedOff)}</div>
   </article>`;
 };
 
-const renderListRow = (task: CardTask, handedOff: boolean): string => `<tr data-key="row:${escapeHtml(task.id)}" ${itemAttrs(task, handedOff)}>
-  <td><a href="/tasks/${encodeURIComponent(task.id)}" data-task-link="${escapeHtml(task.id)}"><code>${escapeHtml(task.id)}</code></a></td>
-  <td class="has-text-weight-semibold">${escapeHtml(task.title)}</td>
+/** List row: the title is the link (id on hover); the id column is gone. */
+const renderListRow = (task: CardTask, handedOff: boolean): string => `<tr data-key="row:${escapeHtml(task.id)}" data-card-href="/tasks/${encodeURIComponent(task.id)}" ${itemAttrs(task, handedOff)}>
+  <td class="has-text-weight-semibold ad-row-title"><a href="/tasks/${encodeURIComponent(task.id)}" data-task-link="${escapeHtml(task.id)}" title="${escapeHtml(task.id)}">${escapeHtml(task.title)}</a></td>
   <td><div class="is-size-7 mb-1">${escapeHtml(task.phase)}</div>${phaseSteps(task.phase)}</td>
   <td>${gatePill(task.gate) || '<span class="has-text-grey">—</span>'}</td>
   <td>${statusPill(task.status, handedOff)}${feedbackPill(task.feedbackPending ?? 0)}</td>
@@ -59,7 +67,7 @@ const renderListRow = (task: CardTask, handedOff: boolean): string => `<tr data-
 const renderToolbar = (): string => `<div class="ad-toolbar">
   <div class="ad-search">
     <svg class="ad-search-icon" aria-hidden="true" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg>
-    <input id="task-search" class="input" type="search" placeholder="Search id, title, area…" aria-label="Search tasks" autocomplete="off">
+    <input id="task-search" class="input" type="search" placeholder="Search title, id, area…" aria-label="Search tasks" autocomplete="off">
     <kbd>/</kbd>
   </div>
   <div class="select"><select id="filter-status" aria-label="Filter by status">
@@ -101,7 +109,7 @@ export const renderBoard = (state: WorkflowState): string => {
       <div class="ad-empty-icon" aria-hidden="true">🌱</div>
       <h2>No tasks yet</h2>
       <p>Describe a requirement and the loop will create the task and drive it through clarify → plan → build → wrap.</p>
-      <button class="button is-primary" data-open="new-task-modal">＋ New task</button>
+      <button class="button is-primary" data-open="new-task-drawer">＋ New task</button>
     </div>`;
 
   const kanban = PHASES.map((phase, index) => {
@@ -122,7 +130,7 @@ export const renderBoard = (state: WorkflowState): string => {
     <div id="kanban-view"><div class="ad-board">${kanban}</div></div>
     <div id="list-view">
       <div class="ad-table-wrap"><table class="table ad-table is-fullwidth">
-        <thead><tr><th>id</th><th>title</th><th>phase</th><th>gate</th><th>status</th><th>risk</th><th>areas</th><th>updated</th><th></th></tr></thead>
+        <thead><tr><th>title</th><th>phase</th><th>gate</th><th>status</th><th>risk</th><th>areas</th><th>updated</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
     </div>
@@ -136,7 +144,7 @@ ${renderHeader(options.root, uiMode(options), reviewQueue(state))}
 <main class="section ad-main">
   <div class="container is-fluid">
     ${liveRegion("board", renderBoard(state))}
-    <p class="ad-help">Click a task to open it in the side panel; ctrl/cmd-click or middle-click opens the full detail page. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. The bell in the header lists tasks waiting at a human gate; pick one to open its detail page, where gate feedback and approval live (also on the trusted terminal <code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). The page updates itself as the loop advances. Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close panel or dialog.</p>
+    <p class="ad-help">Click a card to open it in the side panel; ctrl/cmd-click or middle-click opens the full page in a new tab, shift-click in this tab. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. The bell in the header lists tasks waiting at a human gate; pick one to open its detail page, where gate feedback and approval live (also on the trusted terminal <code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). The page updates itself as the loop advances. Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close panel or dialog. Setup and usage guides: <a href="/docs">Docs</a>.</p>
   </div>
 </main>
 ${renderModals()}

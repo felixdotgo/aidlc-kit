@@ -17,6 +17,10 @@ const GATE_ARTIFACT: Record<string, string> = { G0_confirm: "intent", G1_review:
 const FULL_LOG_LINES = 2000;
 export const DRAWER_LOG_LINES = 20;
 
+/** Task id as a copy-to-clipboard button (handled by the delegated \`[data-copy]\` click in common.js). */
+export const copyIdButton = (id: string): string =>
+  `<button type="button" class="ad-copy" data-copy="${escapeHtml(id)}" title="Copy task ID" aria-label="Copy task ID ${escapeHtml(id)}"><code>${escapeHtml(id)}</code><svg aria-hidden="true" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M10.5 5V3.5A1.5 1.5 0 0 0 9 2H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5H5"/></svg></button>`;
+
 const panel = (title: string, body: string, extra = "", flush = false): string =>
   `<section class="ad-panel" data-key="panel:${escapeHtml(title)}"><header class="ad-panel-head"><h2>${escapeHtml(title)}</h2>${extra}</header><div class="ad-panel-body${flush ? " is-flush" : ""}">${body}</div></section>`;
 
@@ -222,8 +226,8 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
         : "";
 
   const body = `${drawerCta}<h1 class="ad-page-title">${escapeHtml(task.title)}</h1>
-<div class="ad-page-sub"><code>${escapeHtml(task.id)}</code>${statusPill(task.status, Boolean(task.handoff))}${gatePill(task.gate)}${riskPill(task.risk)}${feedbackPill(pending.length)}</div>
-${phaseStepper(task.phase, task.gate, task.status)}
+<div class="ad-page-sub">${copyIdButton(task.id)}${statusPill(task.status, Boolean(task.handoff))}${gatePill(task.gate)}${riskPill(task.risk)}${feedbackPill(pending.length)}</div>
+${phaseStepper(task.phase, task.gate, task.status, Boolean(task.handoff))}
 ${fragment ? liveLog : ""}
 <div class="columns is-desktop">
   <div class="column is-8-desktop">

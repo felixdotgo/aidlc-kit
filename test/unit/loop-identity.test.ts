@@ -25,3 +25,11 @@ test("deriveTaskIdentity strips non-ascii and truncates to id/title bounds", asy
   const long = "x".repeat(300);
   assert.deepEqual(deriveTaskIdentity(long), { slug: "x".repeat(127), title: "x".repeat(256) });
 });
+
+test("deriveTaskIdentity strips Markdown markers from the editor's first line", async () => {
+  const { deriveTaskIdentity } = await load();
+  assert.deepEqual(deriveTaskIdentity("# Fix **login** retry\n\nDetails"), { slug: "fix-login-retry", title: "Fix login retry" });
+  assert.equal(deriveTaskIdentity("- `loop up` command").title, "loop up command");
+  assert.equal(deriveTaskIdentity("#\n").title, "Loop task");
+  assert.equal(deriveTaskIdentity("__init__ crash").title, "__init__ crash");
+});

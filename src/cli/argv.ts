@@ -11,7 +11,11 @@ export const usage = `Usage:
   npx @felixdotgo/aidlc-kit status [path] [--json]
   npx @felixdotgo/aidlc-kit doctor [path] [--strict] [--json]
   npx @felixdotgo/aidlc-kit profile validate [path]
-  npx @felixdotgo/aidlc-kit loop start|status|intake [--task-id ID] [--title TITLE] [--root PATH] [--mode local|fleet]
+  npx @felixdotgo/aidlc-kit loop up [--root PATH] [--loop-env PATH] [--port 4173] [--host 127.0.0.1] [--open] [--no-ui]
+  npx @felixdotgo/aidlc-kit loop down|stop [--root PATH] [--now]
+  npx @felixdotgo/aidlc-kit loop env [--root PATH] [--loop-env PATH] [--json]
+  npx @felixdotgo/aidlc-kit loop status [--root PATH] [--json]          (daemon, dashboard, environment)
+  npx @felixdotgo/aidlc-kit loop start|status|intake [--task-id ID] [--title TITLE] [--root PATH] [--mode local|fleet] [--loop-env PATH]
   npx @felixdotgo/aidlc-kit loop worker-image [--provider ${LOOP_PROVIDERS.join("|")}] [--tag TAG] [--root PATH]
   npx @felixdotgo/aidlc-kit loop leases [--task-id ID] [--root PATH] [--json] [--clear-stale]
   npx @felixdotgo/aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--token-file PATH] [--reviewer-token-file PATH]

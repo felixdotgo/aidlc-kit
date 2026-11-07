@@ -15,6 +15,9 @@ export interface UiOptions {
   mode?: UiAuthorityMode;
   /** Fleet reviewer credential held server-side; passed only to the approve child process. */
   reviewerToken?: string;
+  /** Random id of this dashboard process, served at `/api/instance` so `loop down` signals
+   * only the dashboard it recorded (not whatever now answers on the same port). */
+  instance?: string;
 }
 
 /** Credentials that never reach the daemon or read-only child processes. */

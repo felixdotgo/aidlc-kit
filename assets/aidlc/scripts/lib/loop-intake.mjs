@@ -19,7 +19,9 @@ const slugify = (text) => {
  * requirement's first non-empty line, replacing the opaque `loop-<uuid>` id and
  * the unhelpful `Loop task <id>` title. */
 export function deriveTaskIdentity(requirement) {
-  const line = firstLine(requirement);
+  // The dashboard editor writes Markdown: drop a leading heading/list/quote marker,
+  // bold markers, and backticks ("__" stays: it is common in identifiers) so "# Fix login" titles the task "Fix login".
+  const line = firstLine(requirement).replace(/^(?:#{1,6}(?:\s+|$)|[-*+]\s+|\d+[.)]\s+|>\s*)/, "").replace(/(\*\*|`)/g, "").trim();
   return { slug: slugify(line), title: line ? line.slice(0, 256) : "Loop task" };
 }
 

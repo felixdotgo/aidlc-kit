@@ -1331,3 +1331,76 @@ else { console.error("unexpected " + action); process.exit(1); }
     assert.ok(all.filter((call) => call.action !== "approve").every((call) => call.reviewer === null), "read and resume children never receive the reviewer credential");
   } finally { await reviewer.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("header links the docs, New task opens an editor side panel, and the side panel id is a copy button", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const page = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(page, /<a class="button is-small" href="\/docs"/);
+    assert.match(page, /data-open="new-task-drawer"/);
+    assert.doesNotMatch(page, /id="new-task-modal"/);
+    assert.match(page, /<div id="new-task-drawer" class="ad-drawer is-compose" role="dialog" aria-modal="true"[^>]*hidden>/);
+    assert.match(page, /data-editor-tab="preview"/);
+    for (const action of ["heading", "bold", "italic", "code", "codeblock", "ul", "ol", "quote", "link"]) assert.match(page, new RegExp(`data-md="${action}"`));
+    assert.match(page, /<button type="button" id="task-drawer-title" class="ad-copy ad-drawer-id" data-copy=""/);
+    const html = await withScripts(fixture.base, page);
+    assert.match(html, /void el\.offsetWidth/, "drawers commit the closed state before is-open so the transition runs");
+    assert.match(html, /is-closing/, "modals animate out");
+    assert.match(html, /addEventListener\("auxclick"/, "middle-click on a card opens a new tab");
+    assert.match(html, /window\.open\(href, "_blank", "noopener"\)/);
+    assert.match(html, /navigator\.clipboard\.writeText/);
+    assert.match(html, /post\("\/api\/markdown"/);
+    assert.match(html, /aidlc-new-task-draft/);
+    const detail = await (await fetch(`${fixture.base}/tasks/task-a`)).text();
+    assert.match(detail, /<button type="button" class="ad-copy" data-copy="task-a"/);
+    assert.match(detail, /<span class="ad-pulse" aria-hidden="true"><\/span>/, "the current step pulses while the task is active");
+  } finally { await fixture.close(); }
+});
+
+test("the stepper pulse marks waiting tasks in the warning tone and stops when the task is not moving", async () => {
+  const { phaseStepper } = await import("../../src/ui/views/components.js");
+  assert.match(phaseStepper("plan", "G1_review", "blocked_on_user"), /<li class="is-current"[^>]*><span class="ad-stepper-marker"><span class="ad-pulse is-waiting"/);
+  assert.doesNotMatch(phaseStepper("plan", "G1_review", "paused"), /ad-pulse/);
+  assert.doesNotMatch(phaseStepper("build", "G2_codereview", "active", true), /ad-pulse/, "a handed-off task does not pulse");
+  assert.doesNotMatch(phaseStepper("done", "none", "done"), /ad-pulse/);
+});
+
+test("docs routes serve whitelisted guides and the markdown preview needs the session token", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const landing = await fetch(`${fixture.base}/docs`);
+    assert.equal(landing.status, 200);
+    assert.match(await landing.text(), /class="is-active" aria-current="page">Getting started</);
+    assert.equal((await fetch(`${fixture.base}/docs/configuration`)).status, 200);
+    assert.equal((await fetch(`${fixture.base}/docs/unknown`)).status, 404);
+    assert.equal((await fetch(`${fixture.base}/docs/..%2F..%2Fpackage`)).status, 404);
+    const body = JSON.stringify({ markdown: "# Title\n\n**bold** <script>x</script>" });
+    assert.equal((await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers: { "content-type": "application/json" }, body })).status, 401);
+    const ok = await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": fixture.token }, body });
+    assert.equal(ok.status, 200);
+    const { html } = await ok.json() as { html: string };
+    assert.match(html, /<h1>Title<\/h1>/);
+    assert.match(html, /<strong>bold<\/strong>/);
+    assert.doesNotMatch(html, /<script>/, "preview HTML is escaped by the server renderer");
+  } finally { await fixture.close(); }
+});
+
+test("the changes page file list can stick: its panel clips without becoming a scroll container", () => {
+  const css = source("assets/ui/dashboard.css");
+  assert.match(css, /\.ad-panel\.ad-changes-item \{ overflow: visible; overflow: clip; \}/);
+  assert.match(css, /\.ad-changes-files \{ position: sticky;/);
+  assert.match(css, /@keyframes ad-pulse/);
+  assert.match(css, /prefers-reduced-motion: reduce/);
+});
+
+test("markdown preview accepts an 8192-byte text whose JSON escaping exceeds 8 KiB and rejects larger text", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+    const lines = "a\n".repeat(4096); // 8192 bytes, ~12 KiB once JSON-escaped
+    const ok = await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers, body: JSON.stringify({ markdown: lines }) });
+    assert.equal(ok.status, 200);
+    const big = await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers, body: JSON.stringify({ markdown: "x".repeat(8193) }) });
+    assert.equal(big.status, 400);
+  } finally { await fixture.close(); }
+});

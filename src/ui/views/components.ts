@@ -59,9 +59,17 @@ export const phaseSteps = (phase: string): string => {
   return `<div class="ad-steps${done ? " is-done" : ""}" role="img" aria-label="Phase ${current + 1} of ${PHASES.length}: ${escapeHtml(phase)}">${bars}</div>`;
 };
 
-/** Horizontal phase stepper shown above the artifacts (detail page and drawer). */
-export const phaseStepper = (phase: string, gate: string, status: string): string => {
+/** Statuses whose current step shows the "radioactive" pulse: the task is moving
+ * (`active`) or waiting for a human (`blocked_on_user`, pulsed in the warning tone). */
+const PULSE_STATUSES = new Set(["active", "blocked_on_user"]);
+
+/** Horizontal phase stepper shown above the artifacts (detail page and drawer). A pulse
+ * ring marks the current step while the task is live; `stalled` (handed off) suppresses it. */
+export const phaseStepper = (phase: string, gate: string, status: string, stalled = false): string => {
   const current = (PHASES as readonly string[]).indexOf(phase);
+  const pulse = !stalled && phase !== "done" && PULSE_STATUSES.has(status)
+    ? `<span class="ad-pulse${status === "blocked_on_user" ? " is-waiting" : ""}" aria-hidden="true"></span>`
+    : "";
   return `<ol class="ad-stepper" aria-label="Progress">${PHASES.map((name, index) => {
     const complete = phase === "done" || index < current;
     const isCurrent = !complete && index === current;
@@ -69,7 +77,7 @@ export const phaseStepper = (phase: string, gate: string, status: string): strin
     const note = isCurrent && status === "blocked_on_user" && gate !== "none"
       ? `waiting at ${gateLabel(gate)}`
       : phaseGate ? `gate · ${gateLabel(phaseGate)}` : name === "done" ? "complete" : "no gate";
-    return `<li class="${complete ? "is-complete" : isCurrent ? "is-current" : ""}"${isCurrent ? ' aria-current="step"' : ""}><span class="ad-stepper-marker">${complete ? "✓" : index + 1}</span><span class="ad-stepper-text"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(note)}</small></span></li>`;
+    return `<li class="${complete ? "is-complete" : isCurrent ? "is-current" : ""}"${isCurrent ? ' aria-current="step"' : ""}><span class="ad-stepper-marker">${isCurrent ? pulse : ""}${complete ? "✓" : index + 1}</span><span class="ad-stepper-text"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(note)}</small></span></li>`;
   }).join("")}</ol>`;
 };
 

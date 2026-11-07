@@ -30,13 +30,15 @@ export const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, (
 /** A client error mapped to HTTP 400 by the request handler. */
 export class BadRequest extends Error {}
 
-export const readBody = (req: IncomingMessage): Promise<string> =>
+/** Reads a request body up to `limit` bytes (default 8 KiB). Routes that carry an 8192-byte
+ * text field pass a larger limit so JSON escaping does not count against the field. */
+export const readBody = (req: IncomingMessage, limit = 8192): Promise<string> =>
   new Promise((resolveBody, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > 8192) { reject(new BadRequest("Request body exceeds 8192 bytes")); req.destroy(); return; }
+      if (size > limit) { reject(new BadRequest(`Request body exceeds ${limit} bytes`)); req.destroy(); return; }
       chunks.push(chunk);
     });
     req.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));

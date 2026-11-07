@@ -6,6 +6,9 @@
  *   intake        create a loop-owned task from a stdin requirement (≤ 8192 bytes) without running it
  *   status        print the canonical task, loop record/checkpoint, and next action
  *   worker-image  build and record a provider worker image
+ *   env           report the daemon environment: providers, env file, each variable's
+ *                 source (shell/file/derived) and missing values; secrets are never
+ *                 printed. `env [root] [--json]`; exits 1 when the daemon could not start.
  *   leases        list loop leases, locks and claims: who holds what, until when,
  *                 what it blocks, and how to clear it. Works with any loop mode.
  *                 `leases [task-id] [root] [--json] [--clear-stale]`; --clear-stale
@@ -31,6 +34,7 @@ import { streamLog } from "./lib/loop-stream.mjs";
 import * as localSupervisor from "./lib/loop-supervisor-run-local.mjs";
 import { buildWorkerImage, defaultWorkerImageTag, recordWorkerImage } from "./lib/loop-worker-image.mjs";
 import { formatLeases, runLeases } from "./lib/loop-leases.mjs";
+import { formatLoopEnvReport, loadLoopEnv, publicReport } from "./lib/loop-env.mjs";
 import { callRemoteTool } from "./lib/remote-state-client.mjs";
 
 const [action, taskArg, rootArg, modeArg, providerArg, tagArg, titleArg] = process.argv.slice(2);
@@ -63,8 +67,23 @@ async function runLeasesAction(argv) {
   else console.log(formatLeases(report));
 }
 
+/** `env [root] [--json]`: the local daemon environment report (no secret values). */
+function runEnvAction(argv) {
+  const flagSet = new Set(argv.filter((value) => value.startsWith("--")));
+  for (const flag of flagSet) if (flag !== "--json") throw new Error(`Unknown env option: ${flag}`);
+  const [rootValue = ""] = argv.filter((value) => !value.startsWith("--"));
+  const envRoot = resolve(rootValue || ".");
+  let config = null;
+  try { config = JSON.parse(readFileSync(join(envRoot, ".agents", "config.json"), "utf8")); } catch { config = null; }
+  const report = publicReport(loadLoopEnv({ root: envRoot, config }));
+  if (flagSet.has("--json")) print(report); else console.log(formatLoopEnvReport(report));
+  if (!report.ok) process.exitCode = 1;
+}
+
 try {
-  if (action === "leases") {
+  if (action === "env") {
+    runEnvAction(process.argv.slice(3));
+  } else if (action === "leases") {
     await runLeasesAction(process.argv.slice(3));
   } else if (action === "worker-image") {
     // Build (or rebuild) a worker image without requiring loop configuration.
@@ -76,7 +95,7 @@ try {
     console.log(`Built worker image: ${image}`);
     console.log("Recorded worker image; the loop supervisor will use it automatically.");
   } else {
-    if (!ACTIONS.includes(action)) throw new Error("Expected loop start, status, intake, leases, or worker-image");
+    if (!ACTIONS.includes(action)) throw new Error("Expected loop start, status, intake, env, leases, or worker-image");
     const config = JSON.parse(readFileSync(join(root, ".agents", "config.json"), "utf8"));
     const mode = modeArg || config.loop?.mode || "off";
     if (!["local", "fleet"].includes(mode)) throw new Error("Loop mode is off; configure an enabled loop mode first");
@@ -86,6 +105,13 @@ try {
     if (!isLoopProvider(agent) || !Object.keys(workers).length || Object.entries(workers).some(([, value]) => !isLoopProvider(value))) throw new Error("Loop requires a configured lead and worker providers");
     if (action === "resume") throw new Error("loop resume is removed; the daemon auto-resumes actionable tasks — run 'loop start', and re-activate a paused task from the dashboard (resume) or with the task status command");
     if (mode === "local") requireLocalAuthority();
+    if (mode === "local" && action === "start") {
+      // Zero-config start: shell > AIDLC env file > values derived from the providers' own config.
+      const loaded = loadLoopEnv({ root, config });
+      for (const problem of loaded.problems) process.stderr.write(`loop: ${problem.level === "error" ? "error" : "warning"}: ${problem.message}\n`);
+      if (!loaded.ok) throw new Error("environment is incomplete; fix the errors above (check with: aidlc-kit loop env)");
+      Object.assign(process.env, loaded.applied);
+    }
     if (mode === "local" && action === "status") {
       const supervisor = await localSupervisor.createIsolatedLocalSupervisor({ root, taskId: requireTaskId(), agent, workers, workerImages: config.loop?.workerImage, onEvent: streamLog });
       print(await supervisor.status());

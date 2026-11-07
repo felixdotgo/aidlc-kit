@@ -102,34 +102,45 @@ node dist/src/cli.js loop status --root . --task-id <task-id>
 
 ### 5.1 Set environment variables
 
+Put them in `.agents/loop.env` (installed as a commented template, git-ignored through
+`.agents/.gitignore`). `loop start`/`loop up` and a daemon started by the dashboard load it;
+anything exported in the shell wins.
+
 ```sh
-# REQUIRED — use a model that is actually in the list:
-export AIDLC_OPENCODE_MODEL=opencode-go/deepseek-v4-pro
-
-# OPTIONAL — required ONLY for the web dashboard live log when you start the
-# daemon manually. Must point at the exact file the UI reads:
-export AIDLC_LOOP_EVENT_LOG="$PWD/.agents/data/loop/ui-events.jsonl"
-
-# No need to set AIDLC_WORKER_DOCKER_IMAGE — the loop builds the image itself (see §7).
-# Only the worker credential is needed when it reaches the build phase:
-# export OPENAI_API_KEY=...   or   export ANTHROPIC_API_KEY=...  (per model)
+# .agents/loop.env
+# REQUIRED for opencode unless "model" is set in opencode.json — use a model from `opencode models`:
+AIDLC_OPENCODE_MODEL=opencode-go/deepseek-v4-pro
+# Worker key for the build phase; read from ~/.local/share/opencode/auth.json when unset:
+# OPENCODE_API_KEY=...
 ```
 
-List available models:
+`AIDLC_LOOP_EVENT_LOG` is set to `.agents/data/loop/ui-events.jsonl` automatically, and the
+loop builds the worker image itself (see §7). Check what the daemon will see — secret
+values are never printed:
 
 ```sh
-opencode models
+./.agents/aidlc/scripts/loop.sh check
+# or: node dist/src/cli.js loop env --root .
 ```
 
 > [!IMPORTANT]
-> Both variables must be exported **in the same shell that starts the daemon** — the
-> daemon and every lead/worker turn it spawns inherit only that process's environment.
-> A daemon started *before* you exported `AIDLC_OPENCODE_MODEL` will keep failing with
-> `opencode provider requires AIDLC_OPENCODE_MODEL` until it is restarted.
+> A running daemon keeps the environment it started with. After editing `.agents/loop.env`,
+> restart it (`loop.sh down`, then `loop.sh up`); `loop up` warns when the file changed after
+> the daemon started.
+
+Manual alternative: `export` the same variables in the shell that starts the daemon.
 
 ### 5.2 Start the daemon, then add tasks
 
-In **local** mode `loop start` launches the persistent daemon (one per project — a second
+One command checks the environment, starts the daemon in the background, and serves the
+dashboard (`Ctrl-C` closes only the dashboard; `loop.sh down` stops both):
+
+```sh
+./.agents/aidlc/scripts/loop.sh up
+# or from a source checkout: node dist/src/cli.js loop up --root .
+```
+
+The underlying commands follow. In **local** mode `loop start` launches the persistent daemon (one per project — a second
 `loop start` fails with `Loop daemon already running (pid N)`). It does **not** read a
 requirement:
 
@@ -295,10 +306,13 @@ Where things live (this is the #1 source of confusion):
 - **Gate approval button is only on the full task detail page** (`/tasks/<task-id>`), **not
   on the dashboard**. Tasks waiting at a gate appear under the **bell** in the header (on every
   page; the badge shows how many). The dropdown lists the 5 newest; **Load more** shows 5 more at
-  a time. Click an entry to jump to its detail page. Otherwise click a task to
+  a time. Click an entry to jump to its detail page. Otherwise click anywhere on a card to
   open it in the **side panel** (it slides in from the right and adds `?task=<task-id>` to the
-  URL, so refresh or a shared link reopens it and Back closes it) and press **Open full page ↗**,
-  or ctrl/cmd-click / middle-click the task link. While the task waits at a gate the side panel
+  URL, so refresh or a shared link reopens it and Back closes it) and press **Open full page ↗**;
+  ctrl/cmd-click or middle-click a card opens the full page in a new tab, shift-click in this
+  tab. Cards show the title only (the id is on hover, in search, and as a copy button in the
+  side panel and on the detail page). **New task** opens a side panel with a Markdown editor
+  (toolbar, Write/Preview); **Docs** in the header opens these guides inside the dashboard. While the task waits at a gate the side panel
   starts with an **Open review →** button to the detail page (a handed-off task shows **Open task →**).
   Both the side panel and the detail page show a
   horizontal **progress** stepper (clarify → plan → build → wrap → done) above the artifacts. On the detail page the **`<review step>`** panel appears only while the task is
@@ -334,8 +348,8 @@ Where things live (this is the #1 source of confusion):
   the task's own history file `.agents/data/loop/events/<task-id>.jsonl` (1 MiB, one `.1`
   generation), then follows live; older tasks without that file fall back to the global
   `.agents/data/loop/ui-events.jsonl` (rotated to `.jsonl.1` at 5 MB). The daemon only writes
-  events when `AIDLC_LOOP_EVENT_LOG` points at the global file: a daemon started from the
-  dashboard sets it automatically; a **manually started** daemon needs the export from §5.1.
+  events when `AIDLC_LOOP_EVENT_LOG` points at the global file, which every local daemon sets
+  automatically unless the shell overrides it.
 - **Changes** (work-items panel, side panel, and the Review implementation gate panel) opens
   `/tasks/<id>/changes`: the files each work item changed and their diff, taken from the
   commits the local workers recorded; a task without loop records shows the uncommitted
@@ -461,17 +475,20 @@ value.
 
 ### 9.5 `opencode provider requires AIDLC_OPENCODE_MODEL`
 
+Run `./.agents/aidlc/scripts/loop.sh check`: it names the missing value and where to set it
+(`.agents/loop.env` or `"model"` in `opencode.json`). `loop start`/`loop up` now stop on this
+before the daemon starts.
+
 `AIDLC_OPENCODE_MODEL` is unset or in the wrong `provider/model[#variant]` format. See §5.1.
-Remember the daemon must be (re)started *after* exporting the variable — a daemon started
-without it keeps failing until restarted.
+A daemon keeps the environment it started with: restart it after changing the value
+(`loop.sh down`, then `loop.sh up`).
 
 ### 9.6 Web dashboard live log is empty / stuck on "connecting…"
 
 - The live log reads `.agents/data/loop/events/<task-id>.jsonl`, falling back to the
   **fixed** global file `.agents/data/loop/ui-events.jsonl`; the daemon only writes either
-  when `AIDLC_LOOP_EVENT_LOG` points at that exact path. A manually started
-  daemon without that export produces no events — see §5.1. Restart the daemon after setting
-  it.
+  when `AIDLC_LOOP_EVENT_LOG` points at that exact path. Every local daemon sets it
+  automatically; if the shell exports a different path, unset it and restart the daemon.
 - The full live log is on the task **detail** page (`/tasks/<id>`); the side panel shows only
   the last 20 important lines.
 - A stopped daemon produces no events. The dashboard header shows whether it is running;

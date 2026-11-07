@@ -19,7 +19,7 @@ export const MAX_SUMMARY_CHARS = 240;
 export const LOOP_PROVIDERS = Object.freeze(["codex", "claude", "opencode"]);
 export const LOOP_PROVIDER_LIST = `${LOOP_PROVIDERS.slice(0, -1).join(", ")}, or ${LOOP_PROVIDERS[LOOP_PROVIDERS.length - 1]}`;
 export const isLoopProvider = (value) => typeof value === "string" && LOOP_PROVIDERS.includes(value);
-const OPENCODE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+export const OPENCODE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
 
 const record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : null;
 // Best-effort secret redaction for diagnostics and live-log summaries (commands
@@ -172,6 +172,16 @@ registerAgentAdapter("opencode", {
  * a checkpoint is durable. Transport and protocol failures reject with a bounded,
  * redacted error message.
  */
+/** Host turn environment: drops the worker credentials `loop-env.mjs` added from the env file
+ * or provider config (listed in AIDLC_LEAD_ENV_EXCLUDE); shell-exported values stay. */
+export function leadEnv(env) {
+  const exclude = String(env.AIDLC_LEAD_ENV_EXCLUDE ?? "").split(",").map((key) => key.trim()).filter(Boolean);
+  if (!exclude.length && env.AIDLC_LEAD_ENV_EXCLUDE === undefined) return env;
+  const copy = { ...env };
+  for (const key of [...exclude, "AIDLC_LEAD_ENV_EXCLUDE"]) delete copy[key];
+  return copy;
+}
+
 export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, onSessionId, onEvent, signal, env, spawnProcess = spawn } = {}) {
   // --- Validate inputs and resolve the adapter -------------------------------
   const adapter = adapters.get(agent);
@@ -190,7 +200,7 @@ export async function runAgentTurn({ agent, root, sessionId, prompt, timeoutMs, 
   if (typeof spawnProcess !== "function") throw new Error("spawnProcess must be a function");
   const input = adapter.input?.(prompt);
   if (input !== undefined && typeof input !== "string") throw new Error("agent adapter input must be a string");
-  const child = spawnProcess(adapter.command, args, { cwd: root, shell: false, env: { ...(env ?? process.env), PWD: root }, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+  const child = spawnProcess(adapter.command, args, { cwd: root, shell: false, env: { ...leadEnv(env ?? process.env), PWD: root }, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
   if (input !== undefined) {
     if (!child.stdin) throw new Error("agent transport lacks stdin");
     child.stdin.on("error", () => {});

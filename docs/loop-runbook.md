@@ -66,7 +66,7 @@ Local mode is the single-machine journey. The lead runs on the host (Codex, Clau
 | Docker engine | The worker batch preflights `docker info` and the worker image. |
 | Non-root host user | Docker workers require a non-root uid/gid. |
 | Worker Docker image | Auto-built from the packaged Dockerfile on first build dispatch (`aidlc-kit loop worker-image`); set `AIDLC_WORKER_DOCKER_IMAGE` only to override the per-provider default. |
-| Provider credentials | Exported in the environment; never written into `.agents/config.json`. |
+| Provider credentials | In `.agents/loop.env` (git-ignored) or exported; detected from the provider's own login when possible; never written into `.agents/config.json`. |
 
 ### Step 1 — Configure `local`
 
@@ -81,7 +81,23 @@ Set `loop.mode` to `local` with a lead and workers (see [Enable the loop from `o
 }
 ```
 
-### Step 2 — Set the environment
+### Step 2 — Fill in `.agents/loop.env`
+
+`init`/`upgrade` install `.agents/loop.env` as a commented template (git-ignored through `.agents/.gitignore`). Uncomment what you need; anything already exported in the shell wins, and values your tools already store are detected for the configured providers only:
+
+- `AIDLC_OPENCODE_MODEL` ← `"model"` in `opencode.json` (project, `OPENCODE_CONFIG`, or `~/.config/opencode`).
+- `OPENCODE_API_KEY` (or the key matching the model prefix) ← API-key entries in `~/.local/share/opencode/auth.json`.
+- `OPENAI_API_KEY` ← `~/.codex/auth.json` after `codex login --with-api-key` (a ChatGPT-only login is not enough for Docker workers).
+- `ANTHROPIC_API_KEY` ← `"env"` in `.claude/settings.local.json`, `.claude/settings.json`, or `~/.claude/settings.json`.
+- `AIDLC_LOOP_EVENT_LOG` ← always `.agents/data/loop/ui-events.jsonl`.
+
+Check the result, without secret values, at any time:
+
+```sh
+./.agents/aidlc/scripts/loop.sh check     # = aidlc-kit loop env
+```
+
+Use another file with `--loop-env PATH` or `AIDLC_ENV_FILE`. The variables, for reference:
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
@@ -91,7 +107,8 @@ Set `loop.mode` to `local` with a lead and workers (see [Enable the loop from `o
 | `ANTHROPIC_API_KEY` | if a provider is `claude` | Claude Code worker credential. |
 | `OPENCODE_API_KEY` | if a provider is `opencode` | OpenCode worker credential. The key follows the model provider: `openai/` → `OPENAI_API_KEY`, `anthropic/` → `ANTHROPIC_API_KEY`, otherwise `OPENCODE_API_KEY`. |
 | `AIDLC_LOCAL_WORKTREES_ROOT` | no | Root for worker worktrees; defaults to a system temp directory. It must be outside the integration checkout. |
-| `AIDLC_LOOP_EVENT_LOG` | no (see note) | Path to a JSONL event-log sidecar that feeds the web dashboard live log. The `aidlc-kit ui` **New task** action (when it starts the daemon) sets it to `.agents/data/loop/ui-events.jsonl` automatically; a **manually started** daemon must set it to the same path or the dashboard live log stays empty. Task events are also written to `events/<task-id>.jsonl` next to it (per-task history for the live log). |
+| `AIDLC_LOOP_EVENT_LOG` | no | Path to the JSONL event-log sidecar that feeds the web dashboard live log; set to `.agents/data/loop/ui-events.jsonl` automatically for every local daemon. Task events are also written to `events/<task-id>.jsonl` next to it (per-task history for the live log). |
+| `AIDLC_ENV_FILE` | no | The env file to load instead of `.agents/loop.env` (relative to the project root). |
 
 Docker workers (local and fleet) authenticate OpenCode from the environment and redirect OpenCode's XDG data/config roots into the worker's ephemeral HOME. Only the **isolated lead** container does not support OpenCode yet (`OpenCode workers require file-based credentials and are not available in isolated containers yet`); the daemon runs the lead on the host, so an OpenCode lead works there.
 
@@ -107,6 +124,17 @@ npx @felixdotgo/aidlc-kit loop worker-image --provider opencode # → aidlc-work
 The command records the tag into `loop.workerImage`; the local supervisor reuses it and auto-builds any missing per-provider image before dispatch. The batch preflight still inspects the image and runs each provider CLI with `--version` inside the container, so a missing or mismatched image fails before any worker starts. See [Testing and release](./testing-and-release.md#loop-docker-and-postgresql-verification) for the fixture build pattern used by the test suite.
 
 ### Step 4 — Start the daemon, add tasks, and watch
+
+The quickest way runs the environment check, starts the daemon in the background, and serves the dashboard:
+
+```sh
+./.agents/aidlc/scripts/loop.sh up          # --open launches the browser; --no-ui starts only the daemon
+./.agents/aidlc/scripts/loop.sh status      # daemon, dashboard, environment
+./.agents/aidlc/scripts/loop.sh logs        # follow the daemon log
+./.agents/aidlc/scripts/loop.sh down        # stop the dashboard and the daemon (--now cancels the running turn)
+```
+
+`Ctrl-C` in the `up` terminal closes only the dashboard. On Windows use `.agents\aidlc\scripts\loop.cmd` with the same commands. The rest of this step shows the underlying commands.
 
 `start` launches the singleton daemon (one per project) and reads no requirement. Add tasks with the web dashboard **New task** or loop intake, which reads the requirement from stdin (capped at 8192 bytes) and never from an argument:
 
