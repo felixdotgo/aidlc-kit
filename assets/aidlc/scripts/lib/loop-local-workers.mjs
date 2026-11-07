@@ -23,12 +23,38 @@ const commitPaths = (root, base, head) => lines(git(root, "diff", "--name-only",
 // Workflow state and assignment records are lead-owned and never in worker
 // scopes. Their ordinary updates must not block integrating code-only commits.
 const clean = (root) => { if (statusPaths(root).some((path) => !path.startsWith(".agents/data/"))) throw new Error("Local integration worktree must be clean outside workflow data"); };
+// A worker container that may still be running (and writing) must keep its claim.
+const cleanupUncertain = (message) => Object.assign(new Error(message), { cleanupUncertain: true });
+
+/**
+ * Release the claims of failed jobs this batch itself stopped, so a timed-out,
+ * stalled, or daemon-cancelled worker does not hold its item and owned paths
+ * until a human runs `assignment.mjs release`. A claim is released only when the
+ * job rejected before reporting and its container was removed for certain; a
+ * reported (successful but unintegrated) job, an uncertain container cleanup,
+ * or a failed release keeps the claim for reconciliation. Never throws: a
+ * release error must not mask the batch failure.
+ * `outcomes`: `[{ assignmentId, itemId, reported, settled }]`, `settled` being
+ * the job's `Promise.allSettled` entry. Returns `{ released, held }`.
+ */
+export async function releaseFailedAssignments({ root, taskId, outcomes, release }) {
+  const released = [], held = [];
+  for (const { assignmentId, itemId, reported, settled } of outcomes) {
+    if (settled.status === "fulfilled" || reported) { held.push({ itemId, reason: "reported, not integrated" }); continue; }
+    if (settled.reason?.cleanupUncertain) { held.push({ itemId, reason: "container cleanup uncertain" }); continue; }
+    try { await release(root, taskId, assignmentId); released.push(itemId); }
+    catch (error) { held.push({ itemId, reason: `release failed: ${error instanceof Error ? error.message : String(error)}` }); }
+  }
+  return { released, held };
+}
 
 /**
  * Execute a batch of independent local jobs in isolated worktrees, then integrate
  * verified scoped commits sequentially. Assignment metadata is not lifecycle
  * state: the caller alone marks canonical items done after inspecting results.
- * A failed batch is deliberately left for reconciliation, not auto-retried.
+ * A failed batch is not auto-retried: claims of failed jobs the batch stopped
+ * for certain are released (see releaseFailedAssignments); the rest are left
+ * for reconciliation.
  */
 export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, worktreesRoot: inputWorktreesRoot, docker, timeoutMs = 600000, leaseMs = 300000, maxTurns = 12, maxStallTurns = 2, claim = claimLocalAssignment, heartbeat = heartbeatLocalAssignment, report = reportLocalAssignment, release = releaseLocalAssignment, onEvent = () => {}, signal } = {}) {
   const root = resolve(inputRoot), worktreesRoot = resolve(inputWorktreesRoot);
@@ -103,7 +129,8 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
     for (const entry of prepared) { if (entry.created) git(root, "worktree", "remove", entry.workspace); rmSync(entry.snapshot, { recursive: true, force: true }); await release(root, taskId, entry.assignment.id); }
     throw error;
   }
-  const execute = async ({ job, assignment, workspace, snapshot, baseline, branch }) => {
+  const execute = async (entry) => {
+    const { job, assignment, workspace, snapshot, baseline, branch } = entry;
     let renewalError;
     const controller = new AbortController();
     // An external cancel (daemon shutdown stage 2) aborts every worker turn the
@@ -126,9 +153,9 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
           finally {
             try { dockerCheck("rm", "-f", containerName); }
             catch {
-              try { dockerCheck("info"); } catch { throw new Error("Docker cleanup uncertain: engine unavailable"); }
-              try { dockerCheck("inspect", containerName); throw new Error("Docker cleanup uncertain: container remains"); }
-              catch (error) { if (error.message === "Docker cleanup uncertain: container remains") throw error; }
+              try { dockerCheck("info"); } catch { throw cleanupUncertain("Docker cleanup uncertain: engine unavailable"); }
+              try { dockerCheck("inspect", containerName); throw cleanupUncertain("Docker cleanup uncertain: container remains"); }
+              catch (error) { if (error.cleanupUncertain) throw error; }
             }
           }
           if (renewalError || controller.signal.aborted) throw renewalError ?? new Error("Worker lease lost");
@@ -167,12 +194,18 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
       const commit = git(workspace, "rev-parse", "HEAD").trim(), committed = commitPaths(workspace, base, commit);
       if (commit === base || !committed.length || !scoped(committed, job.ownedPaths)) throw new Error("Worker commit is outside assignment scope");
       await report(root, taskId, assignment.id, { commit, changedPaths: committed, checkpoint: `provider=${job.agent}` });
+      entry.reported = true;
       return { assignmentId: assignment.id, itemId: job.itemId, workerId: job.workerId, agent: job.agent, baseCommit: base, branch, commit, changedPaths: committed, workspace };
     } finally { clearInterval(timer); signal?.removeEventListener("abort", onCancel); }
   };
   const results = await Promise.allSettled(prepared.map(execute));
   const failure = results.find((result) => result.status === "rejected");
-  if (failure) throw new Error(`Local worker batch requires reconciliation: ${failure.reason instanceof Error ? failure.reason.message : String(failure.reason)}`);
+  if (failure) {
+    const cause = failure.reason instanceof Error ? failure.reason.message : String(failure.reason);
+    const { released, held } = await releaseFailedAssignments({ root, taskId, release, outcomes: prepared.map((entry, index) => ({ assignmentId: entry.assignment.id, itemId: entry.job.itemId, reported: entry.reported === true, settled: results[index] })) });
+    if (!held.length) throw new Error(`Local worker batch failed: ${cause}; released assignment(s) for retry: ${released.join(", ")}`);
+    throw new Error(`Local worker batch requires reconciliation: ${cause}; released: ${released.join(", ") || "none"}; still held: ${held.map(({ itemId, reason }) => `${itemId} (${reason})`).join(", ")}`);
+  }
   const completed = results.map((result) => result.value);
   let expectedHead = base;
   for (const result of completed) {

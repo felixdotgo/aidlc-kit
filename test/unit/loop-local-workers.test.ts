@@ -63,3 +63,38 @@ test("local worker stops without integrating when its turn limit is reached", { 
   await assert.rejects(() => runLocalWorkerBatch({root,worktreesRoot,taskId:"task",jobs,...hooks,maxTurns:1,docker:{image:process.env.AIDLC_TEST_MULTITURN_IMAGE,credentials:{codex:["OPENAI_API_KEY"]}}}),/turn limit/);
   assert.equal(readFileSync(join(root,"a.txt"),"utf8"),"base\n");
 });
+
+const rejected = (reason: unknown) => ({ status: "rejected", reason });
+const recorder = (fail = new Set<string>()) => {
+  const calls: string[] = [];
+  return { calls, release: async (root: string, taskId: string, id: string) => { assert.equal(root, "/root"); assert.equal(taskId, "task"); calls.push(id); if (fail.has(id)) throw new Error("Assignment cannot be released"); } };
+};
+
+test("failed batch jobs the loop stopped release their claims for retry", async () => {
+  const { releaseFailedAssignments } = await load(), hook = recorder();
+  const outcomes = [{ assignmentId: "a1", itemId: "one", reported: false, settled: rejected(new Error("opencode turn timed out after 600000 ms")) }, { assignmentId: "a2", itemId: "two", reported: false, settled: rejected(new Error("Worker batch cancelled by daemon shutdown")) }];
+  assert.deepEqual(await releaseFailedAssignments({ root: "/root", taskId: "task", outcomes, release: hook.release }), { released: ["one", "two"], held: [] });
+  assert.deepEqual(hook.calls, ["a1", "a2"]);
+});
+
+test("failed batch keeps claims whose container cleanup is uncertain", async () => {
+  const { releaseFailedAssignments } = await load(), hook = recorder();
+  const uncertain = Object.assign(new Error("Docker cleanup uncertain: container remains"), { cleanupUncertain: true });
+  const outcomes = [{ assignmentId: "a1", itemId: "one", reported: false, settled: rejected(uncertain) }, { assignmentId: "a2", itemId: "two", reported: false, settled: rejected(new Error("Worker worker stalled")) }];
+  assert.deepEqual(await releaseFailedAssignments({ root: "/root", taskId: "task", outcomes, release: hook.release }), { released: ["two"], held: [{ itemId: "one", reason: "container cleanup uncertain" }] });
+  assert.deepEqual(hook.calls, ["a2"]);
+});
+
+test("failed batch keeps reported siblings for reconciliation", async () => {
+  const { releaseFailedAssignments } = await load(), hook = recorder();
+  const outcomes = [{ assignmentId: "a1", itemId: "one", reported: true, settled: { status: "fulfilled", value: {} } }, { assignmentId: "a2", itemId: "two", reported: true, settled: rejected(new Error("late failure")) }];
+  assert.deepEqual(await releaseFailedAssignments({ root: "/root", taskId: "task", outcomes, release: hook.release }), { released: [], held: [{ itemId: "one", reason: "reported, not integrated" }, { itemId: "two", reason: "reported, not integrated" }] });
+  assert.deepEqual(hook.calls, []);
+});
+
+test("failed batch release errors are held without masking the batch failure", async () => {
+  const { releaseFailedAssignments } = await load(), hook = recorder(new Set(["a1"]));
+  const outcomes = [{ assignmentId: "a1", itemId: "one", reported: false, settled: rejected("plain string failure") }, { assignmentId: "a2", itemId: "two", reported: false, settled: rejected(new Error("Worker worker changed no files")) }];
+  assert.deepEqual(await releaseFailedAssignments({ root: "/root", taskId: "task", outcomes, release: hook.release }), { released: ["two"], held: [{ itemId: "one", reason: "release failed: Assignment cannot be released" }] });
+  assert.deepEqual(hook.calls, ["a1", "a2"]);
+});
