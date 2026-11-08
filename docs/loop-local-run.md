@@ -149,38 +149,39 @@ A clarify or plan turn can take minutes without output. At a gate the daemon pri
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit ui .   # loop.sh up starts the same dashboard
 ```
 
-Branded **Loop**, binds `127.0.0.1:4173` by default, prints a **login URL** (`http://127.0.0.1:4173/#token=…`).
+Branded **Loop**, binds `127.0.0.1:4173` by default and prints `Open: http://127.0.0.1:4173` (or pass `--open`).
 
-**Signing in**
+**Access**
 
-- Open the login URL (or pass `--open`). The page stores the token in `localStorage` and strips it from the address bar; mutating actions (new task, resume, gate feedback, gate approve) then work. **⚙ Settings** accepts a pasted token.
-- The token is new on every start; `--token-file ~/.aidlc-ui-token` (outside the project, mode `600`, created if missing) survives restarts.
-- Another origin or a foreign `Host` header gets `403` ([Dashboard authentication](./command-reference.md#dashboard-authentication)). The terminal `loop-gate.mjs` needs no token.
+- There is no login or session token: the dashboard is for a trusted local machine or internal network. Mutating actions (new task, resume, gate feedback, gate approve) work right away from the page.
+- Another origin, a foreign `Host` header, or a request that does not look like the dashboard's own `fetch` gets `403` ([Dashboard access](./command-reference.md#dashboard-access)). Binding to a non-loopback address prints a warning that the dashboard has no authentication.
 
 **Header and updates**
 
 - Header: authority (`authority · local`), daemon state, and a bell listing tasks needing review. The daemon pill turns amber (**daemon · N errors**) while a turn or poll keeps failing; hover for messages.
 - Pages poll about every 1.5 s and patch only what changed. An unreachable server shows a **reconnecting…** pill and polling backs off.
-- A new gate updates the bell, the tab title (`(2) Loop`), and a **Review needed** toast; no browser notification permission is requested.
-- Light/dark follows the system. Shortcuts: <kbd>N</kbd> new task, <kbd>/</kbd> search, <kbd>Esc</kbd> close.
+- A new gate updates the bell, the tab title (`(2) Loop`), and a **Review needed** toast; with **Settings → notifications** on, a browser notification too (permission is asked only then).
+- Light/dark follows the system unless pinned in **Settings**. Shortcuts: <kbd>N</kbd> new task, <kbd>/</kbd> search, <kbd>Esc</kbd> close.
 
 **Where things live**
 
 | Where | What |
 | --- | --- |
 | Header bell | Tasks waiting at a gate (5 newest; **Load more**). A `blocked_on_user` card shows **review**, which opens the detail page. |
-| Card | Title only (id on hover and in search). Click opens the side panel and adds `?task=<task-id>` to the URL; ctrl/cmd/middle-click opens the full page in a new tab, shift-click in this tab. |
+| Card | Title only (id on hover and in search). Click opens the side panel and adds `?task=<task-id>` to the URL (or the full page, per **Settings**); ctrl/cmd/middle-click opens the full page in a new tab, shift-click in this tab. |
 | Side panel | Stepper (clarify → plan → build → wrap → done), artifacts, last 20 important log lines, a copy button for the id, **Open full page ↗**; at a gate, **Open review →**. |
-| Detail page `/tasks/<task-id>` | The only place with gate approval and feedback; full live log. |
+| Detail page `/tasks/<task-id>` | The only place with gate approval and feedback; containers, full live log — the one place to follow everything a task does. |
+| Settings (header ⚙) | Browser-only preferences: theme, live-update interval or pause, browser notifications for reviews, live log defaults, diff wrap / ignore whitespace, container log tail size, card click target. **Reset to defaults** restores them. |
+| Containers (detail page) | Every worker container the loop ran for the task (local or fleet; same layout), newest first: worker, item, turn, `running` / `exited <code>` / `signal`, start time and duration, host when recorded elsewhere. **Log** opens the raw output of that assignment (all turns, stdout and stderr unredacted) with **Follow** while it runs; the tail size comes from Settings. `docker · unavailable` means the state comes from the index only. |
 | Review panel (while `blocked_on_user`) | **Feedback** textarea + **Send feedback (stay at gate)**; **Approve** note + **✓ Approve** (popup; only **Confirm approve** sends). |
 | Approve semantics | The note is audit provenance, never feedback. A moved gate is refused with `409`. After feedback a **feedback pending** pill shows until approval; failing structural checks replace the gate view. |
 | New task (side panel) | Markdown editor. **Create task** runs loop intake and starts the daemon if none runs (stderr → `.agents/data/loop/daemon.log`); a toast shows the id or the intake error. |
 | Search and filters | Browser-only; never call the API. The **done** column shows 8 recent tasks; **Show N more** expands it. |
 | resume | On `paused` tasks; sets them back to `active`. |
 | Live log (detail page) | Lines `time · actor · what happened`, grouped by turn. **Important** (default) hides bookkeeping, **All** shows everything, **Raw JSON** shows the events. |
-| Changes `/tasks/<id>/changes` | Files each work item changed and their diff, from the commits local workers recorded; without loop records, the uncommitted working tree. |
+| Changes `/tasks/<id>/changes` | Files and diff per work item from the commits workers recorded; otherwise the task range from the task's `baseCommit` to its `finalCommit` (or `HEAD` plus the working tree while open) — so a task driven from the terminal, or a finished task whose worker worktrees are gone, still shows its changes; last resort, the uncommitted working tree. **Wrap lines** and **Ignore whitespace** toggles. |
 
-Live log files: the log replays the last 200 events of `.agents/data/loop/events/<task-id>.jsonl` (1 MiB, one `.1` generation), then follows live; older tasks fall back to the global `.agents/data/loop/ui-events.jsonl` (rotated to `.jsonl.1` at 5 MB), written only when `AIDLC_LOOP_EVENT_LOG` points at it. **Docs** in the header opens these guides.
+Live log files: the log replays the last 200 events of `.agents/data/loop/events/<task-id>.jsonl` (1 MiB, one `.1` generation), then follows live; older tasks fall back to the global `.agents/data/loop/ui-events.jsonl` (rotated to `.jsonl.1` at 5 MB), written only when `AIDLC_LOOP_EVENT_LOG` points at it. Container output is separate: `.agents/data/tasks/<task-id>/runtime/workers/<assignment>.log` (5 MiB, one `.log.1` generation) next to `index.json`, never committed. **Docs** in the header opens these guides.
 
 ## Worker Docker image
 
@@ -194,6 +195,7 @@ The build phase runs workers in Docker containers whose image contains the provi
   ```
 
 - Images named `aidlc-worker-*-test:local` contain only a fake CLI for tests. The real image is `node:24-bookworm-slim` (Debian/glibc, because `opencode` is a dynamically linked ELF) with the CLI from `npm install -g`.
+- Each worker container is started with labels `aidlc.task`, `aidlc.item`, `aidlc.worker`, and `aidlc.assignment` (`docker ps --filter label=aidlc.task=<task-id>` lists a task's workers), and its stdout/stderr are teed unredacted into the task's `runtime/workers/` log while the live log keeps only summaries.
 - The container runs non-root and `--read-only`, so the CLI must be on the system `PATH` (npm global → `/usr/local/bin`). `opencode` uses `@opencode/cli` (OpenCode 2), **not** `opencode-ai` (OpenCode 1).
 - Worker credentials come from the environment, per model: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENCODE_API_KEY`. Preflight runs `docker run … --entrypoint <cli> --version`; a missing or invalid binary fails before any worker starts.
 

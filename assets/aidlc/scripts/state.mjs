@@ -6,13 +6,14 @@
 import { acquireStateLock, approveAndAdvance, checkGate, closeTask, failEntry, handoffTask, listTaskSummaries, loadMemoryRegistry, loadState, loadTask, migrateState, nextAction, option, parseArguments, promoteAgenticMemory, rebuildLessonIndex, recordLesson, recordNoLessons, renderViews, reopenTask, retireAgenticMemory, rootOption, saveState, searchLessons, supersedeTask, transitionTask, validateArguments } from "./lib/runtime.mjs";
 import { readLiveLease } from "./lib/loop-lease.mjs";
 import { listFeatures, loadFeature, readyFeatureTasks, saveFeature } from "./lib/feature-store.mjs";
-import { readyTaskItems } from "./lib/store.mjs";
+import { readyTaskItems, recordTaskCommit } from "./lib/store.mjs";
+import { headCommit } from "./lib/repo-head.mjs";
 import { requireLocalAuthority } from "./lib/authority.mjs";
 
 try {
 requireLocalAuthority();
 const raw = process.argv.slice(2);
-const valueOptions = ["--root", "--status", "--limit", "--cursor", "--query", "--title", "--type", "--language", "--risk", "--area", "--mode", "--reason", "--source", "--to", "--kind", "--successor", "--label", "--resolution", "--result", "--gate", "--detail", "--summary", "--prevention", "--example", "--promotion", "--guidance", "--phase", "--priority", "--source-task", "--source-lesson", "--approved-by", "--switch-from", "--feature", "--depends-on", "--branch", "--owns"];
+const valueOptions = ["--root", "--status", "--limit", "--cursor", "--query", "--title", "--type", "--language", "--risk", "--area", "--mode", "--reason", "--source", "--to", "--kind", "--successor", "--label", "--resolution", "--result", "--gate", "--detail", "--summary", "--prevention", "--example", "--promotion", "--guidance", "--phase", "--priority", "--source-task", "--source-lesson", "--approved-by", "--switch-from", "--feature", "--depends-on", "--branch", "--owns", "--base-commit", "--final-commit"];
 const parsed = parseArguments(raw, { valueOptions, booleanOptions: ["--include-archive"] });
 const args = parsed.positionals;
 const [group, action, rawId] = args;
@@ -24,9 +25,9 @@ const schemas = {
   "task find": { minPositionals: 2, valueOptions: ["--query", "--status", "--limit", "--cursor"], booleanOptions: ["--include-archive"], requiredOptions: ["--query"] },
   "task next": { minPositionals: 3 },
   "task ready": { minPositionals: 3 },
-  "task create": { minPositionals: 3, valueOptions: ["--title", "--type", "--language", "--risk", "--area", "--switch-from", "--feature", "--depends-on"], requiredOptions: ["--title"] },
-  "task transition": { minPositionals: 3, valueOptions: ["--mode", "--reason", "--source", "--to"], requiredOptions: ["--mode", "--reason", "--source", "--to"], usage: "task transition requires --mode audited, --reason, --source, and --to" },
-  "task archive": { minPositionals: 3, valueOptions: ["--reason", "--source"], requiredOptions: ["--reason", "--source"] },
+  "task create": { minPositionals: 3, valueOptions: ["--title", "--type", "--language", "--risk", "--area", "--switch-from", "--feature", "--depends-on", "--base-commit"], requiredOptions: ["--title"] },
+  "task transition": { minPositionals: 3, valueOptions: ["--mode", "--reason", "--source", "--to", "--final-commit"], requiredOptions: ["--mode", "--reason", "--source", "--to"], usage: "task transition requires --mode audited, --reason, --source, and --to" },
+  "task archive": { minPositionals: 3, valueOptions: ["--reason", "--source", "--final-commit"], requiredOptions: ["--reason", "--source"] },
   "task handoff": { minPositionals: 3, valueOptions: ["--kind", "--reason", "--source"], requiredOptions: ["--kind", "--reason", "--source"] },
   "task close": { minPositionals: 3, valueOptions: ["--reason", "--source"], requiredOptions: ["--reason", "--source"] },
   "task supersede": { minPositionals: 3, valueOptions: ["--successor", "--reason", "--source"], requiredOptions: ["--successor", "--reason", "--source"] },
@@ -75,6 +76,7 @@ const summaryOptions = (query) => ({
   cursor: numberOption("--cursor", 0)
 });
 const warnings = [];
+const recordFinalCommit = (task) => { const sha = option(parsed, "--final-commit") ?? headCommit(root); if (sha !== undefined) recordTaskCommit(task, "finalCommit", sha); };
 const derivedStep = (code, hint, step) => { try { step(); } catch (error) { warnings.push({ code, message: error instanceof Error ? error.message : String(error), hint }); } };
 const persist = (tasks, rebuildLessons = false) => {
   const archived = saveState(root, state);
@@ -158,6 +160,8 @@ if (group === "state" && action === "migrate") {
     artifacts: { intent: `.agents/data/tasks/${id}/intent.md`, design: `.agents/data/tasks/${id}/design.md`, workplan: `.agents/data/tasks/${id}/workplan.md` },
     decisions: [], tasks: [], evidence: [], createdAt: recordedAt, updatedAt: recordedAt
   };
+  const baseCommit = option(parsed, "--base-commit") ?? headCommit(root);
+  if (baseCommit !== undefined) recordTaskCommit(task, "baseCommit", baseCommit);
   const acknowledgedTasks = acknowledged.map((ack) => state.tasks[ack]);
   for (const prior of acknowledgedTasks) {
     prior.evidence.push({ kind: "diagnostic", result: "pass", source: `task create ${id}`, detail: `Switch acknowledged: created ${id} while ${prior.id} was actionable; ${prior.id} keeps its state — resume with task next ${prior.id}`, recordedAt });
@@ -172,13 +176,16 @@ if (group === "state" && action === "migrate") {
 } else if (group === "task" && action === "transition") {
   const mode = option(parsed, "--mode"); const reason = option(parsed, "--reason"); const source = option(parsed, "--source");
   if (mode !== "audited" || !reason?.trim() || !source?.trim()) throw new Error("task transition requires --mode audited, --reason, and --source");
-  const from = state.tasks[id]?.phase; const target = option(parsed, "--to"); if (target === "done") requireFeaturePrerequisites(state.tasks[id]); const task = transitionTask(state, id, target);
+  const from = state.tasks[id]?.phase; const target = option(parsed, "--to"); if (target === "done") requireFeaturePrerequisites(state.tasks[id]);
+  if (target !== "done" && option(parsed, "--final-commit") !== undefined) throw new Error("--final-commit is only accepted with --to done");
+  const task = transitionTask(state, id, target);
+  if (target === "done") recordFinalCommit(task);
   task.evidence.push({ kind: "diagnostic", result: "pass", source, detail: `Audited transition ${from} → ${target}: ${reason}`, recordedAt: now() });
   persist([task]); respond(task);
 } else if (group === "task" && action === "archive") {
   const reason = option(parsed, "--reason"); const source = option(parsed, "--source");
   if (!reason?.trim() || !source?.trim()) throw new Error("task archive requires --reason and --source");
-  requireFeaturePrerequisites(state.tasks[id]); const task = transitionTask(state, id, "done");
+  requireFeaturePrerequisites(state.tasks[id]); const task = transitionTask(state, id, "done"); recordFinalCommit(task);
   task.evidence.push({ kind: "diagnostic", result: "pass", source, detail: `Archive to done: ${reason}`, recordedAt: now() });
   persist([task], true); respond(task);
 } else if (group === "task" && action === "handoff") {

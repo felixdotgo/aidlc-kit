@@ -77,13 +77,12 @@ export const runLoopCommand = async (args: string[]): Promise<void> => {
 
 export const runUi = async (args: string[]): Promise<void> => {
   assertKnownOptions(args, UI_FLAGS);
-  const tokenFile = value(args, "--token-file");
   const reviewerTokenFile = value(args, "--reviewer-token-file");
   const port = Number(value(args, "--port") ?? 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be an integer between 1 and 65535");
   await serveDashboard({
     root: resolve(rootArg(args)), host: value(args, "--host") ?? "127.0.0.1", port, open: flags(args).has("--open"),
-    ...(tokenFile ? { tokenFile } : {}), ...(reviewerTokenFile ? { reviewerTokenFile } : {}),
+    ...(reviewerTokenFile ? { reviewerTokenFile } : {}),
   });
 };
 

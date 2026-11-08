@@ -4,12 +4,16 @@
  * - Keeps Bulma's default palette (primary teal, link blue).
  * - Flat, enterprise look: white canvas, 1px hairline borders, small radii,
  *   no elevation except overlays (drawer, modal, toast).
- * - Dark mode follows the system automatically: Bulma switches its scheme
- *   variables inside `@media (prefers-color-scheme: dark)`, and every colour
- *   below is expressed through `--bulma-*` variables so it follows along.
- *   Never override scheme lightness (`--bulma-*-l`) on a bare `:root` here:
- *   it has the same specificity as Bulma's media-query block and would pin
- *   one scheme.
+ * - Dark mode: `html[data-theme="dark"|"light"]` (set before first paint from
+ *   Settings → Appearance, see layout.ts) pins a scheme through Bulma's own
+ *   `[data-theme]` blocks; without it (`system`) Bulma follows
+ *   `@media (prefers-color-scheme: dark)`. Every colour below is expressed
+ *   through `--bulma-*` variables so it follows along, and the few dashboard
+ *   variables that differ per scheme are declared twice: once for the explicit
+ *   dark theme and once for the system preference when no light theme is
+ *   pinned. Never override scheme lightness (`--bulma-*-l`) on a bare `:root`
+ *   here: it has the same specificity as Bulma's media-query block and would
+ *   pin one scheme.
  * - Custom components use the `ad-` prefix to avoid clashing with Bulma.
  */
 
@@ -36,8 +40,16 @@
   --ad-transition: 160ms ease;
 }
 
+/* Dark-scheme variables: explicit dark theme, or the OS preference unless light is pinned. */
+html[data-theme="dark"] {
+  --ad-shadow-lg: 0 12px 32px -6px hsla(0, 0%, 0%, 0.7), 0 0 0 1px hsla(0, 0%, 100%, 0.06);
+  --ad-surface: var(--bulma-scheme-main);
+  --ad-canvas: var(--bulma-scheme-main);
+  --ad-subtle: var(--bulma-scheme-main-bis);
+  --ad-log-bg: hsl(222, 25%, 6%);
+}
 @media (prefers-color-scheme: dark) {
-  :root {
+  html:not([data-theme="light"]) {
     --ad-shadow-lg: 0 12px 32px -6px hsla(0, 0%, 0%, 0.7), 0 0 0 1px hsla(0, 0%, 100%, 0.06);
     --ad-surface: var(--bulma-scheme-main);
     --ad-canvas: var(--bulma-scheme-main);
@@ -45,6 +57,8 @@
     --ad-log-bg: hsl(222, 25%, 6%);
   }
 }
+html[data-theme="dark"] { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
 
 html { background-color: var(--ad-canvas); scroll-padding-top: 5rem; }
 body { min-height: 100vh; font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; }
@@ -99,7 +113,8 @@ kbd, .ad-kbd {
 .button.ad-soft.is-link { background: var(--bulma-link-soft); color: var(--bulma-link-bold); }
 .button.ad-soft.is-danger { background: var(--bulma-danger-soft); color: var(--bulma-danger-bold); }
 .button.ad-soft:hover { filter: brightness(0.96); }
-@media (prefers-color-scheme: dark) { .button.ad-soft:hover { filter: brightness(1.2); } }
+html[data-theme="dark"] .button.ad-soft:hover { filter: brightness(1.2); }
+@media (prefers-color-scheme: dark) { html:not([data-theme="light"]) .button.ad-soft:hover { filter: brightness(1.2); } }
 
 /* ---------- Live regions (morphed in place; never a layout box) ---------- */
 .ad-live { display: contents; }
@@ -455,10 +470,6 @@ html[data-view="list"] #kanban-view { display: none; }
 .ad-drawer-body .ad-sticky { position: static; }
 .ad-drawer-body .ad-page-title { font-size: 1.3rem; }
 
-/* ---------- Footer help ---------- */
-.ad-help { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--bulma-border-weak); font-size: 0.8rem; color: var(--ad-muted); line-height: 1.6; }
-.ad-help code { font-size: 0.78rem; }
-
 /* ---------- Responsive ---------- */
 @media screen and (max-width: 1023px) {
   .ad-board { grid-template-columns: repeat(5, minmax(16rem, 80vw)); scroll-snap-type: x mandatory; }
@@ -575,6 +586,17 @@ html[data-view="list"] #kanban-view { display: none; }
 }
 .ad-editor-preview { min-height: 18rem; padding: 0.85rem 1rem; overflow: auto; }
 
+/* ---------- Settings dialog ---------- */
+.ad-settings { display: flex; flex-direction: column; gap: 1.1rem; }
+.ad-settings-group { margin: 0; padding: 0 0 1rem; border: 0; border-bottom: 1px solid var(--bulma-border-weak); min-inline-size: 0; }
+.ad-settings-group:last-child { padding-bottom: 0; border-bottom: 0; }
+.ad-settings-group > legend { padding: 0; margin-bottom: 0.6rem; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ad-muted); }
+.ad-settings .field:last-child { margin-bottom: 0; }
+.ad-settings .label.is-small { margin-bottom: 0.3rem; font-weight: 600; }
+.ad-settings-radios { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
+.ad-settings .radio input, .ad-settings .checkbox input { margin-right: 0.4rem; }
+.ad-settings .help.is-danger { color: var(--bulma-danger-bold); }
+
 /* ---------- Docs pages ---------- */
 .ad-docs { display: grid; grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
 .ad-docs-nav { position: sticky; top: 4.5rem; max-height: calc(100vh - 6rem); overflow-y: auto; font-size: 0.85rem; }
@@ -598,3 +620,17 @@ html[data-view="list"] #kanban-view { display: none; }
   .ad-docs-nav { position: static; max-height: none; }
   .ad-drawer.is-compose .ad-drawer-panel { width: 100vw; }
 }
+
+/* Containers */
+/* The container log viewer sits inside the Containers panel, under the table. */
+.ad-panel .ad-container-log { margin: 0; border-radius: 0; border-top: 1px solid var(--bulma-border-weak); }
+.ad-container-log[hidden] { display: none; }
+.ad-container-log .ad-terminal-head { flex-wrap: wrap; }
+.ad-container-log .log-panel { height: 20rem; }
+.ad-container-log [data-container-log-name] { font-family: var(--bulma-family-code); }
+
+/* ---------- Code changes page: wrap toggle and toolbar options ---------- */
+.ad-changes-diff.is-wrapped .ad-diff-line { white-space: pre-wrap; word-break: break-word; min-width: 0; }
+.ad-changes-form { display: inline-flex; align-items: center; gap: 0.6rem; }
+.ad-changes-options { display: inline-flex; align-items: center; gap: 0.9rem; margin-left: auto; font-size: 0.8rem; }
+.ad-changes-options label { display: inline-flex; align-items: center; gap: 0.3rem; cursor: pointer; }

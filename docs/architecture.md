@@ -34,7 +34,9 @@ Layouts: **source** (editable `assets/aidlc/`, `skills/`), **bundle** (generated
 ### Web dashboard modules
 
 - `src/ui/server`: route table (`ROUTES`) and `startUiServer`.
-- `src/ui/security`: Host, Origin, token checks.
+- `src/ui/security`: Host and request-shape checks (Origin, `Sec-Fetch-Site`, custom header); there is no session token.
+- `src/ui/containers`: per-task worker container index and raw log tail (`.agents/data/tasks/<id>/runtime/workers/`), with `docker ps` enrichment.
+- `src/ui/changes`: code changes with one source order for every mode (fleet snapshot → assignments → task range from `baseCommit`/`finalCommit` → working tree).
 - `src/ui/options`, `src/ui/http`: option parsing, HTTP helpers.
 - `src/ui/assets`: whitelisted static CSS/JS from `assets/ui/`.
 - `src/ui/daemon`: daemon status, health, spawned script actions.
@@ -79,6 +81,8 @@ Dispatch derives from task `nextAction` and dependency-ready work; assignment re
 | Variant | Authority | How it runs |
 | --- | --- | --- |
 | Interactive | Local `.agents/data/state/` | In the current agent conversation; native workers claim and checkpoint via assignment records in `.agents/data/loop/`. |
+
+Every variant is a wrapper around the same data: the canonical task state (including `baseCommit`/`finalCommit`, written by `state.mjs` locally and `remote-state.mjs` in fleet mode through the shared core) and the task directory `.agents/data/tasks/<id>/` — review artifacts at its root, operational runtime data under `runtime/` (worker container index and logs, identical for local and fleet workers; absent without the loop). `.agents/data/loop/` holds only daemon and process state.
 | Local | Local `.agents/data/state/` | Singleton daemon (`loop start` or `loop.sh up`): host-executed lead, Docker-isolated workers; gate approval only via trusted host terminal or dashboard. |
 | Fleet | Coordination service | Service owns supervisor leases, gate checkpoints, reviewer approval; Docker workers hold own credentials; Git uses fenced lead/worker claims with commit handoff. SQLite single-host, PostgreSQL multi-host. |
 

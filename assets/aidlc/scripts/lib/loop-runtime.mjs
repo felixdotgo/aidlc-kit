@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { acquireTaskLease, assertLoopPath, heldTaskLease, readLiveLease, readTaskLease } from "./loop-lease.mjs";
 import { explainHolder } from "./loop-holder.mjs";
 import { isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
+import { isLoopOperationalPath } from "./loop-git.mjs";
 
 export const DEFAULT_LIMITS = Object.freeze({ maxTurns: 12, turnTimeoutMs: 600000, maxStallTurns: 2 });
 const states = new Set(["running", "gate", "paused", "blocked", "terminal", "complete", "stopped"]);
@@ -115,7 +116,7 @@ function worktreeSignal(root) {
     const status = entry.slice(0, 2);
     let name = entry.slice(3);
     if (/^[RC]/.test(status) || /[RC]$/.test(status)) name = entries[++i] ?? name;
-    if (name.startsWith(".agents/data/loop/")) continue;
+    if (isLoopOperationalPath(name)) continue;
     const path = resolve(root, name);
     if (!path.startsWith(`${root}/`)) return { kind: "unknown", reason: "unsafe changed path" };
     try {

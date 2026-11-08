@@ -6,7 +6,8 @@ import { promisify } from "node:util";
 import { createRemoteReviewerClient, createRemoteStateClient, featureConfig, remoteConfig, reviewerConfig } from "./lib/remote-state-client.mjs";
 import { compileContext } from "./lib/context-runtime.mjs";
 import { explainFleetConflict } from "./lib/loop-holder.mjs";
-import { checkGate, closeTask, handoffTask, nextAction, readyTaskItems, recordLesson, recordNoLessons, reopenTask, transitionTask, validateState } from "./lib/store.mjs";
+import { checkGate, closeTask, handoffTask, nextAction, readyTaskItems, recordLesson, recordNoLessons, recordTaskCommit, reopenTask, transitionTask, validateState } from "./lib/store.mjs";
+import { headCommit } from "./lib/repo-head.mjs";
 
 const parse = (argv) => {
   const positionals = []; const options = new Map();
@@ -55,9 +56,9 @@ export const runRemoteState = async (argv, client, root, git = {}) => {
   required(id, "task id");
   const allowed = {
     "task show": [], "task next": [], "task ready": [], "gate check": ["--gate"], "phase context": ["--phase", "--mode", "--item"],
-    "task create": ["--title", "--type", "--language", "--risk", "--area", "--feature"],
+    "task create": ["--title", "--type", "--language", "--risk", "--area", "--feature", "--base-commit"],
     "task status": ["--status", "--mode", "--reason", "--source"], "task item": ["--status", "--label", "--depends-on", "--owns"],
-    "task transition": ["--to", "--mode", "--reason", "--source"],
+    "task transition": ["--to", "--mode", "--reason", "--source", "--final-commit"],
     "task handoff": ["--kind", "--reason", "--source"], "task close": ["--reason", "--source"], "task reopen": ["--to", "--reason", "--source"],
     "decision set": ["--status", "--label", "--resolution"],
     "evidence add": ["--kind", "--result", "--gate", "--area", "--source", "--detail"],
@@ -119,6 +120,8 @@ export const runRemoteState = async (argv, client, root, git = {}) => {
       areas: (option("--area") ?? "root").split(",").map((item) => item.trim()).filter(Boolean), branch: "—",
       artifacts: { intent: `.agents/data/tasks/${id}/intent.md`, design: `.agents/data/tasks/${id}/design.md`, workplan: `.agents/data/tasks/${id}/workplan.md` },
       decisions: [], tasks: [], evidence: [], createdAt: recordedAt, updatedAt: recordedAt };
+    const baseCommit = option("--base-commit") ?? headCommit(root);
+    if (baseCommit !== undefined) recordTaskCommit(task, "baseCommit", baseCommit);
   } else {
     if (!previous) throw new Error(`Unknown task: ${id}`);
     task = structuredClone(previous);
@@ -162,6 +165,7 @@ export const runRemoteState = async (argv, client, root, git = {}) => {
       if (option("--mode") !== "audited") throw new Error("Transition requires --mode audited");
       const reason = required(option("--reason"), "--reason"); const source = required(option("--source"), "--source");
       const target = required(option("--to"), "--to");
+      if (target !== "done" && option("--final-commit") !== undefined) throw new Error("--final-commit is only accepted with --to done");
       if (target === "done" && task.featureId) {
         const manifest = await client.featureGet(task.featureId);
         const member = manifest?.feature?.tasks?.find((entry) => entry.id === id);
@@ -172,6 +176,7 @@ export const runRemoteState = async (argv, client, root, git = {}) => {
       const clone = structuredClone(state); clone.tasks[id] = task;
       transitionTask(clone, id, target);
       task = clone.tasks[id];
+      if (target === "done") { const finalCommit = option("--final-commit") ?? headCommit(root); if (finalCommit !== undefined) recordTaskCommit(task, "finalCommit", finalCommit); }
       task.evidence.push({ kind: "diagnostic", result: "pass", source, detail: `Audited transition ${previous.phase} → ${target}: ${reason}`, recordedAt: now() });
     } else if (route === "decision set") {
       const status = required(option("--status"), "--status");

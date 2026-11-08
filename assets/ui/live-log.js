@@ -129,10 +129,22 @@
   window.aidlcLiveLog = { describe, clock };
 
   /* ---- Rendering ---- */
+  // Page-level filter/raw choice; until the user picks one here, the Settings defaults
+  // (`logFilter`, `logRaw` in window.aidlcSettings) apply.
   const PREFS_KEY = "aidlc-live-log";
+  const settingsDefaults = () => {
+    const settings = window.aidlcSettings && typeof window.aidlcSettings.get === "function" ? window.aidlcSettings.get() : {};
+    return { filter: settings.logFilter === "all" ? "all" : "important", raw: settings.logRaw === true };
+  };
   const readPrefs = () => {
-    try { const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}"); return { filter: saved.filter === "all" ? "all" : "important", raw: saved.raw === true }; }
-    catch (error) { return { filter: "important", raw: false }; }
+    const fallback = settingsDefaults();
+    try {
+      const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
+      return {
+        filter: saved.filter === "all" || saved.filter === "important" ? saved.filter : fallback.filter,
+        raw: typeof saved.raw === "boolean" ? saved.raw : fallback.raw,
+      };
+    } catch (error) { return fallback; }
   };
   const prefs = readPrefs();
   const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (error) { /* storage disabled */ } };

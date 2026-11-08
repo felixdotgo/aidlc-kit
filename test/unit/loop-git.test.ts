@@ -265,6 +265,10 @@ test("fleet worker executes isolated Docker image and pushes a scoped commit", {
   const result=await runFleetCli(["worker","--once"],{env,callTool,out:()=>{}});
   assert.equal(result.status,"reported"); assert.deepEqual(reported.changedPaths,["a.txt"]);
   assert.equal((await leadHandoff.verify({job:{...job,report:{commitSha:reported.commitSha,changedPaths:reported.changedPaths}}})).valid,true);
+  // The fleet worker records its container and raw output under the task's runtime directory of its own checkout.
+  const index=JSON.parse(readFileSync(join(worker,".agents/data/tasks/task-a/runtime/workers/index.json"),"utf8"));
+  assert.ok(index.length>=1); assert.equal(index[0].mode,"fleet"); assert.equal(index[0].workerId,"worker"); assert.equal(index[0].itemId,"T1"); assert.equal(index[0].exitCode,0);
+  assert.match(readFileSync(join(worker,".agents/data/tasks/task-a/runtime/workers",index[0].log),"utf8"),/^--- turn 1 container aidlc-worker-/);
 });
 
 test("lead handoff ignores host-local loop operational files but still rejects other dirt", async (t) => {
@@ -278,5 +282,21 @@ test("lead handoff ignores host-local loop operational files but still rejects o
   const artifact = await leadHandoff.prepare({ taskId: "task-a", item: { id: "T1", ownedPaths: ["a.txt"], agent: "codex" } });
   assert.match(artifact.baseCommit, /^[a-f0-9]{40}$/);
   writeFileSync(join(lead, "b.txt"), "dirty\n");
+  await assert.rejects(() => leadHandoff.prepare({ taskId: "task-a", item: { id: "T2", ownedPaths: ["a.txt"], agent: "codex" } }), /must be clean/);
+});
+
+test("lead handoff ignores per-task runtime data but still rejects task artifacts", async (t) => {
+  const { lead } = fixture(t);
+  const { createLeadGitHandoff, isLoopOperationalPath } = await load();
+  for (const path of [".agents/data/loop/daemon.lock", ".agents/data/loop/events/task-a.jsonl", ".agents/data/tasks/task-a/runtime/workers/index.json", ".agents/data/tasks/task-a/runtime/workers/job-1.log", ".agents/data/tasks/x/runtime/"]) assert.equal(isLoopOperationalPath(path), true, path);
+  for (const path of [".agents/data/tasks/task-a/design.md", ".agents/data/tasks/task-a/runtime", ".agents/data/tasks/runtime/x", ".agents/data/state.json", "src/runtime/x.ts", "", undefined]) assert.equal(isLoopOperationalPath(path), false, String(path));
+  const leadHandoff = createLeadGitHandoff({ root: lead, integrationBranch: "feature" });
+  // Worker container index and raw logs live under the task's runtime directory.
+  mkdirSync(join(lead, ".agents/data/tasks/task-a/runtime/workers"), { recursive: true });
+  writeFileSync(join(lead, ".agents/data/tasks/task-a/runtime/workers/index.json"), "[]\n");
+  writeFileSync(join(lead, ".agents/data/tasks/task-a/runtime/workers/job-1.log"), "--- turn 1 ---\n");
+  const artifact = await leadHandoff.prepare({ taskId: "task-a", item: { id: "T1", ownedPaths: ["a.txt"], agent: "codex" } });
+  assert.match(artifact.baseCommit, /^[a-f0-9]{40}$/);
+  writeFileSync(join(lead, ".agents/data/tasks/task-a/design.md"), "# dirty\n");
   await assert.rejects(() => leadHandoff.prepare({ taskId: "task-a", item: { id: "T2", ownedPaths: ["a.txt"], agent: "codex" } }), /must be clean/);
 });

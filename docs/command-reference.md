@@ -197,33 +197,35 @@ Fleet workers run through the fleet runner on each worker machine; a reviewer ap
 ## `ui`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--token-file PATH] [--reviewer-token-file PATH]
+npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--reviewer-token-file PATH]
 ```
 
 - Web dashboard on `node:http` (no extra dependencies). The project is the positional `path` (default `.`); there is no `--root` flag.
 - Authority comes from `loop.mode` (header: `authority · local` or `authority · fleet`). Local dashboards read canonical state in-process; fleet dashboards read tasks, details, and gate snapshots through the `loop-entry.mjs` JSON actions.
-- Dashboard usage (board, side panel, live log, feedback): [Local loop walkthrough](./loop-local-run.md#use-the-web-dashboard).
+- Dashboard usage (board, side panel, live log, containers, changes, settings, feedback): [Local loop walkthrough](./loop-local-run.md#use-the-web-dashboard).
+- No session token: the dashboard is meant for a trusted local or LAN network and relies on request-shape guards ([Dashboard access](#dashboard-access)).
 
 | Flag | Effect |
 | --- | --- |
-| `--port`, `--host` | Bind address; defaults to `127.0.0.1:4173`. Pass `--host 0.0.0.0` only as an explicit opt-in. |
-| `--open` | Launches the system browser with the login URL (best effort; the URL is printed anyway). |
-| `--token-file PATH` | Fixed session token from `PATH` so the browser stays signed in across restarts. The file must live outside the project, be a regular non-symlink file with mode `600`/`400`, and hold one 16–256 character token; a missing file is created with a random token. |
+| `--port`, `--host` | Bind address; defaults to `127.0.0.1:4173`. Pass `--host 0.0.0.0` only as an explicit opt-in; a non-loopback bind prints `Warning: the dashboard has no authentication; expose it only on a trusted network.` |
+| `--open` | Launches the system browser with the dashboard URL (best effort; the URL is printed anyway). |
 | `--reviewer-token-file PATH` | Fleet only: reads the reviewer credential from `PATH` (same file rules, never created). `AIDLC_FLEET_REVIEWER_TOKEN` in the `ui` environment works the same way. |
 
 ### Routes
 
 - `GET /` — kanban board by `phase` with list toggle, **Settings**, and **New task**; `/?task=<id>` opens the task side panel.
 - `GET /docs[/<slug>]` — the packaged guides; only whitelisted slugs are served (`404` otherwise).
-- `POST /api/markdown` (field `markdown`, token required) — `{ ok, html }` from the same escaping renderer as task artifacts.
-- `GET /tasks/:id` — detail page (stepper, gate view or fleet snapshot text, rendered `intent`/`design`/`workplan`, decisions, items, evidence, live log). `GET /partial/tasks/:id` — the same body as an HTML fragment for the side panel (last 20 important log lines).
-- `GET /tasks/:id/changes[?item=<item-id>]` — code changes (file list with +/− counts and status badges, unified diff) for the whole task or one item.
-- `GET /api/tasks/:id/changes[?item=]` — the same data: `{ ok, source, items: [{ itemId, workerId?, commit, base?, files: [{ path, oldPath?, status, added, removed, binary }], patch, truncated, note? }], note? }`.
-  - Sources in order: fleet — the current gate snapshot's `integrationCommit` diffed against its first parent; local — `.agents/data/loop/assignments/<task>.json`, per item the latest reported/integrated attempt, preferring its `integrationCommit`, else `baseCommit..commit`.
-  - No loop records — the **working tree** (`git diff HEAD` plus untracked files), labelled uncommitted and not task-scoped; outside a Git repository `source` is `none`.
+- `POST /api/markdown` (field `markdown`) — `{ ok, html }` from the same escaping renderer as task artifacts.
+- `GET /tasks/:id` — detail page (stepper, gate view or fleet snapshot text, rendered `intent`/`design`/`workplan`, decisions, items, **Containers**, evidence, live log). `GET /partial/tasks/:id` — the same body as an HTML fragment for the side panel (last 20 important log lines).
+- `GET /tasks/:id/changes[?item=<item-id>][&ws=ignore]` — code changes (file list with +/− counts and status badges, unified diff) for the whole task or one item. **Wrap lines** and **Ignore whitespace** toggles on the page mirror the `diffWrap`/`diffIgnoreWs` settings.
+- `GET /api/tasks/:id/changes[?item=][&ws=ignore]` — the same data: `{ ok, source, items: [{ itemId, workerId?, commit, base?, workingTree?, files: [{ path, oldPath?, status, added, removed, binary, whitespaceOnly? }], patch, truncated, note? }], note? }`. `ws=ignore` diffs with `git diff -w` for that request (whitespace-only files stay listed with `whitespaceOnly: true` and no patch section); any other `ws` value is `400`.
+  - One source order for every mode: **fleet** (fleet only) — the current gate snapshot's `integrationCommit` diffed against its first parent; **assignments** (local) — `.agents/data/loop/assignments/<task>.json`, per item the latest reported/integrated attempt, preferring its `integrationCommit`, else `baseCommit..commit`; **task-range** (any mode, when the task state carries `baseCommit`) — one item `task` diffing `baseCommit..finalCommit` for a `done` task, or `baseCommit..HEAD` plus the working tree (`workingTree: true`) while the task is open; **working-tree** — `git diff HEAD` plus untracked files, labelled uncommitted and not task-scoped.
+  - `task-range` is what makes changes durable: it needs only two SHAs recorded in the canonical task state ([Installed lifecycle scripts](#installed-lifecycle-scripts)), so it works for tasks driven from a terminal without the loop and after worker worktrees are gone. Its note says the range may include commits made outside the task. Assignments fall through to it when none of their commits is in the local repository; a fleet snapshot without an integration commit does the same. Outside a Git repository `source` is `none`.
   - Only task and item ids come from the URL; commits come from records, are validated as hex SHAs and resolved with `git rev-parse`; Git runs without a shell.
   - Limits: 300 files and 1 MiB of patch per item (`truncated: true` beyond), 4 MiB of patch per whole-task view; further items list files only and load their diff on selection.
   - A recorded integration commit missing locally falls back to the worker commit; a commit missing entirely is a note, not an error.
+- `GET /api/tasks/:id/containers` — worker containers recorded for the task: `{ ok, docker: "ok" | "unavailable", host, containers: [{ name, assignmentId, itemId, workerId, agent, mode, host, turn, startedAt, endedAt?, exitCode?, log, running, local }] }`, read from `.agents/data/tasks/<id>/runtime/workers/index.json` (same file in local and fleet mode; empty for tasks the loop never built). `running` combines the index with `docker ps --filter label=aidlc.task=<id>` (no shell, 4 s timeout, result shared for 1.5 s); without Docker the state falls back to the index and `docker` is `unavailable`. `local` is false for entries another fleet worker host recorded.
+- `GET /api/tasks/:id/containers/:assignment/log[?tail=<bytes>]` — the raw container output of one assignment as `text/plain` (default tail 64 KiB, max 1 MiB, cut at a line boundary and prefixed with `… (earlier output truncated)`; headers `x-aidlc-log-size`, `x-aidlc-log-truncated`). Serves `<assignment>.log.1` when the current generation is missing. The file holds every turn's stdout and stderr unredacted between `--- turn N container <name> <time> ---` / `--- end turn … ---` lines; it never leaves the host.
 - `GET /api/live?known=<region>:<hash>,…[&task=<id>][&drawer=<id>][&notify=<n>]` — in-place updates. Regions: `notify` (header bell; `notify` items, default 5, max 100), `daemon` (header pill), `board`, `detail` (needs `task`), `drawer` (needs `drawer`).
   - Re-renders the listed regions from one state read and returns `{ regions: { <name>: { hash, html } }, reviews: { count, items } }` with only changed regions; unknown names are ignored.
   - Pages poll about every 1.5 s and morph the HTML in place. In fleet mode reads share a result up to 1 s old instead of spawning `loop-entry.mjs` per request.
@@ -238,29 +240,29 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit ui [path] [--port 4173] [--h
   - With `task-id` (must match the task-id pattern, else `400`) it reads `.agents/data/loop/events/<task-id>.jsonl` (`.1` generation first); ids are `t:<inode>:<offset>` and a full replay is preceded by `event: reset`.
   - Without a history file it filters the global `ui-events.jsonl` by `taskId`. A symlinked per-task file or `events` directory is never followed (falls back to the global file).
 
-### Dashboard authentication
+### Dashboard access
 
-At start the CLI prints a login URL such as `http://127.0.0.1:4173/#token=<token>`. Opening it stores the token in `localStorage` and strips the fragment (never sent to the server); **⚙ Settings** accepts a pasted token. There is no unauthenticated mode.
+The dashboard has no session token and no login: it is built for a trusted local machine or internal network. At start the CLI prints `Open: http://127.0.0.1:4173`. What still guards it:
 
-- Mutating actions (new task, resume, gate feedback, gate approve) require the token in a header — `x-aidlc-token` or `Authorization: Bearer <token>` — never in a form or JSON body field. Missing or wrong token: `401`.
-- A `Host` header that does not name the bound address is rejected `403` (any loopback name — `127.0.0.1`, `localhost`, `[::1]` — is accepted when bound to loopback). A wildcard bind (`0.0.0.0`, `::`) cannot pin the Host and relies on the token and the Origin check.
-- A non-`GET` request whose `Origin` is not the dashboard's own origin is rejected `403`.
+- A `Host` header that does not name the bound address is rejected `403` (any loopback name — `127.0.0.1`, `localhost`, `[::1]` — is accepted when bound to loopback). A wildcard bind (`0.0.0.0`, `::`) cannot pin the Host and relies on the request-shape checks below.
+- Every request other than `GET`/`HEAD`/`OPTIONS` must have the shape of a same-origin `fetch` from the dashboard page: an `Origin` header equal to the dashboard's own origin, `Sec-Fetch-Site` (when the browser sends it) of `same-origin` or `none`, and the custom header `x-aidlc-request`. Any missing or foreign value is `403`; the dashboard scripts send all three.
 - In fleet mode `POST /api/gate/approve` returns `403` unless the UI holds a reviewer credential (`AIDLC_FLEET_REVIEWER_TOKEN` or `--reviewer-token-file`); without one the detail page shows the `remote-state.mjs gate inbox` / `gate approve` reviewer commands instead. The credential goes only to that one approve child process. `POST /api/gate/feedback` never needs it.
-- The daemon and every other child process the UI spawns never inherit the UI token or the reviewer credential.
+- The daemon and every other child process the UI spawns never inherit the reviewer credential.
 
 Why (a browser sends requests to `127.0.0.1` on behalf of any web page):
 
-- A header-only token defeats cross-site form posts (CSRF); the Host check defeats DNS rebinding.
-- Keeping tokens out of the daemon environment stops a host-executed lead from approving its own gate.
-- Residual risk: a `--token-file` is readable by any process running as the same user; prefer the per-session token unless restarts must keep the browser signed in.
+- A cross-site form post cannot set a custom header or forge `Origin`, and a `fetch` with a custom header triggers a CORS preflight the dashboard never answers, so another page cannot create tasks or approve gates (CSRF). The Host check defeats DNS rebinding on a pinned bind; on a wildcard bind only IP-literal or `localhost` Host values are accepted, so a rebound DNS name is still refused.
+- Residual risk: anyone who can reach the port can read and act; keep the default loopback bind unless the network is trusted, and remember that the reviewer credential (fleet) is the only secret the dashboard holds.
 
 ### Operational notes
 
 - The gate panel renders only on `/tasks/:id` while the task is `blocked_on_user`. Feedback records `Cancelled gate wait at <gate>: <feedback>`, sets the task `active` at the same gate, and the loop re-presents the revised artifact, exactly like `loop-gate.mjs` feedback; approval is never blocked by pending feedback.
-- Live log events carry optional `actor` (`lead` or a worker id), `phase`, `itemId`, and a redacted `summary` (at most 240 characters; command output is never logged). The **Important**/**All**/**Raw JSON** choice is kept in `localStorage` (`aidlc-live-log`).
+- Live log events carry optional `actor` (`lead` or a worker id), `phase`, `itemId`, and a redacted `summary` (at most 240 characters; command output is never logged in the event stream — the raw per-container output lives only in the task's `runtime/workers/` log files). The **Important**/**All**/**Raw JSON** choice is kept in `localStorage` (`aidlc-live-log`); its default comes from **Settings**.
+- **Settings** (header ⚙) are browser-only, kept in `localStorage` (`aidlc-settings`) and applied immediately: theme (system/light/dark), live-update interval (1.5 s, 3 s, paused), browser notifications when a task starts waiting for review, live log default filter and Raw JSON, diff wrap and ignore-whitespace, container log tail size (64/256/1024 KiB), and whether a card click opens the side panel or the full page. Nothing is stored server-side.
+- **Task runtime data:** the loop writes per-task operational files under `.agents/data/tasks/<task-id>/runtime/` (today `workers/index.json` and `workers/<assignment>.log`, 5 MiB with one `.log.1` generation). The directory is treated like `.agents/data/loop/`: never part of a commit, handoff, or clean check. Local and fleet workers write the same layout; without the loop it simply does not exist.
 - Event files: every event goes to `.agents/data/loop/ui-events.jsonl` (rotated to `.jsonl.1` at 5 MB; feeds the daemon health banner), every task event also to `.agents/data/loop/events/<task-id>.jsonl` (rotated to `.1` at 1 MiB). `daemon_poll` is written only when the actionable set, back-off set, or error state changes.
 - Every local daemon (`loop up`, `loop start`, **New task**) sets `AIDLC_LOOP_EVENT_LOG` to the global file unless the shell does; `loop up` and **New task** daemons write stderr to `.agents/data/loop/daemon.log`.
-- **Exposure:** every `GET` route, including the changes page and API, needs no token and relies on the loopback bind and Host check. `--host 0.0.0.0` lets anyone reaching the port read task diffs, artifacts, and repository changes.
+- **Exposure:** every route relies on the bind address, the Host check, and the request-shape guards above. `--host 0.0.0.0` lets anyone reaching the port read task diffs, artifacts, container logs, and repository changes, and act on gates.
 - **resume** appears only on `paused` tasks and runs the re-activation command for the mode; the daemon picks a loop-owned task up on its next poll.
 
 ## Installed lifecycle scripts
@@ -367,7 +369,8 @@ node .agents/aidlc/scripts/state.mjs gate approve <task-id> --gate <gate> --sour
 - **Status.** `task status` accepts `active`, `blocked_on_user`, and `paused` (`done` is not a status; finish with `task transition --to done` or `task archive`). It rejects `blocked_on_user` at wrap, which has no human gate.
 - **Audited exits.** Every route out of a validated `blocked_on_user` wait, including `paused`, requires audited `--reason` and `--source` and appends diagnostic evidence. `active → paused` requires the same `--mode audited --reason --source` triple and appends a `Paused while active` diagnostic; `paused → active` needs no audit metadata.
 - **Repair bounds.** The third failed verify record per area, or the second failed review record, in the current build flips `nextAction` to `blocked` and adds a `REPAIR_BOUND` error to the Review implementation gate check.
-- **Advancing and finishing.** Phases advance with `gate approve`; wrap completes with `task transition --to done` or `task archive <task-id> --reason "<reason>" --source "<source>"`, which applies the same transition checks and appends an `Archive to done` diagnostic.
+- **Advancing and finishing.** Phases advance with `gate approve`; wrap completes with `task transition --to done` or `task archive <task-id> --reason "<reason>" --source "<source>"`, which applies the same transition checks and appends an `Archive to done` diagnostic. Both record `finalCommit` (the checkout's `HEAD`, or `--final-commit <sha>`) on the task; `--final-commit` is rejected for any other target phase.
+- **Commit tracking.** `baseCommit` (recorded by `task create` from `HEAD`, or `--base-commit <sha>`) and `finalCommit` are optional lowercase hex SHAs in the canonical task state, shared by `state.mjs` and the fleet `remote-state.mjs` and kept in the archive record. The core never runs git; outside a repository the fields stay unset. They let the dashboard rebuild a task's changes from history alone ([`ui` routes](#routes)).
 
 The low-level transition escape hatch is intentionally noisy: it records diagnostic evidence, applies all transition checks, requires audit metadata, and rejects self-transitions:
 

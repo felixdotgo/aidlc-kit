@@ -13,11 +13,11 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packageVersion } from "../workflow.js";
 import { daemonHealth, daemonStatus, ensureDaemon, pidAlive, stopDaemon } from "../ui/daemon.js";
-import { daemonLogPath, loopDataDir, loopEntryPath, openBrowser, readUiTokenFile, scrubbedEnv } from "../ui/options.js";
+import { daemonLogPath, loopDataDir, loopEntryPath, openBrowser, readCredentialFile, scrubbedEnv } from "../ui/options.js";
 import { startUiServer } from "../ui/server.js";
 
 const SWITCHES = new Set(["--open", "--no-ui", "--now", "--json"]);
-const VALUES = new Set(["--root", "--loop-env", "--port", "--host", "--token-file", "--reviewer-token-file"]);
+const VALUES = new Set(["--root", "--loop-env", "--port", "--host", "--reviewer-token-file"]);
 
 export interface LauncherArgs { root: string; values: Map<string, string>; switches: Set<string> }
 
@@ -119,28 +119,32 @@ const validPort = (raw: string | undefined): number => {
   return port;
 };
 
-export interface ServeOptions { root: string; host: string; port: number; open: boolean; tokenFile?: string; reviewerTokenFile?: string; record?: boolean }
+export interface ServeOptions { root: string; host: string; port: number; open: boolean; reviewerTokenFile?: string; record?: boolean }
+
+/** Loopback binds are reachable only from this machine; anything else exposes the dashboard. */
+const LOOPBACK_BINDS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+export const isLoopbackHost = (host: string): boolean => LOOPBACK_BINDS.has(host.toLowerCase());
+/** Printed when the dashboard listens on a non-loopback address: it has no authentication. */
+export const EXPOSED_WARNING = "Warning: the dashboard has no authentication; expose it only on a trusted network.";
 
 /** Serves the dashboard until SIGINT/SIGTERM. `record` writes ui.json so `loop down`/`up` can find it. */
 export const serveDashboard = async (options: ServeOptions): Promise<void> => {
   const { root, host } = options;
   const port = validPort(String(options.port));
-  const token = options.tokenFile ? readUiTokenFile(root, options.tokenFile, { create: true }) : undefined;
-  const reviewerToken = options.reviewerTokenFile ? readUiTokenFile(root, options.reviewerTokenFile, { create: false }) : undefined;
+  const reviewerToken = options.reviewerTokenFile ? readCredentialFile(root, options.reviewerTokenFile, { create: false }) : undefined;
   const instance = randomUUID();
-  const { server, port: boundPort, token: sessionToken } = await startUiServer({ root, host, port, instance, ...(token ? { token } : {}), ...(reviewerToken ? { reviewerToken } : {}) });
-  const base = `http://${host.includes(":") ? `[${host}]` : host}:${boundPort}`;
-  const loginUrl = `${base}/#token=${encodeURIComponent(sessionToken)}`;
+  const { server, port: boundPort } = await startUiServer({ root, host, port, instance, ...(reviewerToken ? { reviewerToken } : {}) });
+  const base = `http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${boundPort}`;
   console.log(`Loop (AI-DLC UI) listening on ${base} (Ctrl-C to stop)`);
-  console.log(`Open (signs this browser in for loop actions and gate approval): ${loginUrl}`);
+  console.log(`Open: ${base}`);
+  if (!isLoopbackHost(host)) console.log(EXPOSED_WARNING);
   if (options.record) {
     mkdirSync(loopDataDir(root), { recursive: true });
-    // The login token never goes to disk inside the project; only the base URL does.
     const local = recordHost(host);
     const url = `http://${local.includes(":") ? `[${local}]` : local}:${boundPort}`;
     writeFileSync(uiStatePath(root), `${JSON.stringify({ pid: process.pid, url, instance, startedAt: new Date().toISOString() })}\n`);
   }
-  if (options.open) openBrowser(loginUrl);
+  if (options.open) openBrowser(base);
   await new Promise<void>((resolveClose) => {
     const close = (): void => { server.close(() => resolveClose()); server.closeAllConnections?.(); };
     process.once("SIGINT", close);
@@ -187,7 +191,7 @@ const startDaemon = async (root: string, overlay: Record<string, string>): Promi
 };
 
 export const loopUp = async (args: string[]): Promise<void> => {
-  const parsed = parseLauncherArgs(args, ["--root", "--loop-env", "--port", "--host", "--open", "--no-ui", "--token-file", "--reviewer-token-file"]);
+  const parsed = parseLauncherArgs(args, ["--root", "--loop-env", "--port", "--host", "--open", "--no-ui", "--reviewer-token-file"]);
   const { root } = parsed;
   requireLocalLoop(root);
   const port = validPort(parsed.values.get("--port"));
@@ -198,14 +202,13 @@ export const loopUp = async (args: string[]): Promise<void> => {
   if (parsed.switches.has("--no-ui")) { console.log("Dashboard not started (--no-ui). Start it with: aidlc-kit ui"); return; }
   const ui = readUiRecord(root);
   if (ui?.running && ui.pid !== process.pid && await dashboardReachable(ui)) {
-    console.log(`Dashboard already running at ${ui.url} (pid ${ui.pid}); use the login link that process printed, or stop it with loop down.`);
+    console.log(`Dashboard already running at ${ui.url} (pid ${ui.pid}); open it there, or stop it with loop down.`);
     return;
   }
   // A daemon the dashboard starts later (New task after loop stop) loads the same env file.
   if (overlay.AIDLC_ENV_FILE) process.env.AIDLC_ENV_FILE = overlay.AIDLC_ENV_FILE;
   await serveDashboard({
     root, host: parsed.values.get("--host") ?? "127.0.0.1", port, open: parsed.switches.has("--open"), record: true,
-    ...(parsed.values.has("--token-file") ? { tokenFile: parsed.values.get("--token-file") } : {}),
     ...(parsed.values.has("--reviewer-token-file") ? { reviewerTokenFile: parsed.values.get("--reviewer-token-file") } : {}),
   });
   console.log("Dashboard stopped. The loop daemon keeps running; stop it with: loop down");

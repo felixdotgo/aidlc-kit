@@ -9,6 +9,7 @@ import { runFleetSupervisor } from "./loop-fleet-supervisor.mjs";
 import { createFleetRemoteRepository } from "./loop-fleet-remote.mjs";
 import { createLeadGitHandoff, createIsolatedWorkerGitHandoff } from "./loop-git.mjs";
 import { workerDockerInvocation, workerCredentialKeys } from "./loop-worker-docker.mjs";
+import { openWorkerLog } from "./loop-worker-log.mjs";
 import { defaultWorkerImageTag, ensureWorkerImage, validWorkerImageTag } from "./loop-worker-image.mjs";
 
 const required = (env, name) => { const value = env[name]; if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required`); return value; };
@@ -133,13 +134,23 @@ export async function runFleetCli(argv, { callTool, env = process.env, out = con
     if (workerAgent) await preflight(workerAgent);
     const baseHandoff = createIsolatedWorkerGitHandoff({ root, worktreesRoot: resolve(required(env, "AIDLC_FLEET_WORKTREES_ROOT")), remote });
     const sessions = new Map();
-    const cleanupSession = (workspace) => { const current=sessions.get(workspace.root); if(current) { rmSync(current.home,{recursive:true,force:true}); sessions.delete(workspace.root); } };
+    const dropSession = (key, current) => { current.log?.close(); rmSync(current.home,{recursive:true,force:true}); sessions.delete(key); };
+    const cleanupSession = (workspace) => { const current=sessions.get(workspace.root); if(current) dropSession(workspace.root, current); };
+    // Same container record and raw output tee as the local loop, written under
+    // this worker checkout's .agents/data/tasks/<task>/runtime/workers (the
+    // index entry carries this host's name). Best-effort: reported once, never fatal.
+    const openLog = (job) => {
+      const diagnostic = (error) => emit({ type: "diagnostic", taskId: job.taskId, itemId: job.itemId, message: `Worker log unavailable for assignment ${job.assignmentId}: ${error instanceof Error ? error.message : String(error)}` });
+      try { return openWorkerLog({ root, taskId: job.taskId, assignmentId: job.assignmentId, itemId: job.itemId, workerId, agent: job.agent, mode: "fleet", onError: diagnostic }); }
+      catch (error) { diagnostic(error); return null; }
+    };
     const handoff = {
       ...baseHandoff,
       async prepare(job) {
         const workspace=await baseHandoff.prepare(job);
         const home=mkdtempSync(join(tmpdir(),"aidlc-worker-home-")); chmodSync(home,0o700);
-        sessions.set(workspace.root,{home,agent:job.agent,assignmentId:job.assignmentId,attempt:job.attempt,epoch:job.epoch,workerId,image,sessionId:null});
+        const labels = { "aidlc.task": job.taskId, "aidlc.item": job.itemId, "aidlc.worker": workerId, "aidlc.assignment": job.assignmentId };
+        sessions.set(workspace.root,{home,agent:job.agent,assignmentId:job.assignmentId,attempt:job.attempt,epoch:job.epoch,workerId,image,sessionId:null,labels,log:openLog(job),turns:0});
         return workspace;
       },
       async finish(args) { try { return await baseHandoff.finish(args); } finally { cleanupSession(args.workspace); } },
@@ -151,13 +162,17 @@ export async function runFleetCli(argv, { callTool, env = process.env, out = con
       const credentialEnv = workerCredentialKeys(turn.agent, env);
       const name = `aidlc-worker-${randomUUID()}`;
       let started = false;
+      session.turns += 1;
+      session.log?.turnStart(name, session.turns);
       try {
         const result = await runAgentTurn({...turn, root:"/workspace", env, spawnProcess: (command,args,options) => {
-          const invocation=workerDockerInvocation({workspace:turn.root,image,command,args,credentialEnv,hostEnv:env,uid,gid,sessionHome:session.home});
+          const invocation=workerDockerInvocation({workspace:turn.root,image,command,args,credentialEnv,hostEnv:env,uid,gid,sessionHome:session.home,labels:session.labels});
           const dockerArgs=invocation.args.filter((arg,index) => !(index===1 && arg==="--rm"));
           dockerArgs.splice(1,0,"--name",name);
           started = true;
-          return spawn(invocation.command,dockerArgs,{...options,cwd:turn.root,env:invocation.env});
+          const child = spawn(invocation.command,dockerArgs,{...options,cwd:turn.root,env:invocation.env});
+          if (session.log) { session.log.tee(child); child.once("close", (code) => session.log.turnEnd(code)); }
+          return child;
         }});
         session.sessionId=result.sessionId;
         return result;
@@ -179,7 +194,7 @@ export async function runFleetCli(argv, { callTool, env = process.env, out = con
         "Complete the scoped item and report remaining risks. The supervisor handles the Git commit and push. End the final answer with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.",
         ...(env.AIDLC_FLEET_CODE_ONLY_RETRY === "1" ? ["This assignment is declared code-only: perform no external side effects beyond the supervisor's Git handoff."] : [])
       ].join("\n"), onEvent: emit }); }
-      finally { for (const [workspace, entry] of sessions) { rmSync(entry.home,{recursive:true,force:true}); sessions.delete(workspace); } }
+      finally { for (const [workspace, entry] of sessions) dropSession(workspace, entry); }
       emit(result);
       if (once || result.status === "stopped") return result;
       await pause(pollMs, signal, cancelSignal);

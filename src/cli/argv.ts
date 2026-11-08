@@ -18,7 +18,7 @@ export const usage = `Usage:
   npx @felixdotgo/aidlc-kit loop start|status|intake [--task-id ID] [--title TITLE] [--root PATH] [--mode local|fleet] [--loop-env PATH]
   npx @felixdotgo/aidlc-kit loop worker-image [--provider ${LOOP_PROVIDERS.join("|")}] [--tag TAG] [--root PATH]
   npx @felixdotgo/aidlc-kit loop leases [--task-id ID] [--root PATH] [--json] [--clear-stale]
-  npx @felixdotgo/aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--token-file PATH] [--reviewer-token-file PATH]
+  npx @felixdotgo/aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--reviewer-token-file PATH]
   npx @felixdotgo/aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
   npx @felixdotgo/aidlc-kit version
   Global options: --help, --version, -v`;
@@ -32,7 +32,7 @@ export const value = (args: string[], name: string): string | undefined => {
 };
 
 export const flags = (args: string[]): Set<string> => new Set(args.filter((item) => item.startsWith("--")));
-const valueFlags = new Set(["--agent", "--storage", "--deployment", "--bind", "--workspace", "--poll-ms", "--token-env", "--providers", "--loop-mode", "--loop-lead", "--loop-workers", "--port", "--host", "--token-file", "--reviewer-token-file"]);
+const valueFlags = new Set(["--agent", "--storage", "--deployment", "--bind", "--workspace", "--poll-ms", "--token-env", "--providers", "--loop-mode", "--loop-lead", "--loop-workers", "--port", "--host", "--reviewer-token-file"]);
 const COMMAND_KEYWORDS = ["init", "upgrade", "uninstall", "status", "doctor", "validate", "run", "list"] as const;
 
 const positional = (args: string[]): string[] => {
@@ -53,7 +53,7 @@ export const UNINSTALL_FLAGS = new Set(["--yes", "--dry-run"]);
 export const STATUS_FLAGS = new Set(["--json"]);
 export const DOCTOR_FLAGS = new Set(["--strict", "--json"]);
 export const MCP_FLAGS = new Set(["--dry-run", "--yes", "--storage", "--deployment", "--bind", "--workspace", "--poll-ms", "--token-env", "--providers", "--enable"]);
-export const UI_FLAGS = new Set(["--port", "--host", "--open", "--token-file", "--reviewer-token-file"]);
+export const UI_FLAGS = new Set(["--port", "--host", "--open", "--reviewer-token-file"]);
 
 export const assertKnownOptions = (args: string[], allowed: Set<string>): void => {
   for (let index = 0; index < args.length; index += 1) {

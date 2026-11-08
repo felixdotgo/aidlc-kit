@@ -1,9 +1,11 @@
 /**
  * `/tasks/:id/changes`: a task's code changes, rendered server-side (every diff line
  * and file name escaped) so the page works without JavaScript; `changes.js` only
- * filters items in place and scrolls to files.
+ * filters items in place, scrolls to files, and applies the diff display settings
+ * (`diffWrap` toggles `is-wrapped` on the diff containers; `diffIgnoreWs` reloads
+ * with `?ws=ignore`, which the server maps to `git diff -w`).
  */
-import { ID_PATTERN, INTEGRATION_ITEM, MAX_FILES, MAX_PATCH_BYTES, MAX_TASK_PATCH_BYTES, taskChanges, WORKING_TREE_ITEM, type ChangedFile, type ChangeItem, type ChangesPayload } from "../changes.js";
+import { ID_PATTERN, INTEGRATION_ITEM, MAX_FILES, MAX_PATCH_BYTES, MAX_TASK_PATCH_BYTES, TASK_RANGE_ITEM, taskChanges, WORKING_TREE_ITEM, type ChangedFile, type ChangeItem, type ChangesPayload, type ChangesQuery } from "../changes.js";
 import { readUiState } from "../data.js";
 import { escapeHtml } from "../http.js";
 import { uiMode, type UiOptions } from "../options.js";
@@ -16,6 +18,7 @@ export const changesHref = (taskId: string): string => `/tasks/${encodeURICompon
 const SOURCE_LABEL: Record<ChangesPayload["source"], string> = {
   assignments: "loop assignments",
   fleet: "fleet review snapshot",
+  "task-range": "task range",
   "working-tree": "working tree",
   none: "unavailable",
 };
@@ -24,10 +27,14 @@ const STATUS_TONE: Record<string, string> = { added: "is-success", deleted: "is-
 
 const statusBadge = (status: string): string => `<span class="ad-pill ad-diff-status ${STATUS_TONE[status] ?? ""}" title="${escapeHtml(status)}">${escapeHtml(status)}</span>`;
 
+const short = (sha: string): string => sha.slice(0, 7);
+
+/** `task` item: `base <short> → <short>` once the task is done, `base <short> → HEAD + working tree` while open. */
 const itemTitle = (item: ChangeItem): string =>
   item.itemId === WORKING_TREE_ITEM ? "Working tree (uncommitted, not task-scoped)"
     : item.itemId === INTEGRATION_ITEM ? "Integration commit"
-      : `Item · ${item.itemId}`;
+      : item.itemId === TASK_RANGE_ITEM ? `Task range · base ${short(item.base ?? "")} → ${item.workingTree ? "HEAD + working tree" : short(item.commit)}`
+        : `Item · ${item.itemId}`;
 
 const lineClass = (line: string): string =>
   line.startsWith("@@") ? "ad-diff-hunk"
@@ -55,6 +62,7 @@ const renderLines = (lines: string[]): string =>
 const fileBody = (file: ChangedFile, section: string[] | undefined, truncated: boolean, omitted = false): string => {
   if (file.status === "untracked") return '<p class="ad-diff-note">Untracked file: not in git yet, content not shown.</p>';
   if (file.binary) return '<p class="ad-diff-note">Binary file changed.</p>';
+  if (file.whitespaceOnly) return '<p class="ad-diff-note">Whitespace-only changes (hidden while whitespace is ignored).</p>';
   if (!section && omitted) return '<p class="ad-diff-note">Diff not loaded in the whole-task view: select this item to see it.</p>';
   if (!section) return `<p class="ad-diff-note">${truncated ? "Diff not shown: the patch exceeds the display limit." : "No textual changes."}</p>`;
   const changed = section.some((line) => line.startsWith("@@"));
@@ -66,7 +74,7 @@ const renderItem = (item: ChangeItem, index: number, hidden: boolean): string =>
   const added = item.files.reduce((sum, file) => sum + file.added, 0);
   const removed = item.files.reduce((sum, file) => sum + file.removed, 0);
   const anchor = (fileIndex: number): string => `c-${index}-${fileIndex}`;
-  const commit = item.commit ? `<code title="${escapeHtml(item.commit)}">${escapeHtml(item.commit.slice(0, 12))}</code>` : "";
+  const commit = item.commit ? `<code title="${escapeHtml(item.commit)}">${escapeHtml(item.commit.slice(0, 12))}</code>${item.workingTree ? " + working tree" : ""}` : "";
   const base = item.base ? `<code title="${escapeHtml(item.base)}">${escapeHtml(item.base.slice(0, 12))}</code> → ` : "";
   const worker = item.workerId ? `<span class="ad-pill is-ghost" title="worker">${escapeHtml(item.workerId)}</span>` : "";
   const banner = item.patchOmitted
@@ -76,12 +84,12 @@ const renderItem = (item: ChangeItem, index: number, hidden: boolean): string =>
     : "";
   const note = item.note ? `<div class="ad-callout is-info ad-changes-banner" data-changes-note><span aria-hidden="true">ℹ</span><span>${escapeHtml(item.note)}</span></div>` : "";
   const list = item.files.length
-    ? `<ul>${item.files.map((file, fileIndex) => `<li><a href="#${anchor(fileIndex)}" data-changes-file>${statusBadge(file.status)}<span class="ad-diff-path" title="${escapeHtml(file.oldPath ? `${file.oldPath} → ${file.path}` : file.path)}">${escapeHtml(file.path)}</span>${file.binary ? '<span class="ad-diff-stat">binary</span>' : file.status === "untracked" ? "" : `<span class="ad-diff-stat"><span class="ad-diff-plus">+${file.added}</span> <span class="ad-diff-minus">−${file.removed}</span></span>`}</a></li>`).join("")}</ul>`
+    ? `<ul>${item.files.map((file, fileIndex) => `<li><a href="#${anchor(fileIndex)}" data-changes-file>${statusBadge(file.status)}<span class="ad-diff-path" title="${escapeHtml(file.oldPath ? `${file.oldPath} → ${file.path}` : file.path)}">${escapeHtml(file.path)}</span>${file.binary ? '<span class="ad-diff-stat">binary</span>' : file.whitespaceOnly ? '<span class="ad-diff-stat">whitespace</span>' : file.status === "untracked" ? "" : `<span class="ad-diff-stat"><span class="ad-diff-plus">+${file.added}</span> <span class="ad-diff-minus">−${file.removed}</span></span>`}</a></li>`).join("")}</ul>`
     : '<p class="ad-empty-line">No changed files.</p>';
-  // Untracked files never have a patch section; tracked files keep git's order.
+  // Untracked and whitespace-only files never have a patch section; the others keep git's order.
   let sectionIndex = 0;
   const blocks = item.files.map((file, fileIndex) => {
-    const section = file.status === "untracked" ? undefined : sections[sectionIndex++];
+    const section = file.status === "untracked" || file.whitespaceOnly ? undefined : sections[sectionIndex++];
     const head = `${statusBadge(file.status)}<code class="ad-diff-path">${file.oldPath ? `${escapeHtml(file.oldPath)} → ` : ""}${escapeHtml(file.path)}</code>`;
     return `<article class="ad-diff-file" id="${anchor(fileIndex)}"><header class="ad-diff-file-head">${head}</header>${fileBody(file, section, item.truncated, item.patchOmitted)}</article>`;
   }).join("");
@@ -91,7 +99,7 @@ const renderItem = (item: ChangeItem, index: number, hidden: boolean): string =>
     ${banner}${note}
     <div class="ad-changes">
       <nav class="ad-changes-files" aria-label="Changed files">${list}</nav>
-      <div class="ad-changes-diff">${blocks || '<p class="ad-empty-line">Nothing to show.</p>'}</div>
+      <div class="ad-changes-diff is-wrapped">${blocks || '<p class="ad-empty-line">Nothing to show.</p>'}</div>
     </div>
   </div>
 </section>`;
@@ -100,25 +108,35 @@ const renderItem = (item: ChangeItem, index: number, hidden: boolean): string =>
 const errorPage = (options: UiOptions, title: string, message: string, reviews: ReturnType<typeof reviewQueue>): string =>
   `${pageHead(`${title} · Loop`)}${renderHeader(options.root, uiMode(options), reviews)}<main class="section ad-main"><div class="container is-fluid"><div class="ad-empty"><div class="ad-empty-icon" aria-hidden="true">🔍</div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(message)}</p><a class="button" href="/">← Back to dashboard</a></div></div></main>${renderModals()}${pageScripts("common")}</body></html>`;
 
-/** The full changes page and its HTTP status (400 malformed id, 404 unknown task/item). */
-export const renderChangesPage = async (options: UiOptions, taskId: string, itemId: string | null): Promise<{ status: number; html: string }> => {
+/** Diff display styles the page needs beyond dashboard.css: `is-wrapped` is toggled by changes.js from the `diffWrap` setting. */
+/** The full changes page and its HTTP status (400 malformed id or `ws` value, 404 unknown task/item). */
+export const renderChangesPage = async (options: UiOptions, taskId: string, itemId: string | null, query: ChangesQuery = {}): Promise<{ status: number; html: string }> => {
   const state = await readUiState(options);
   const reviews = reviewQueue(state);
   if (itemId !== null && !ID_PATTERN.test(itemId)) return { status: 400, html: errorPage(options, "Invalid request", "Invalid item id", reviews) };
   // The page always renders every item; `?item=` only selects which one is visible.
-  const result = await taskChanges(options, taskId, null, state, itemId);
+  const result = await taskChanges(options, taskId, null, state, itemId, query);
   if (result.status !== 200) return { status: result.status, html: errorPage(options, result.status === 400 ? "Invalid request" : "Task not found", result.payload.error, reviews) };
   const { payload, task } = result;
   if (itemId !== null && !payload.items.some((item) => item.itemId === itemId)) return { status: 404, html: errorPage(options, "Item not found", `No changes recorded for item ${itemId}`, reviews) };
   const taskHref = `/tasks/${encodeURIComponent(task.id)}`;
   const itemOptions = payload.items.map((item) => `<option value="${escapeHtml(item.itemId)}"${item.itemId === itemId ? " selected" : ""}>${escapeHtml(itemTitle(item))}${item.workerId ? ` · ${escapeHtml(item.workerId)}` : ""}</option>`).join("");
+  const ignoreWs = query.ws === "ignore";
   const selector = payload.items.length > 1 || itemId !== null
-    ? `<form class="ad-changes-toolbar" method="get" action="${changesHref(task.id)}" data-changes-form>
+    ? `<form class="ad-changes-form" method="get" action="${changesHref(task.id)}" data-changes-form>
       <label class="label is-small mb-0" for="changes-item">Show</label>
-      <div class="select is-small"><select id="changes-item" name="item" data-changes-select><option value=""${itemId === null ? " selected" : ""}>Whole task</option>${itemOptions}</select></div>
+      <div class="select is-small"><select id="changes-item" name="item" data-changes-select><option value=""${itemId === null ? " selected" : ""}>Whole task</option>${itemOptions}</select></div>${ignoreWs ? '<input type="hidden" name="ws" value="ignore">' : ""}
       <button type="submit" class="button is-small" data-changes-submit>Apply</button>
     </form>`
     : "";
+  // Display options need JavaScript (they live in localStorage); changes.js reveals them.
+  const displayOptions = payload.items.length
+    ? `<span class="ad-changes-options" data-changes-options hidden>
+      <label><input type="checkbox" data-changes-wrap checked> Wrap lines</label>
+      <label><input type="checkbox" data-changes-ws${ignoreWs ? " checked" : ""}> Ignore whitespace</label>
+    </span>`
+    : "";
+  const toolbar = selector || displayOptions ? `<div class="ad-changes-toolbar">${selector}${displayOptions}</div>` : "";
   const note = payload.note ? `<div class="ad-callout is-info ad-changes-banner" data-changes-note><span aria-hidden="true">ℹ</span><span>${escapeHtml(payload.note)}</span></div>` : "";
   const items = payload.items.length
     ? payload.items.map((item, index) => renderItem(item, index, itemId !== null && item.itemId !== itemId)).join("\n")
@@ -131,7 +149,7 @@ ${renderHeader(options.root, uiMode(options), reviews, task.id)}
     <h1 class="ad-page-title">Changes · ${escapeHtml(task.title)}</h1>
     <div class="ad-page-sub"><code>${escapeHtml(task.id)}</code>${statusPill(task.status, Boolean(task.handoff))}${gatePill(task.gate)}<span class="ad-pill is-ghost" data-changes-source="${payload.source}" title="where these changes come from">source · ${escapeHtml(SOURCE_LABEL[payload.source])}</span><a class="button is-small ml-auto" href="${taskHref}">Back to task</a></div>
     ${note}
-    ${selector}
+    ${toolbar}
     ${items}
   </div>
 </main>

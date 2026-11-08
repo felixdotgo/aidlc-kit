@@ -1,12 +1,27 @@
 /**
  * Code changes of one task for `/tasks/:id/changes` and `/api/tasks/:id/changes`.
  *
- * Requests carry only a task id and an optional item id. Every commit comes from a
- * record (local assignments or the fleet gate snapshot), is validated as a hex SHA and
- * resolved with `rev-parse --verify` before git ever sees it; no URL value reaches git.
- * Sources, in order: local assignment records → fleet gate snapshot → the working tree
- * (tasks without loop records) → `none` (no git). git runs via `execFile` (no shell)
- * with a scrubbed environment, no external diff/textconv, a timeout, and output caps.
+ * Requests carry only a task id, an optional item id, and an optional whitespace mode
+ * (`ws=ignore`, validated against a fixed list). Every commit comes from a record (the
+ * task's `baseCommit`/`finalCommit`, local assignments, or the fleet gate snapshot), is
+ * validated as a hex SHA and resolved with `rev-parse --verify` before git ever sees it;
+ * no URL value reaches git.
+ *
+ * One source order for every mode:
+ *   1. `fleet`        — fleet mode only: the gate snapshot's integration commit;
+ *   2. `assignments`  — local mode: loop assignment records, when at least one reported
+ *                       or integrated attempt still resolves to a commit in this repository
+ *                       (records whose commits are all gone are still shown, with notes,
+ *                       when the task has no base commit to fall back to);
+ *   3. `task-range`   — any mode, when the task records a `baseCommit`: one item `task`
+ *                       diffing `baseCommit` against `finalCommit` (task done) or against
+ *                       HEAD plus the working tree (task still open);
+ *   4. `working-tree` — tracked changes against HEAD plus untracked files (old tasks
+ *                       without a base commit, or a base commit that no longer resolves);
+ *   5. `none`         — no git repository.
+ * A source that cannot be used falls through to the next one with a payload note.
+ * git runs via `execFile` (no shell) with a scrubbed environment, no external
+ * diff/textconv, a timeout, and output caps.
  */
 import { execFile } from "node:child_process";
 import { lstatSync, readFileSync } from "node:fs";
@@ -27,14 +42,19 @@ const STATS_MAX_BUFFER = 8 * 1024 * 1024;
 /** Pseudo item ids for sources without per-item records. */
 export const WORKING_TREE_ITEM = "working-tree";
 export const INTEGRATION_ITEM = "integration";
+export const TASK_RANGE_ITEM = "task";
 
-export type ChangeSource = "assignments" | "fleet" | "working-tree" | "none";
-export interface ChangedFile { path: string; oldPath?: string; status: string; added: number; removed: number; binary: boolean }
-export interface ChangeItem { itemId: string; workerId?: string; commit: string; base?: string; files: ChangedFile[]; patch: string; truncated: boolean; note?: string; patchOmitted?: boolean }
+export type ChangeSource = "assignments" | "fleet" | "task-range" | "working-tree" | "none";
+/** `whitespaceOnly`: listed by git but without a diff while whitespace is ignored (`ws=ignore`). */
+export interface ChangedFile { path: string; oldPath?: string; status: string; added: number; removed: number; binary: boolean; whitespaceOnly?: boolean }
+/** `workingTree`: the diff ends at the working tree (uncommitted tracked changes and untracked files included) rather than at `commit`. */
+export interface ChangeItem { itemId: string; workerId?: string; commit: string; base?: string; files: ChangedFile[]; patch: string; truncated: boolean; note?: string; patchOmitted?: boolean; workingTree?: true }
 export interface ChangesPayload { ok: true; source: ChangeSource; items: ChangeItem[]; note?: string }
 export type ChangesResult =
   | { status: 200; payload: ChangesPayload; task: TaskState; state: WorkflowState }
   | { status: 400 | 404; payload: { ok: false; error: string } };
+/** Request options beyond the ids: `ws` is the raw `?ws=` query value (only `ignore` is accepted). */
+export interface ChangesQuery { ws?: string | null }
 
 /* ---------------------------------------------------------------------------
  * git execution
@@ -71,6 +91,13 @@ const resolveCommit = async (root: string, sha: string): Promise<string | undefi
   const result = await runGit(root, ["rev-parse", "--verify", "--quiet", `${sha}^{commit}`], 4096);
   const full = result.ok ? result.stdout.toString("utf8").trim() : "";
   return SHA_PATTERN.test(full) ? full : undefined;
+};
+
+/** Full SHA of HEAD (the only fixed revision used; validated like any recorded value), or undefined without commits. */
+const resolveHead = async (root: string): Promise<string | undefined> => {
+  const resolved = await runGit(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], 4096);
+  const sha = resolved.ok ? resolved.stdout.toString("utf8").trim() : "";
+  return SHA_PATTERN.test(sha) ? sha : undefined;
 };
 
 /** First parent of a resolved commit (undefined for a root commit). */
@@ -149,14 +176,22 @@ const cutAtFileBoundary = (partial: Buffer): string => {
  * ------------------------------------------------------------------------- */
 
 const DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--no-textconv", "-M"];
+/** `?ws=ignore` adds `-w` (`--ignore-all-space`) for that request only. */
+const IGNORE_WS_FLAGS = [...DIFF_FLAGS, "-w"];
+
+/** Diff flags for a request, or an error for any `ws` value other than empty or `ignore`. */
+const diffFlags = (query: ChangesQuery): { flags: string[] } | { error: string } =>
+  query.ws === undefined || query.ws === null || query.ws === "" ? { flags: DIFF_FLAGS }
+    : query.ws === "ignore" ? { flags: IGNORE_WS_FLAGS }
+      : { error: "Invalid ws parameter (expected `ignore`)" };
 
 type DiffCommand = (output: string[]) => string[];
 /** `git diff <base> <commit>` between two resolved commits. */
-const rangeDiff = (base: string, commit: string): DiffCommand => (output) => ["diff", ...DIFF_FLAGS, ...output, base, commit, "--"];
+const rangeDiff = (base: string, commit: string, flags: string[]): DiffCommand => (output) => ["diff", ...flags, ...output, base, commit, "--"];
 /** A root commit against the empty tree. */
-const rootDiff = (commit: string): DiffCommand => (output) => ["diff-tree", "-r", "--root", "--no-commit-id", ...DIFF_FLAGS, ...output, commit, "--"];
-/** Tracked working-tree changes against the resolved HEAD commit. */
-const headDiff = (head: string): DiffCommand => (output) => ["diff", ...DIFF_FLAGS, ...output, head, "--"];
+const rootDiff = (commit: string, flags: string[]): DiffCommand => (output) => ["diff-tree", "-r", "--root", "--no-commit-id", ...flags, ...output, commit, "--"];
+/** Tracked working-tree changes against a resolved commit (HEAD, or a task's base commit). */
+const treeDiff = (commit: string, flags: string[]): DiffCommand => (output) => ["diff", ...flags, ...output, commit, "--"];
 
 interface Collected { files: ChangedFile[]; patch: string; truncated: boolean; note?: string }
 
@@ -169,18 +204,23 @@ const collectDiff = async (root: string, command: DiffCommand, extra: ChangedFil
   if (!numstat.ok && !numstat.overflow) return { files: [], patch: "", truncated: false, note: gitFailure(numstat, "the diff") };
   const names = await runGit(root, command(["--name-status", "-z"]));
   if (!names.ok && !names.overflow) return { files: [], patch: "", truncated: false, note: gitFailure(names, "the diff") };
-  const stats = parseNumstat(numstat.stdout.toString("utf8"));
-  const statuses = parseNameStatus(names.stdout.toString("utf8"));
-  const count = Math.min(stats.length, statuses.length);
+  // Paired by path, not by index: with `-w`, numstat (like the patch) skips files whose
+  // only changes are whitespace while name-status still lists them.
+  const stats = new Map(parseNumstat(numstat.stdout.toString("utf8")).map((stat) => [stat.path, stat]));
   const tracked: ChangedFile[] = [];
-  for (let index = 0; index < count; index++) {
-    const stat = stats[index]!; const entry = statuses[index]!;
-    tracked.push({ path: entry.path, ...(entry.oldPath !== undefined ? { oldPath: entry.oldPath } : {}), status: entry.status, added: stat.added, removed: stat.removed, binary: stat.binary });
+  let withPatch = 0;
+  for (const entry of parseNameStatus(names.stdout.toString("utf8"))) {
+    const stat = stats.get(entry.path);
+    if (stat) withPatch++;
+    tracked.push({
+      path: entry.path, ...(entry.oldPath !== undefined ? { oldPath: entry.oldPath } : {}), status: entry.status,
+      added: stat?.added ?? 0, removed: stat?.removed ?? 0, binary: stat?.binary ?? false, ...(stat ? {} : { whitespaceOnly: true }),
+    });
   }
   const all = [...tracked, ...extra];
   let truncated = numstat.overflow || names.overflow || all.length > MAX_FILES;
   const files = all.slice(0, MAX_FILES);
-  if (truncated || !tracked.length) return { files, patch: "", truncated };
+  if (truncated || !withPatch) return { files, patch: "", truncated };
   const patch = await runGit(root, command(["--patch"]), MAX_PATCH_BYTES);
   if (patch.overflow) { truncated = true; return { files, patch: cutAtFileBoundary(patch.stdout), truncated }; }
   if (!patch.ok) return { files, patch: "", truncated, note: gitFailure(patch, "the patch") };
@@ -190,11 +230,11 @@ const collectDiff = async (root: string, command: DiffCommand, extra: ChangedFil
 const MISSING_NOTE = "commit not available in the local repository";
 
 /** One recorded commit diffed against its first parent (empty tree for a root commit). */
-const commitItem = async (root: string, itemId: string, recorded: string, extra: Partial<ChangeItem> = {}): Promise<ChangeItem> => {
+const commitItem = async (root: string, itemId: string, recorded: string, flags: string[], extra: Partial<ChangeItem> = {}): Promise<ChangeItem> => {
   const full = await resolveCommit(root, recorded);
   if (!full) return { itemId, ...extra, commit: recorded, files: [], patch: "", truncated: false, note: MISSING_NOTE };
   const parent = await firstParent(root, full);
-  const collected = await collectDiff(root, parent ? rangeDiff(parent, full) : rootDiff(full));
+  const collected = await collectDiff(root, parent ? rangeDiff(parent, full, flags) : rootDiff(full, flags));
   return { itemId, ...extra, commit: full, ...(parent ? { base: parent } : {}), ...collected };
 };
 
@@ -243,7 +283,21 @@ const recordedSha = (value: unknown): { sha?: string; invalid: boolean } =>
     : typeof value === "string" && SHA_PATTERN.test(value) ? { sha: value, invalid: false }
       : { invalid: true };
 
-const assignmentItem = async (root: string, record: AssignmentRecord): Promise<ChangeItem> => {
+/**
+ * Whether an attempt's recorded commits exist in this repository (cheap `rev-parse`s,
+ * no diff). When no attempt resolves (worker commits gone after a rewrite) and the task
+ * records a base commit, the task range is shown instead of a list of missing commits.
+ */
+const assignmentResolves = async (root: string, record: AssignmentRecord): Promise<boolean> => {
+  const integration = recordedSha(record.integrationCommit);
+  if (integration.sha && await resolveCommit(root, integration.sha)) return true;
+  const commit = recordedSha(record.commit);
+  const base = recordedSha(record.baseCommit);
+  if (!commit.sha || base.invalid || !await resolveCommit(root, commit.sha)) return false;
+  return !base.sha || Boolean(await resolveCommit(root, base.sha));
+};
+
+const assignmentItem = async (root: string, record: AssignmentRecord, flags: string[]): Promise<ChangeItem> => {
   const itemId = record.itemId as string;
   const extra: Partial<ChangeItem> = typeof record.workerId === "string" && ID_PATTERN.test(record.workerId) ? { workerId: record.workerId } : {};
   const integration = recordedSha(record.integrationCommit);
@@ -252,7 +306,7 @@ const assignmentItem = async (root: string, record: AssignmentRecord): Promise<C
   const empty = (note: string, fields: Partial<ChangeItem> = {}): ChangeItem => ({ itemId, ...extra, commit: "", files: [], patch: "", truncated: false, ...fields, note });
   let integrationMissing = false;
   if (integration.sha) {
-    const integrated = await commitItem(root, itemId, integration.sha, extra);
+    const integrated = await commitItem(root, itemId, integration.sha, flags, extra);
     // A rewritten integration branch can drop the recorded commit: fall back to the worker commit.
     if (integrated.note !== MISSING_NOTE || !commit.sha) return integrated;
     integrationMissing = true;
@@ -262,27 +316,64 @@ const assignmentItem = async (root: string, record: AssignmentRecord): Promise<C
   const withNote = (item: ChangeItem): ChangeItem => (integration.invalid || integrationMissing) && !item.note ? { ...item, note: fallbackNote } : item;
   if (commit.invalid || base.invalid) return empty("recorded commit is not a valid SHA; ignored");
   if (!commit.sha) return empty(integration.invalid ? "recorded integration commit is not a valid SHA; ignored" : "no commit recorded for this item");
-  if (!base.sha) return withNote(await commitItem(root, itemId, commit.sha, extra));
+  if (!base.sha) return withNote(await commitItem(root, itemId, commit.sha, flags, extra));
   const full = await resolveCommit(root, commit.sha);
   const baseFull = await resolveCommit(root, base.sha);
   if (!full || !baseFull) return empty(MISSING_NOTE, { commit: commit.sha, base: base.sha });
-  return withNote({ itemId, ...extra, commit: full, base: baseFull, ...await collectDiff(root, rangeDiff(baseFull, full)) });
+  return withNote({ itemId, ...extra, commit: full, base: baseFull, ...await collectDiff(root, rangeDiff(baseFull, full, flags)) });
 };
 
-const workingTreeItem = async (root: string): Promise<ChangeItem> => {
-  // The literal `HEAD` is the only fixed revision used; its resolved SHA is validated like any other.
-  const resolved = await runGit(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], 4096);
-  const headSha = resolved.ok ? resolved.stdout.toString("utf8").trim() : "";
-  const head = SHA_PATTERN.test(headSha) ? headSha : undefined;
+/** Untracked files of the working tree (listed without content), or a git failure note. */
+const untrackedFiles = async (root: string): Promise<{ files: ChangedFile[]; overflow: boolean } | { error: string }> => {
   const status = await runGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-  if (!status.ok && !status.overflow) return { itemId: WORKING_TREE_ITEM, commit: head ?? "", files: [], patch: "", truncated: false, note: gitFailure(status, "the working tree") };
-  const untracked: ChangedFile[] = parseUntracked(status.stdout.toString("utf8")).map((path) => ({ path, status: "untracked", added: 0, removed: 0, binary: false }));
+  if (!status.ok && !status.overflow) return { error: gitFailure(status, "the working tree") };
+  return { files: parseUntracked(status.stdout.toString("utf8")).map((path) => ({ path, status: "untracked", added: 0, removed: 0, binary: false })), overflow: status.overflow };
+};
+
+const workingTreeItem = async (root: string, flags: string[]): Promise<ChangeItem> => {
+  const head = await resolveHead(root);
+  const untracked = await untrackedFiles(root);
+  if ("error" in untracked) return { itemId: WORKING_TREE_ITEM, commit: head ?? "", files: [], patch: "", truncated: false, note: untracked.error };
   if (!head) {
-    const truncated = status.overflow || untracked.length > MAX_FILES;
-    return { itemId: WORKING_TREE_ITEM, commit: "", files: untracked.slice(0, MAX_FILES), patch: "", truncated, note: "the repository has no commits yet; only untracked files are listed" };
+    const truncated = untracked.overflow || untracked.files.length > MAX_FILES;
+    return { itemId: WORKING_TREE_ITEM, commit: "", files: untracked.files.slice(0, MAX_FILES), patch: "", truncated, note: "the repository has no commits yet; only untracked files are listed" };
   }
-  const collected = await collectDiff(root, headDiff(head), untracked);
-  return { itemId: WORKING_TREE_ITEM, commit: head, ...collected, truncated: collected.truncated || status.overflow };
+  const collected = await collectDiff(root, treeDiff(head, flags), untracked.files);
+  return { itemId: WORKING_TREE_ITEM, commit: head, workingTree: true, ...collected, truncated: collected.truncated || untracked.overflow };
+};
+
+const TASK_RANGE_NOTE = "task range from the task's base commit; may include commits made outside this task";
+const NO_RANGE_CHANGES_NOTE = "no changes since the task's base commit";
+
+/**
+ * The `task` item of the `task-range` source: `baseCommit` → `finalCommit` once the task
+ * is done, otherwise `baseCommit` → HEAD plus the working tree (`git diff <base> --`
+ * covers committed and uncommitted tracked changes in one patch; untracked files are
+ * listed). Returns a fallback reason instead when the base commit cannot be used.
+ */
+const taskRangeItem = async (root: string, task: TaskState, flags: string[]): Promise<{ item: ChangeItem } | { fallback: string }> => {
+  const base = recordedSha(task.baseCommit);
+  if (base.invalid) return { fallback: "recorded base commit is not a valid SHA" };
+  if (!base.sha) return { fallback: "no base commit recorded for this task" };
+  const baseFull = await resolveCommit(root, base.sha);
+  if (!baseFull) return { fallback: "recorded base commit is not in the local repository" };
+  const final = recordedSha(task.finalCommit);
+  const finalFull = final.sha ? await resolveCommit(root, final.sha) : undefined;
+  const finalNote = final.invalid ? "recorded final commit is not a valid SHA; showing HEAD and the working tree"
+    : final.sha && !finalFull ? "recorded final commit is not in the local repository; showing HEAD and the working tree" : undefined;
+  const item = (fields: Partial<ChangeItem> & Pick<ChangeItem, "commit"> & Collected): ChangeItem => {
+    // A git failure note stands alone; otherwise describe the range (or its emptiness).
+    const rangeNote = fields.note ? undefined : fields.files.length ? `${TASK_RANGE_NOTE}${fields.workingTree ? "; working tree included" : ""}` : NO_RANGE_CHANGES_NOTE;
+    const note = [fields.note, finalNote, rangeNote].filter((part): part is string => Boolean(part)).join("; ");
+    return { itemId: TASK_RANGE_ITEM, base: baseFull, ...fields, note };
+  };
+  if (finalFull) return { item: item({ commit: finalFull, ...await collectDiff(root, rangeDiff(baseFull, finalFull, flags)) }) };
+  const head = await resolveHead(root);
+  if (!head) return { fallback: "HEAD is not a commit" };
+  const untracked = await untrackedFiles(root);
+  if ("error" in untracked) return { item: item({ commit: head, workingTree: true, files: [], patch: "", truncated: false, note: untracked.error }) };
+  const collected = await collectDiff(root, treeDiff(baseFull, flags), untracked.files);
+  return { item: item({ commit: head, workingTree: true, ...collected, truncated: collected.truncated || untracked.overflow }) };
 };
 
 /* ---------------------------------------------------------------------------
@@ -309,12 +400,16 @@ export const capTaskPatch = (items: ChangeItem[], focus: string | null): ChangeI
 };
 
 /**
- * Changes of `taskId` (optionally one item). 400 for a malformed id, 404 for an unknown
- * task or item; git problems are reported as notes inside a 200 payload, never as a 500.
+ * Changes of `taskId` (optionally one item). 400 for a malformed id or `ws` value, 404 for
+ * an unknown task or item; git problems are reported as notes inside a 200 payload, never
+ * as a 500. `focusItem` is the page's selected item (kept in full by `capTaskPatch`).
  */
-export const taskChanges = async (options: UiOptions, taskId: string, itemId: string | null, known?: WorkflowState, focusItem: string | null = null): Promise<ChangesResult> => {
+export const taskChanges = async (options: UiOptions, taskId: string, itemId: string | null, known?: WorkflowState, focusItem: string | null = null, query: ChangesQuery = {}): Promise<ChangesResult> => {
   if (!ID_PATTERN.test(taskId)) return { status: 400, payload: { ok: false, error: "Invalid task id" } };
   if (itemId !== null && !ID_PATTERN.test(itemId)) return { status: 400, payload: { ok: false, error: "Invalid item id" } };
+  const diff = diffFlags(query);
+  if ("error" in diff) return { status: 400, payload: { ok: false, error: diff.error } };
+  const { flags } = diff;
   const state = known ?? await readUiState(options);
   const task = readUiTask(options, taskId, state);
   if (!task) return { status: 404, payload: { ok: false, error: `Task not found: ${taskId}` } };
@@ -323,6 +418,7 @@ export const taskChanges = async (options: UiOptions, taskId: string, itemId: st
     if (itemId !== null && !payload.items.some((item) => item.itemId === itemId)) return { status: 404, payload: { ok: false, error: `Item not found: ${itemId}` } };
     return { status: 200, payload: { ok: true, ...payload }, task, state };
   };
+  const joinNotes = (...parts: Array<string | undefined>): string | undefined => { const kept = parts.filter((part): part is string => Boolean(part)); return kept.length ? kept.join("; ") : undefined; };
 
   const repo = await runGit(root, ["rev-parse", "--is-inside-work-tree"], 4096);
   if (!repo.ok || repo.stdout.toString("utf8").trim() !== "true") {
@@ -331,6 +427,23 @@ export const taskChanges = async (options: UiOptions, taskId: string, itemId: st
     return done({ source: "none", items: [], note });
   }
 
+  /** Sources 3 and 4: the task range when the task records a usable base commit, else the working tree. `reason` explains why the earlier source was skipped. */
+  const rangeOrWorkingTree = async (reason: string | undefined): Promise<ChangesResult> => {
+    let fallback = reason;
+    if (task.baseCommit !== undefined && task.baseCommit !== "") {
+      const range = await taskRangeItem(root, task, flags);
+      if ("item" in range) {
+        if (itemId !== null && itemId !== TASK_RANGE_ITEM) return done({ source: "task-range", items: [] });
+        const note = joinNotes(fallback, fallback ? "showing the task range instead" : undefined);
+        return done({ source: "task-range", items: [range.item], ...(note ? { note } : {}) });
+      }
+      fallback = joinNotes(fallback, range.fallback);
+    }
+    if (itemId !== null && itemId !== WORKING_TREE_ITEM) return done({ source: "working-tree", items: [] });
+    const note = joinNotes(fallback, fallback ? "showing the working tree instead" : undefined);
+    return done({ source: "working-tree", items: [await workingTreeItem(root, flags)], ...(note ? { note } : {}) });
+  };
+
   if (uiMode(options) === "fleet") {
     let recorded: unknown;
     let note = "No integration commit in the current review snapshot yet (it is recorded at the code review gate)";
@@ -338,22 +451,31 @@ export const taskChanges = async (options: UiOptions, taskId: string, itemId: st
     catch { note = "The fleet review snapshot is unavailable"; }
     const sha = recordedSha(recorded);
     if (sha.invalid) return done({ source: "fleet", items: [], note: "The snapshot's integration commit is not a valid SHA; ignored" });
-    if (!sha.sha) return done({ source: "fleet", items: [], note });
+    if (!sha.sha) {
+      // Before the gate (or without a snapshot) the task range stands in; tasks without a base commit keep the plain note.
+      if (task.baseCommit) return rangeOrWorkingTree(note);
+      return done({ source: "fleet", items: [], note });
+    }
+    // An integration commit the local repository does not have (not fetched yet, or gone) falls to the task range too.
+    if (task.baseCommit && !(await resolveCommit(root, sha.sha))) return rangeOrWorkingTree("The snapshot's integration commit is not in the local repository");
     if (itemId !== null && itemId !== INTEGRATION_ITEM) return done({ source: "fleet", items: [] });
-    return done({ source: "fleet", items: [await commitItem(root, INTEGRATION_ITEM, sha.sha)] });
+    return done({ source: "fleet", items: [await commitItem(root, INTEGRATION_ITEM, sha.sha, flags)] });
   }
 
   const records = readAssignments(root, taskId);
   const latest = records && "records" in records ? latestAssignments(records.records) : [];
-  if (latest.length) {
+  const hasRange = task.baseCommit !== undefined && task.baseCommit !== "";
+  let resolvable = !hasRange && latest.length > 0;
+  for (const record of latest) { if (resolvable) break; resolvable = await assignmentResolves(root, record); }
+  if (resolvable) {
     const wanted = itemId === null ? latest : latest.filter((record) => record.itemId === itemId);
     const items: ChangeItem[] = [];
-    for (const record of wanted) items.push(await assignmentItem(root, record));
+    for (const record of wanted) items.push(await assignmentItem(root, record, flags));
     return done({ source: "assignments", items: itemId === null ? capTaskPatch(items, focusItem) : items });
   }
-  const note = records && "error" in records ? `${records.error}; showing the working tree instead`
-    : records ? "No reported or integrated assignments for this task yet; showing the working tree instead"
-      : undefined;
-  if (itemId !== null && itemId !== WORKING_TREE_ITEM) return done({ source: "working-tree", items: [] });
-  return done({ source: "working-tree", items: [await workingTreeItem(root)], ...(note ? { note } : {}) });
+  const reason = records && "error" in records ? records.error
+    : latest.length ? "No reported or integrated assignment commit of this task is in the local repository"
+      : records ? "No reported or integrated assignments for this task yet"
+        : undefined;
+  return rangeOrWorkingTree(reason);
 };

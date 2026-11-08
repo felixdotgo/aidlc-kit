@@ -79,13 +79,19 @@ function fetchBranch(root, remote, branch) {
 function ancestor(root, base, head) {
   try { git(root, "merge-base", "--is-ancestor", base, head); return true; } catch { return false; } /* intentional: non-git/non-worktree is treated as not clean */
 }
-// Host-local loop operational files (daemon lock/log, UI event sidecar) live in
-// the lead checkout but are never part of a handoff or integration.
+// Host-local loop operational files (daemon lock/log, UI event sidecar) and
+// per-task runtime data (worker container index and logs) live in the lead
+// checkout but are never part of a handoff or integration.
 const LOOP_OPERATIONAL_PREFIX = ".agents/data/loop/";
+const TASK_RUNTIME_PATTERN = /^\.agents\/data\/tasks\/[^/]+\/runtime\//;
+/** True for repository-relative paths the loop writes operationally
+ * (`.agents/data/loop/` and `.agents/data/tasks/<id>/runtime/`); such paths are
+ * ignored by clean checks and working-tree change snapshots. */
+export const isLoopOperationalPath = (path) => typeof path === "string" && (path.startsWith(LOOP_OPERATIONAL_PREFIX) || TASK_RUNTIME_PATTERN.test(path));
 function assertClean(root) {
   // Not via git(): its trim() would eat the leading status column of the first row.
   const status = execFileSync("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd: root, encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
-  const dirty = status.split("\0").filter(Boolean).map((row) => row.slice(3)).filter((path) => !path.startsWith(LOOP_OPERATIONAL_PREFIX));
+  const dirty = status.split("\0").filter(Boolean).map((row) => row.slice(3)).filter((path) => !isLoopOperationalPath(path));
   if (dirty.length) throw new Error("Git worktree must be clean before handoff or integration");
 }
 function normaliseReport(job) {

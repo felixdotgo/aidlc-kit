@@ -9,6 +9,7 @@ import { isLoopProvider, runAgentTurn, summarize } from "./loop-drivers.mjs";
 import { extractCommitMessage } from "./loop-commit-message.mjs";
 import { pathOverlaps } from "./store.mjs";
 import { claimLocalAssignment, heartbeatLocalAssignment, recordLocalIntegration, reportLocalAssignment, releaseLocalAssignment } from "./assignment-store.mjs";
+import { openWorkerLog } from "./loop-worker-log.mjs";
 
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000 });
 const lines = (value) => value.split("\0").filter(Boolean);
@@ -148,6 +149,14 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
     const onCancel = () => { renewalError ??= new Error("Worker batch cancelled by daemon shutdown"); controller.abort(); };
     if (signal?.aborted) onCancel(); else signal?.addEventListener("abort", onCancel, { once: true });
     const timer = setInterval(() => { Promise.resolve().then(() => heartbeat(root, taskId, assignment.id, leaseMs)).catch((error) => { renewalError = error; controller.abort(); }); }, Math.max(500, Math.floor(leaseMs / 3)));
+    // Container record and raw output tee under the task's runtime directory
+    // (.agents/data/tasks/<task>/runtime/workers). Best-effort: a log failure is
+    // reported once as a diagnostic and never fails or delays the worker.
+    const logDiagnostic = (error) => { Promise.resolve().then(() => onEvent({ type: "diagnostic", taskId, itemId: job.itemId, message: `Worker log unavailable for assignment ${assignment.id}: ${error instanceof Error ? error.message : String(error)}` })).catch(() => {}); };
+    let workerLog = null;
+    try { workerLog = openWorkerLog({ root, taskId, assignmentId: assignment.id, itemId: job.itemId, workerId: job.workerId, agent: job.agent, mode: "local", onError: logDiagnostic }); }
+    catch (error) { logDiagnostic(error); }
+    const labels = { "aidlc.task": taskId, "aidlc.item": job.itemId, "aidlc.worker": job.workerId, "aidlc.assignment": assignment.id };
     try {
       const home=mkdtempSync(join(tmpdir(), "aidlc-local-home-")); chmodSync(home,0o700);
       let sessionId, previousFingerprint, stalls=0, result;
@@ -156,9 +165,12 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
           if (renewalError || controller.signal.aborted) throw renewalError ?? leaseLost();
           const containerName = `aidlc-worker-${randomUUID()}`;
           const spawnProcess = (command, args, options) => {
-            const invocation = workerDockerInvocation({ workspace: snapshot, image: resolvedImages[job.agent], command, args, credentialEnv: docker.credentials[job.agent], hostEnv: process.env, uid, gid, containerName, sessionHome:home });
-            return spawn(invocation.command, invocation.args, { ...options, cwd: snapshot, env: invocation.env, shell: false });
+            const invocation = workerDockerInvocation({ workspace: snapshot, image: resolvedImages[job.agent], command, args, credentialEnv: docker.credentials[job.agent], hostEnv: process.env, uid, gid, containerName, sessionHome:home, labels });
+            const child = spawn(invocation.command, invocation.args, { ...options, cwd: snapshot, env: invocation.env, shell: false });
+            if (workerLog) { workerLog.tee(child); child.once("close", (code) => workerLog.turnEnd(code)); }
+            return child;
           };
+          workerLog?.turnStart(containerName, turn + 1);
           await workerEvent({ type: "worker_turn_start", iteration: turn, agent: job.agent, summary: summarize(`turn ${turn + 1} on ${job.ownedPaths.join(", ")}`) });
           try { result = await runAgentTurn({ agent: job.agent, root: "/workspace", sessionId, spawnProcess, onEvent: workerEvent, prompt: `${job.prompt}\n\nOnly modify assigned paths: ${job.ownedPaths.join(", ")}. Do not modify AI-DLC lifecycle state or approve gates. End with a Conventional Commits message on its own line as AI-DLC-COMMIT: type(scope): subject (for example AI-DLC-COMMIT: docs(ui): add web UI improvement proposal), followed by AI-DLC-ITEM-COMPLETE on its own line.`, timeoutMs, signal: controller.signal, onSessionId: async (id) => { await heartbeat(root, taskId, assignment.id, leaseMs, id); } }); }
           finally {
@@ -208,7 +220,7 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
       entry.reported = true;
       await workerEvent({ type: "worker_reported", commit, changedPaths: committed, summary: summarize(`changed ${committed.length} file(s): ${committed.join(", ")}`) });
       return { assignmentId: assignment.id, itemId: job.itemId, workerId: job.workerId, agent: job.agent, baseCommit: base, branch, commit, changedPaths: committed, workspace };
-    } finally { clearInterval(timer); signal?.removeEventListener("abort", onCancel); }
+    } finally { clearInterval(timer); signal?.removeEventListener("abort", onCancel); workerLog?.close(); }
   };
   const results = await Promise.allSettled(prepared.map(execute));
   const failure = results.find((result) => result.status === "rejected");

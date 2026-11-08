@@ -12,6 +12,8 @@ const phaseGate = (phase) => phase === "clarify" ? "G0_confirm" : phase === "pla
 const iso = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString() === value;
 const text = (value) => typeof value === "string" && Boolean(value.trim());
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const commitPattern = /^[0-9a-f]{7,64}$/;
+const commitFields = ["baseCommit", "finalCommit"];
 const digest = (content) => createHash("sha256").update(content).digest("hex");
 const archiveRecordPath = (id) => `.agents/data/state/archive/${id}.json`;
 const taskRecordContent = (task) => `${JSON.stringify(task, null, 2)}\n`;
@@ -74,6 +76,7 @@ const validateTask = (id, task) => {
   if (task.closure && (!text(task.closure.reason) || !text(task.closure.source) || !iso(task.closure.recordedAt))) throw new Error(`Invalid task closure: ${id}`);
   if ((task.status === "superseded") !== Boolean(task.successorTaskId) || (task.status === "closed" && task.successorTaskId)) throw new Error(`Invalid task successor: ${id}`);
   if (task.predecessorTaskId !== undefined && !text(task.predecessorTaskId)) throw new Error(`Invalid task predecessor: ${id}`);
+  for (const field of commitFields) if (task[field] !== undefined && !(typeof task[field] === "string" && commitPattern.test(task[field]))) throw new Error(`Invalid task ${field}: ${id}`);
   for (const path of Object.values(task.artifacts ?? {})) if (path) {
     const cleaned = normalize(path);
     if (isAbsolute(cleaned) || cleaned === ".." || cleaned.startsWith(`..${separator}`) || !cleaned.startsWith(`.agents${separator}data${separator}tasks${separator}`)) throw new Error(`Invalid artifact path for ${id}: ${path}`);
@@ -276,6 +279,14 @@ export const transitionTask = (state, id, target) => {
   const task = state.tasks[id]; if (!task) throw new Error(`Unknown active task: ${id}`); if (terminal(task)) throw new Error(`Terminal task cannot transition: ${id}`);
   const errors = transitionDiagnostics(task, target).filter((item) => item.level === "ERROR"); if (errors.length) throw new Error(errors.map((item) => item.message).join("; "));
   task.phase = target; task.gate = phaseGate(target); task.status = target === "done" ? "done" : "active"; delete task.legacyG2Wait; task.updatedAt = new Date().toISOString(); return task;
+};
+
+/** Record a git SHA on a task. Wrappers resolve the SHA (lib/repo-head.mjs); the core never runs git. */
+export const recordTaskCommit = (task, field, sha) => {
+  if (!task || typeof task !== "object") throw new Error("recordTaskCommit requires a task");
+  if (!commitFields.includes(field)) throw new Error(`Unknown task commit field: ${field}`);
+  if (typeof sha !== "string" || !commitPattern.test(sha)) throw new Error(`Invalid ${field}: expected a lowercase hex git SHA (7-64 chars)`);
+  task[field] = sha; task.updatedAt = new Date().toISOString(); return task;
 };
 
 export const readyTaskItems = (task) => {

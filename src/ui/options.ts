@@ -10,7 +10,6 @@ export interface UiOptions {
   root: string;
   host: string;
   port: number;
-  token?: string;
   /** Loop authority the dashboard reads and acts on; defaults to `.agents/config.json` `loop.mode` (local unless fleet). */
   mode?: UiAuthorityMode;
   /** Fleet reviewer credential held server-side; passed only to the approve child process. */
@@ -21,7 +20,7 @@ export interface UiOptions {
 }
 
 /** Credentials that never reach the daemon or read-only child processes. */
-const SCRUBBED_ENV = ["AIDLC_FLEET_REVIEWER_TOKEN", "AIDLC_UI_TOKEN", "AIDLC_UI_TOKEN_FILE", "AIDLC_UI_REVIEWER_TOKEN_FILE"];
+const SCRUBBED_ENV = ["AIDLC_FLEET_REVIEWER_TOKEN", "AIDLC_UI_REVIEWER_TOKEN_FILE"];
 export const scrubbedEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const name of SCRUBBED_ENV) delete env[name];
@@ -29,25 +28,26 @@ export const scrubbedEnv = (extra: Record<string, string> = {}): NodeJS.ProcessE
 };
 
 /**
- * Fixed token from a file (`--token-file`, `--reviewer-token-file`) so the browser stays signed in across
- * UI restarts. The file must live outside the project (agents work inside it), be a regular non-symlink
- * file, and be private to the owner (mode 600/400). With `create`, a missing file is created with a
- * random token. The token is never passed to the daemon, lead, or workers.
+ * A credential from a file (`--reviewer-token-file`: the fleet reviewer credential the approve
+ * child process receives). The file must live outside the project (agents work inside it), be a
+ * regular non-symlink file, and be private to the owner (mode 600/400). With `create`, a missing
+ * file is created with a random token. The credential is never passed to the daemon, lead, or
+ * workers; it reaches only the single approve child process.
  */
-export const readUiTokenFile = (root: string, path: string, { create }: { create: boolean }): string => {
+export const readCredentialFile = (root: string, path: string, { create }: { create: boolean }): string => {
   const target = resolve(path); const project = resolve(root);
-  if (target === project || target.startsWith(`${project}${sep}`)) throw new Error("Token file must live outside the project directory");
+  if (target === project || target.startsWith(`${project}${sep}`)) throw new Error("Credential file must live outside the project directory");
   if (!existsSync(target)) {
-    if (!create) throw new Error(`Token file not found: ${target}`);
+    if (!create) throw new Error(`Credential file not found: ${target}`);
     const token = randomBytes(32).toString("base64url");
     writeFileSync(target, `${token}\n`, { flag: "wx", mode: 0o600 });
     return token;
   }
   const stat = lstatSync(target);
-  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("Token file must be a regular file, not a symlink");
-  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error(`Token file must be private to its owner (chmod 600 ${target})`);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("Credential file must be a regular file, not a symlink");
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error(`Credential file must be private to its owner (chmod 600 ${target})`);
   const token = readFileSync(target, "utf8").trim();
-  if (token.length < 16 || token.length > 256 || /\s/.test(token)) throw new Error("Token file must contain one token of 16–256 non-whitespace characters");
+  if (token.length < 16 || token.length > 256 || /\s/.test(token)) throw new Error("Credential file must contain one token of 16–256 non-whitespace characters");
   return token;
 };
 

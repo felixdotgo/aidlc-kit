@@ -12,7 +12,9 @@ import type { UiAuthorityMode } from "../options.js";
 import { feedbackPill, gateLabel, pill, relativeTime } from "./components.js";
 
 /** `task` marks a task detail page: live updates refresh that task's regions. The
- * inline head script applies the saved kanban/list view before first paint. */
+ * inline head scripts apply the saved kanban/list view and the saved theme
+ * (`localStorage["aidlc-settings"].theme`, see `assets/ui/common.js`) before first
+ * paint; `system` leaves `data-theme` unset so the OS preference applies. */
 export const pageHead = (title: string, task = ""): string => `<!doctype html>
 <html lang="en">
 <head>
@@ -23,6 +25,7 @@ export const pageHead = (title: string, task = ""): string => `<!doctype html>
 ${stylesheetTag("bulma")}
 ${stylesheetTag("dashboard")}
 <script>try { document.documentElement.setAttribute("data-view", localStorage.getItem("aidlc-view") === "list" ? "list" : "kanban"); } catch (error) { /* storage disabled */ }</script>
+<script>try { const theme = JSON.parse(localStorage.getItem("aidlc-settings") || "{}").theme; if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme); } catch (error) { /* storage disabled or malformed */ }</script>
 </head>
 <body${task ? ` data-task="${escapeHtml(task)}"` : ""} data-notify-page="${NOTIFY_PAGE}">`;
 
@@ -121,6 +124,9 @@ export const renderHeader = (root: string, mode: UiAuthorityMode = "local", revi
   </div>
 </header>`;
 
+/** Settings dialog: client-side preferences stored in this browser (`aidlc-settings`,
+ * see `assets/ui/common.js` `aidlcSettings`). The form is read and written by the
+ * client; every control id is `settings-<key>`. */
 export const renderModals = (): string => `
 <div id="settings-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
   <div class="modal-background" data-close></div>
@@ -130,16 +136,71 @@ export const renderModals = (): string => `
       <button class="delete" aria-label="close" data-close></button>
     </header>
     <section class="modal-card-body">
-      <div class="field">
-        <label class="label" for="settings-token-input">Session token</label>
-        <div class="control"><input id="settings-token-input" class="input" type="password" placeholder="paste the token printed by aidlc-kit ui" autocomplete="off" data-autofocus></div>
-        <p class="help">Printed once in the terminal that started this server. Required for New task, resume, gate feedback, and gate approve. Stored only in this browser's localStorage.</p>
-      </div>
+      <form id="settings-form" class="ad-settings" novalidate>
+        <fieldset class="ad-settings-group">
+          <legend class="label">Appearance</legend>
+          <div class="field">
+            <div class="control ad-settings-radios" role="radiogroup" aria-label="Theme">
+              <label class="radio"><input type="radio" name="settings-theme" id="settings-theme-system" value="system" data-autofocus> System</label>
+              <label class="radio"><input type="radio" name="settings-theme" id="settings-theme-light" value="light"> Light</label>
+              <label class="radio"><input type="radio" name="settings-theme" id="settings-theme-dark" value="dark"> Dark</label>
+            </div>
+            <p class="help">System follows the operating system's light/dark preference.</p>
+          </div>
+        </fieldset>
+        <fieldset class="ad-settings-group">
+          <legend class="label">Live updates</legend>
+          <div class="field">
+            <label class="label is-small" for="settings-livePoll">Refresh every</label>
+            <div class="control"><div class="select is-small"><select id="settings-livePoll"><option value="1500">1.5 seconds</option><option value="3000">3 seconds</option><option value="0">Paused</option></select></div></div>
+            <p class="help">How often the page asks the server for changes. Paused keeps the page as it is until you reload or change this.</p>
+          </div>
+          <div class="field">
+            <label class="checkbox"><input type="checkbox" id="settings-notify"> Browser notification when a task waits for your review</label>
+            <p class="help" id="settings-notify-state"></p>
+          </div>
+        </fieldset>
+        <fieldset class="ad-settings-group">
+          <legend class="label">Live log</legend>
+          <div class="field">
+            <label class="label is-small" for="settings-logFilter">Default filter</label>
+            <div class="control"><div class="select is-small"><select id="settings-logFilter"><option value="important">Important</option><option value="all">All events</option></select></div></div>
+          </div>
+          <div class="field">
+            <label class="checkbox"><input type="checkbox" id="settings-logRaw"> Show raw JSON by default</label>
+            <p class="help">Used when a page has no log preference of its own yet.</p>
+          </div>
+        </fieldset>
+        <fieldset class="ad-settings-group">
+          <legend class="label">Code changes</legend>
+          <div class="field">
+            <label class="checkbox"><input type="checkbox" id="settings-diffWrap"> Wrap long lines</label>
+          </div>
+          <div class="field">
+            <label class="checkbox"><input type="checkbox" id="settings-diffIgnoreWs"> Ignore whitespace changes</label>
+          </div>
+        </fieldset>
+        <fieldset class="ad-settings-group">
+          <legend class="label">Containers</legend>
+          <div class="field">
+            <label class="label is-small" for="settings-logTailKb">Container log tail</label>
+            <div class="control"><div class="select is-small"><select id="settings-logTailKb"><option value="64">64 KiB</option><option value="256">256 KiB</option><option value="1024">1024 KiB</option></select></div></div>
+          </div>
+        </fieldset>
+        <fieldset class="ad-settings-group">
+          <legend class="label">Board</legend>
+          <div class="field">
+            <label class="label is-small" for="settings-openCards">Clicking a card opens</label>
+            <div class="control"><div class="select is-small"><select id="settings-openCards"><option value="panel">The side panel</option><option value="page">The task page</option></select></div></div>
+            <p class="help">Ctrl/Cmd-click and middle-click always open the task page in a new tab; shift-click in this tab.</p>
+          </div>
+        </fieldset>
+      </form>
     </section>
     <footer class="modal-card-foot">
-      <span class="ad-foot-start" id="settings-token-state"></span>
-      <button id="settings-token-clear" class="button is-light">Clear</button>
-      <button id="settings-token-save" class="button is-primary">Save</button>
+      <span class="ad-foot-start">Stored in this browser only</span>
+      <button type="button" id="settings-reset" class="button is-light">Reset to defaults</button>
+      <button type="button" id="settings-save" class="button is-primary">Save</button>
     </footer>
   </div>
 </div>

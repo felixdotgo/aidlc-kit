@@ -35,6 +35,8 @@
         "legacyG2Wait": { "$ref": "#/$defs/legacyG2Wait" },
         "predecessorTaskId": { "type": "string", "minLength": 1 },
         "successorTaskId": { "type": "string", "minLength": 1 },
+        "baseCommit": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+        "finalCommit": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
         "createdAt": { "type": "string" },
         "updatedAt": { "type": "string" }
       },

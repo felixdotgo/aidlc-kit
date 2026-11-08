@@ -308,10 +308,9 @@ test("runLoopDaemon drives any loop authority: shared lock, gate-event dedupe, b
 
 test("fleet lead env validates the remote authority, maps loop limits, and strips reviewer credentials", async () => {
   const { fleetLeadEnv } = await loadAuthority();
-  const base = { AIDLC_FLEET_URL: "https://fleet.example/mcp", AIDLC_FLEET_WORKSPACE: "ws", AIDLC_FLEET_TOKEN: "lead", AIDLC_FLEET_INTEGRATION_BRANCH: "main", AIDLC_FLEET_REVIEWER_TOKEN: "r".repeat(32), AIDLC_UI_TOKEN: "ui", AIDLC_FLEET_MAX_TURNS: "7" };
+  const base = { AIDLC_FLEET_URL: "https://fleet.example/mcp", AIDLC_FLEET_WORKSPACE: "ws", AIDLC_FLEET_TOKEN: "lead", AIDLC_FLEET_INTEGRATION_BRANCH: "main", AIDLC_FLEET_REVIEWER_TOKEN: "r".repeat(32), AIDLC_FLEET_MAX_TURNS: "7" };
   const env = fleetLeadEnv({ root: "/repo", agent: "codex", workers: { w1: "codex", w2: "opencode" }, limits: { maxTurns: 30, turnTimeoutMs: 900000, maxStallTurns: 3 }, pollMs: 2000, env: base });
   assert.equal(env.AIDLC_FLEET_REVIEWER_TOKEN, undefined);
-  assert.equal(env.AIDLC_UI_TOKEN, undefined);
   assert.equal(env.AIDLC_FLEET_MAX_TURNS, "7", "explicit env wins over loop.limits");
   assert.equal(env.AIDLC_FLEET_TURN_TIMEOUT_MS, "900000");
   assert.equal(env.AIDLC_FLEET_MAX_STALL_TURNS, "3");
@@ -377,7 +376,7 @@ test("fleet authority feedback re-activates a gated task under a lead claim with
       if (name === "run_release") return { revision: 3, fleet: { leads: {} } };
       throw new Error(`unexpected ${name}`);
     };
-    const env = { AIDLC_FLEET_URL: "https://fleet.example/mcp", AIDLC_FLEET_WORKSPACE: "ws", AIDLC_FLEET_TOKEN: "lead", AIDLC_FLEET_INTEGRATION_BRANCH: "main", AIDLC_FLEET_REVIEWER_TOKEN: "r".repeat(32), AIDLC_UI_TOKEN: "ui" };
+    const env = { AIDLC_FLEET_URL: "https://fleet.example/mcp", AIDLC_FLEET_WORKSPACE: "ws", AIDLC_FLEET_TOKEN: "lead", AIDLC_FLEET_INTEGRATION_BRANCH: "main", AIDLC_FLEET_REVIEWER_TOKEN: "r".repeat(32) };
     const authority = await createFleetAuthority({ root, agent: "codex", workers: { w1: "codex" }, env, callTool, runCli: async () => ({}) });
     const result = await authority.feedback({ taskId: "fleet-a", reason: "Tighten the scope to the API only", source: "dashboard: felix" });
     assert.deepEqual(result, { ok: true, result: { id: "fleet-a", status: "active" } });
@@ -386,7 +385,6 @@ test("fleet authority feedback re-activates a gated task under a lead claim with
     assert.equal(recorded.env.AIDLC_FLEET_LEAD_EPOCH, "3", "runs under the lead claim");
     assert.ok(recorded.env.AIDLC_FLEET_LEAD_OWNER_TOKEN, "carries the lead owner token");
     assert.equal(recorded.env.AIDLC_FLEET_REVIEWER_TOKEN, undefined, "feedback never receives the reviewer credential");
-    assert.equal(recorded.env.AIDLC_UI_TOKEN, undefined);
     assert.deepEqual(calls.filter((call) => ["run_claim", "run_release"].includes(call.name)).map((call) => call.name), ["run_claim", "run_release"], "claims and releases the lead around the command");
     assert.equal(calls.find((call) => call.name === "run_release")?.args.epoch, 3);
     await assert.rejects(() => authority.feedback({ taskId: "fleet-active", reason: "why", source: "who" }), /not waiting at a human gate/);

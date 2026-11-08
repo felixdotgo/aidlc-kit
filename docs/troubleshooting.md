@@ -167,13 +167,20 @@ Local holder files share one format:
 - **resume** applies only to a `paused` task; any other status returns `409` with the reason. A resumed task runs only if loop-owned and a daemon is running.
 - Nothing at all (no toast, error, or update): hard-refresh (Ctrl+Shift+R) and check the browser DevTools console.
 
-### Dashboard `401` / `403`
+### Dashboard `403`
 
-- `401 Invalid or missing approve token` — open the login URL printed by `aidlc-kit ui` (new on every restart unless `--token-file`), or paste the token into **Settings**. Accepted only in the `x-aidlc-token` or `Authorization: Bearer` header, never as a form or body field.
+- `403 … Origin …`, `403 … Sec-Fetch-Site …`, or `403 … x-aidlc-request …` — a state-changing request that does not look like the dashboard's own `fetch` (a curl without the headers, a form post from another page, an old cached script). Use the dashboard page itself after a hard refresh; scripted calls must send `Origin: http://<host:port>` and `x-aidlc-request: 1`.
 - `403 Host header does not match this dashboard; open it at its bound address` — opened under another host name (for example a LAN name while bound to `127.0.0.1`). Use the printed URL; any loopback name works when bound to loopback.
 - `403 Cross-origin request rejected` — a state-changing request from another origin; use the dashboard page itself.
 - `403 Fleet approval needs the reviewer credential …` — restart `aidlc-kit ui` with `AIDLC_FLEET_REVIEWER_TOKEN` or `--reviewer-token-file <file>` (outside the project, mode `600`), or approve from a reviewer terminal with `remote-state.mjs gate approve <task-id> --snapshot <id> --source "<approval>"`.
-- `Token file must …` — `--token-file`/`--reviewer-token-file` must be outside the project, a regular non-symlink file with mode `600`/`400`, containing one 16–256 character token.
+- `Credential file must …` — `--reviewer-token-file` must be outside the project, a regular non-symlink file with mode `600`/`400`, containing one 16–256 character token.
+
+### Containers panel is empty or `docker · unavailable`
+
+- Empty with "No worker containers recorded" — the loop has not built an item of this task yet (clarify/plan run on the host, and a task driven from a terminal without the loop never starts containers). Records appear in `.agents/data/tasks/<task-id>/runtime/workers/index.json` once a worker turn starts.
+- `docker · unavailable` — the dashboard could not run `docker ps` (no Docker, another context, or a slow daemon beyond 4 s); rows still show from the index, with `running` meaning "not ended yet".
+- **Log** disabled with "log is on another host" — a fleet worker on another machine recorded the entry; the log file lives in that checkout.
+- `Container log not found` — the assignment never wrote output or both `.log` generations were cleaned up.
 
 ### Live log is empty or stuck on "connecting…"
 

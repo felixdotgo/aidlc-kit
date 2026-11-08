@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -45,6 +45,68 @@ test("local workers accept OpenCode and still require Docker isolation", async (
   const opencodeJobs = [{ ...jobs[0], agent: "opencode" }];
   await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: opencodeJobs, ...hooks }), /Docker worker isolation/);
   assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "base\n");
+});
+
+// Fake `docker` on PATH standing in for the engine: `image inspect` yields an
+// immutable id, `run … --version` passes preflight, and `run … exec` plays a
+// one-turn codex session that edits a.txt in the bind-mounted snapshot and
+// writes to both stdout (JSONL) and stderr. Every invocation is logged.
+function fakeDocker(dir: string) {
+  const bin = join(dir, "bin"), log = join(dir, "docker.log");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "docker"), `#!/bin/sh
+printf '%s\\n' "$*" >> '${log}'
+case "$1" in
+  image) printf 'sha256:%064d\\n' 0; exit 0 ;;
+  run)
+    cat >/dev/null
+    for last; do :; done
+    [ "$last" = "--version" ] && exit 0
+    ws=""
+    for arg; do case "$arg" in type=bind,src=*,dst=/workspace) ws=\${arg#type=bind,src=}; ws=\${ws%,dst=/workspace} ;; esac; done
+    printf 'isolated\\n' > "$ws/a.txt"
+    printf '%s\\n' '{"type":"thread.started","thread_id":"thread-1"}'
+    printf 'fake docker stderr\\n' >&2
+    printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Done.\\nAI-DLC-COMMIT: feat(a): isolate a.txt\\nAI-DLC-ITEM-COMPLETE"}}'
+    printf '%s\\n' '{"type":"turn.completed"}'
+    exit 0 ;;
+esac
+exit 0
+`);
+  chmodSync(join(bin, "docker"), 0o755);
+  return { bin, lines: () => readFileSync(log, "utf8").trim().split("\n") };
+}
+
+test("local worker batch labels its container and records the container index and raw log", { skip: process.platform !== "linux" || !process.getuid?.() }, async (t) => {
+  const { root, worktreesRoot } = fixture(t), { runLocalWorkerBatch } = await load();
+  const docker = fakeDocker(join(root, "..", "fake"));
+  const prior = { PATH: process.env.PATH, OPENAI_API_KEY: process.env.OPENAI_API_KEY };
+  process.env.PATH = `${docker.bin}:${process.env.PATH ?? "/usr/bin:/bin"}`; process.env.OPENAI_API_KEY = "test-only";
+  t.after(() => { for (const [key, value] of Object.entries(prior)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  const events: any[] = [], recorded: string[][] = [];
+  const recordIntegration = async (_root: string, taskId: string, assignmentId: string, commit: string) => { recorded.push([taskId, assignmentId, commit]); };
+  const result = await runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs, ...hooks, recordIntegration, onEvent: (event: any) => { events.push(event); }, docker: { image: "worker:test", credentials: { codex: ["OPENAI_API_KEY"] } } });
+  assert.equal(result.length, 1); assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "isolated\n");
+  assert.deepEqual(recorded, [["task", "assignment", result[0].integrationCommit]]);
+  const run = docker.lines().find((line) => line.startsWith("run ") && line.includes(" exec "));
+  assert.ok(run, "worker turn ran through docker");
+  const name = run!.match(/--name (aidlc-worker-[0-9a-f-]+)/)![1]!;
+  assert.ok(run!.includes(`--name ${name} --label aidlc.task=task --label aidlc.item=one --label aidlc.worker=worker --label aidlc.assignment=assignment --read-only`), run);
+  assert.ok(!docker.lines().some((line) => line.includes("--version") && line.includes("--label")), "preflight carries no labels");
+  const workers = join(root, ".agents/data/tasks/task/runtime/workers");
+  const index = JSON.parse(readFileSync(join(workers, "index.json"), "utf8"));
+  assert.equal(index.length, 1);
+  const { startedAt, endedAt, host, ...entry } = index[0];
+  assert.deepEqual(entry, { name, assignmentId: "assignment", itemId: "one", workerId: "worker", agent: "codex", mode: "local", turn: 1, exitCode: 0, log: "assignment.log" });
+  assert.ok(typeof host === "string" && host && Date.parse(startedAt) <= Date.parse(endedAt));
+  const text = readFileSync(join(workers, "assignment.log"), "utf8");
+  assert.ok(text.startsWith(`--- turn 1 container ${name} `), text);
+  assert.ok(text.includes('{"type":"thread.started","thread_id":"thread-1"}\n') && text.includes("fake docker stderr\n") && text.includes('{"type":"turn.completed"}\n'), "raw stdout and stderr are teed");
+  assert.match(text, new RegExp(`\\n--- end turn 1 container ${name} exit 0 [^ ]+ ---\\n$`));
+  // Raw output never leaks into the live log: agent text stays a one-line summary and no diagnostic was needed.
+  assert.ok(!events.some((event) => event.type === "diagnostic"), JSON.stringify(events.filter((event) => event.type === "diagnostic")));
+  for (const event of events.filter((candidate) => candidate.type === "agent_text")) assert.ok(!/\n/.test(event.text) && !event.text.includes("AI-DLC-ITEM-COMPLETE"));
+  assert.ok(events.some((event) => event.type === "job_integrated" && event.actor === "worker"));
 });
 
 test("Docker worker isolates and integrates its scoped snapshot", { skip: !process.env.AIDLC_TEST_WORKER_IMAGE }, async (t) => {

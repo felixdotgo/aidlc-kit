@@ -35,7 +35,11 @@ const writeTaskDir = (root: string, taskId: string): void => {
   writeFileSync(join(root, ".agents", "data", "tasks", taskId, "intent.md"), INTENT_CONTENT);
 };
 
-const startFixture = async (task: TaskState = makeTask(), withIntent = false): Promise<{ base: string; token: string; root: string; close: () => Promise<void> }> => {
+/** Headers a browser on the dashboard's own origin sends with every POST: the request-shape
+ * guards (see src/ui/security.ts) need a matching Origin and the custom header. */
+const postHeaders = (base: string): Record<string, string> => ({ "content-type": "application/json", origin: base, "x-aidlc-request": "1" });
+
+const startFixture = async (task: TaskState = makeTask(), withIntent = false): Promise<{ base: string; root: string; close: () => Promise<void> }> => {
   const { emptyState, saveState } = await import("../../src/state.js");
   const { startUiServer } = await import("../../src/task-ui.js");
   const root = mkdtempSync(join(tmpdir(), "aidlc-ui-"));
@@ -43,10 +47,10 @@ const startFixture = async (task: TaskState = makeTask(), withIntent = false): P
   state.tasks[task.id] = task;
   saveState(root, state);
   if (withIntent) writeTaskDir(root, task.id);
-  const { server, port, token } = await startUiServer({ root, host: "127.0.0.1", port: 0 });
+  const { server, port } = await startUiServer({ root, host: "127.0.0.1", port: 0 });
   const base = `http://127.0.0.1:${port}`;
   const close = (): Promise<void> => new Promise<void>((resolveClose) => { server.close(() => resolveClose()); rmSync(root, { recursive: true, force: true }); });
-  return { base, token, root, close };
+  return { base, root, close };
 };
 
 /** Client script URLs a page references, in load order. */
@@ -135,30 +139,44 @@ test("ui server serves the styled dashboard, vendored CSS, and read-only JSON en
     const missingStatus = await fetch(`${fixture.base}/api/loop/status`);
     assert.equal(missingStatus.status, 400);
 
-    const badStart = await fetch(`${fixture.base}/api/loop/start`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": fixture.token }, body: JSON.stringify({ requirement: "  " }) });
+    const badStart = await fetch(`${fixture.base}/api/loop/start`, { method: "POST", headers: postHeaders(fixture.base), body: JSON.stringify({ requirement: "  " }) });
     assert.equal(badStart.status, 400);
 
-    const badResume = await fetch(`${fixture.base}/api/loop/resume`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": fixture.token }, body: JSON.stringify({ taskId: "" }) });
+    const badResume = await fetch(`${fixture.base}/api/loop/resume`, { method: "POST", headers: postHeaders(fixture.base), body: JSON.stringify({ taskId: "" }) });
     assert.equal(badResume.status, 400);
   } finally {
     await fixture.close();
   }
 });
 
-test("mutating endpoints fail closed without the session token", async () => {
-  const fixture = await startFixture(makeTask());
+test("mutating endpoints fail closed unless the request has the same-origin shape", async () => {
+  const fixture = await startFixture(makeTask({ status: "paused" }));
+  const json = { "content-type": "application/json" };
+  const body = JSON.stringify({ taskId: "task-a" });
+  const routes = ["/api/loop/start", "/api/loop/resume", "/api/gate/approve", "/api/gate/feedback", "/api/markdown"];
   try {
-    const start = await fetch(`${fixture.base}/api/loop/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requirement: "do the thing" }) });
-    assert.equal(start.status, 401);
-
-    const resume = await fetch(`${fixture.base}/api/loop/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: "task-a" }) });
-    assert.equal(resume.status, 401);
-
-    const approve = await fetch(`${fixture.base}/api/gate/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: "task-a", source: "ok" }) });
-    assert.equal(approve.status, 401);
-
-    const feedback = await fetch(`${fixture.base}/api/gate/feedback`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: "task-a", feedback: "scope is wrong" }) });
-    assert.equal(feedback.status, 401);
+    for (const route of routes) {
+      const noOrigin = await fetch(`${fixture.base}${route}`, { method: "POST", headers: { ...json, "x-aidlc-request": "1" }, body });
+      assert.equal(noOrigin.status, 403, `${route}: no Origin`);
+      assert.match(((await noOrigin.json()) as { error: string }).error, /Origin/);
+      const wrongOrigin = await fetch(`${fixture.base}${route}`, { method: "POST", headers: { ...json, origin: "http://evil.example", "x-aidlc-request": "1" }, body });
+      assert.equal(wrongOrigin.status, 403, `${route}: foreign Origin`);
+      const crossSite = await fetch(`${fixture.base}${route}`, { method: "POST", headers: { ...postHeaders(fixture.base), "sec-fetch-site": "cross-site" }, body });
+      assert.equal(crossSite.status, 403, `${route}: Sec-Fetch-Site: cross-site`);
+      const noHeader = await fetch(`${fixture.base}${route}`, { method: "POST", headers: { ...json, origin: fixture.base }, body });
+      assert.equal(noHeader.status, 403, `${route}: missing x-aidlc-request`);
+      assert.match(((await noHeader.json()) as { error: string }).error, /x-aidlc-request/);
+    }
+    const sameOrigin = await fetch(`${fixture.base}/api/loop/resume`, { method: "POST", headers: { ...postHeaders(fixture.base), "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors" }, body });
+    assert.notEqual(sameOrigin.status, 403, "a same-origin POST with the custom header passes the guards");
+    const markdown = await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers: postHeaders(fixture.base), body: JSON.stringify({ markdown: "hi" }) });
+    assert.equal(markdown.status, 200, await markdown.text());
+    const nonePolicy = await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers: { ...postHeaders(fixture.base), "sec-fetch-site": "none" }, body: JSON.stringify({ markdown: "hi" }) });
+    assert.equal(nonePolicy.status, 200, "Sec-Fetch-Site: none (user-initiated) is accepted");
+    // Reads never need the guards: no Origin, no custom header.
+    assert.equal((await fetch(`${fixture.base}/`)).status, 200);
+    assert.equal((await fetch(`${fixture.base}/api/live`)).status, 200);
+    assert.equal((await fetch(`${fixture.base}/api/tasks/task-a`)).status, 200);
   } finally {
     await fixture.close();
   }
@@ -209,7 +227,7 @@ test("gate view endpoint renders only a blocked task and rejects an active one",
 
 test("approve proxy validates inputs and rejects a non-blocked task", async () => {
   const fixture = await startFixture(makeTask(), true);
-  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  const headers = postHeaders(fixture.base);
   try {
     const missingSource = await fetch(`${fixture.base}/api/gate/approve`, { method: "POST", headers, body: JSON.stringify({ taskId: "task-a" }) });
     assert.equal(missingSource.status, 400);
@@ -226,7 +244,7 @@ test("approve proxy validates inputs and rejects a non-blocked task", async () =
 
 test("feedback proxy validates inputs and rejects a task that is not waiting at a gate", async () => {
   const fixture = await startFixture(makeTask(), true);
-  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  const headers = postHeaders(fixture.base);
   try {
     const missingFeedback = await fetch(`${fixture.base}/api/gate/feedback`, { method: "POST", headers, body: JSON.stringify({ taskId: "task-a", feedback: "   " }) });
     assert.equal(missingFeedback.status, 400);
@@ -452,14 +470,15 @@ test("client scripts are whitelisted static assets served as JavaScript with cac
       assert.ok((await res.text()).length > 0, `${name}.js is not empty`);
     }
     assert.equal((await fetch(`${fixture.base}/assets/x.js`)).status, 404);
-    assert.equal((await fetch(`${fixture.base}/assets/common.js`, { method: "POST" })).status, 404);
+    assert.equal((await fetch(`${fixture.base}/assets/common.js`, { method: "POST" })).status, 403, "the request guards run before routing");
+    assert.equal((await fetch(`${fixture.base}/assets/common.js`, { method: "POST", headers: postHeaders(fixture.base) })).status, 404, "no POST route for assets");
   } finally {
     await fixture.close();
   }
 });
 
 /* Installed-workflow fixture: real state.mjs/loop-entry.mjs with a local loop config. */
-const startInstalledFixture = async (): Promise<{ base: string; token: string; root: string; close: () => Promise<void>; state: (...args: string[]) => any }> => {
+const startInstalledFixture = async (): Promise<{ base: string; root: string; close: () => Promise<void>; state: (...args: string[]) => any }> => {
   const { applyPlan, planInit } = await import("../../src/installer.js");
   const { startUiServer } = await import("../../src/task-ui.js");
   const { execFileSync } = await import("node:child_process");
@@ -473,14 +492,14 @@ const startInstalledFixture = async (): Promise<{ base: string; token: string; r
   mkdirSync(join(root, ".agents", "data", "loop"), { recursive: true });
   writeFileSync(join(root, ".agents", "data", "loop", "daemon.lock"), JSON.stringify({ schemaVersion: 1, pid: process.pid, token: "test", startedAt: new Date().toISOString() }));
   const state = (...args: string[]): any => JSON.parse(execFileSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), ...args, "--root", root], { encoding: "utf8" }));
-  const { server, port, token } = await startUiServer({ root, host: "127.0.0.1", port: 0 });
+  const { server, port } = await startUiServer({ root, host: "127.0.0.1", port: 0 });
   const close = (): Promise<void> => new Promise<void>((resolveClose) => { server.close(() => resolveClose()); rmSync(root, { recursive: true, force: true }); });
-  return { base: `http://127.0.0.1:${port}`, token, root, close, state };
+  return { base: `http://127.0.0.1:${port}`, root, close, state };
 };
 
 test("new task creates a loop-owned task through intake and reuses the live daemon", { skip: process.platform === "win32" }, async () => {
   const fixture = await startInstalledFixture();
-  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  const headers = postHeaders(fixture.base);
   try {
     const first = await fetch(`${fixture.base}/api/loop/start`, { method: "POST", headers, body: JSON.stringify({ requirement: "Add login retry\nwith backoff" }) });
     assert.equal(first.status, 201);
@@ -516,7 +535,7 @@ test("new task creates a loop-owned task through intake and reuses the live daem
 
 test("resume re-activates only a paused task and points gate waits to approval", { skip: process.platform === "win32" }, async () => {
   const fixture = await startInstalledFixture();
-  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  const headers = postHeaders(fixture.base);
   try {
     fixture.state("task", "create", "paused-task", "--title", "Paused");
     const active = await fetch(`${fixture.base}/api/loop/resume`, { method: "POST", headers, body: JSON.stringify({ taskId: "paused-task" }) });
@@ -546,7 +565,7 @@ test("resume re-activates only a paused task and points gate waits to approval",
 
   const gated = await startFixture(makeTask({ status: "blocked_on_user" }), true);
   try {
-    const res = await fetch(`${gated.base}/api/loop/resume`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": gated.token }, body: JSON.stringify({ taskId: "task-a" }) });
+    const res = await fetch(`${gated.base}/api/loop/resume`, { method: "POST", headers: postHeaders(gated.base), body: JSON.stringify({ taskId: "task-a" }) });
     assert.equal(res.status, 409);
     assert.match(((await res.json()) as { error: string }).error, /approve it on the task detail page/);
     const home = await (await fetch(`${gated.base}/`)).text();
@@ -559,7 +578,7 @@ test("resume re-activates only a paused task and points gate waits to approval",
 
 test("dashboard feedback keeps the task at its gate and records the loop's feedback evidence", { skip: process.platform === "win32" }, async () => {
   const fixture = await startInstalledFixture();
-  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  const headers = postHeaders(fixture.base);
   try {
     fixture.state("task", "create", "gated", "--title", "Gated");
     writeTaskDir(fixture.root, "gated");
@@ -936,7 +955,7 @@ test("loop-stream sidecar creates its directory and rotates at the size cap", as
 
 test("malformed or non-object JSON bodies are client errors, and a failing loop status is a gateway error", async () => {
   const fixture = await startFixture(makeTask());
-  const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+  const headers = postHeaders(fixture.base);
   try {
     for (const body of ["{not json", "null", "[1,2]", "\"text\""]) {
       const res = await fetch(`${fixture.base}/api/gate/approve`, { method: "POST", headers, body });
@@ -1137,7 +1156,7 @@ test("side panel points at the full page when a gate or handoff needs the human"
 test("approve refuses a gate the task has already moved past", async () => {
   const fixture = await startFixture(makeTask({ status: "blocked_on_user" }), true);
   try {
-    const response = await fetch(`${fixture.base}/api/gate/approve`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": fixture.token }, body: JSON.stringify({ taskId: "task-a", gate: "G1_review", source: "looked at the plan" }) });
+    const response = await fetch(`${fixture.base}/api/gate/approve`, { method: "POST", headers: postHeaders(fixture.base), body: JSON.stringify({ taskId: "task-a", gate: "G1_review", source: "looked at the plan" }) });
     assert.equal(response.status, 409);
     assert.match(((await response.json()) as { error: string }).error, /now waits at Confirm requirements \(G0_confirm\), not G1_review/);
   } finally {
@@ -1208,7 +1227,7 @@ test("task detail renders a horizontal progress stepper before artifacts, no loo
   }
 });
 
-/* ---- Authority-neutral dashboard and token hardening ---- */
+/* ---- Authority-neutral dashboard and request-shape hardening ---- */
 
 const rawRequest = async (base: string, path: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<{ status: number; body: string }> => {
   const { request } = await import("node:http");
@@ -1221,56 +1240,61 @@ const rawRequest = async (base: string, path: string, options: { method?: string
   });
 };
 
-test("dashboard rejects foreign Host headers, cross-origin posts, and body-only tokens", async () => {
+test("dashboard rejects foreign Host headers, cross-origin posts, and plain form posts", async () => {
   const fixture = await startFixture(makeTask({ status: "paused" }));
   try {
     const port = new URL(fixture.base).port;
     assert.equal((await rawRequest(fixture.base, "/", { headers: { Host: "evil.example" } })).status, 403, "DNS-rebinding host");
     assert.equal((await rawRequest(fixture.base, "/", { headers: { Host: `localhost:${port}` } })).status, 200, "any loopback name works when bound to loopback");
-    const json = { "content-type": "application/json", Host: `127.0.0.1:${port}` };
-    const crossSite = await rawRequest(fixture.base, "/api/loop/resume", { method: "POST", headers: { ...json, Origin: "https://evil.example", "x-aidlc-token": fixture.token }, body: JSON.stringify({ taskId: "task-a" }) });
+    const json = { "content-type": "application/json", Host: `127.0.0.1:${port}`, "x-aidlc-request": "1" };
+    const crossSite = await rawRequest(fixture.base, "/api/loop/resume", { method: "POST", headers: { ...json, Origin: "https://evil.example" }, body: JSON.stringify({ taskId: "task-a" }) });
     assert.equal(crossSite.status, 403);
-    const bodyToken = await rawRequest(fixture.base, "/api/loop/resume", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", Host: `127.0.0.1:${port}` }, body: `taskId=task-a&token=${fixture.token}` });
-    assert.equal(bodyToken.status, 401, "a token in a form body (CSRF-able) is not accepted");
+    const rebound = await rawRequest(fixture.base, "/api/loop/resume", { method: "POST", headers: { ...json, Host: "evil.example", Origin: "http://evil.example" }, body: JSON.stringify({ taskId: "task-a" }) });
+    assert.equal(rebound.status, 403, "a rebound Host with a matching Origin still fails the Host check");
+    // A cross-site <form> post: browsers send Origin (foreign) and can never add a custom header.
+    const formPost = await rawRequest(fixture.base, "/api/loop/resume", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", Host: `127.0.0.1:${port}`, Origin: "https://evil.example", "Sec-Fetch-Site": "cross-site" }, body: "taskId=task-a" });
+    assert.equal(formPost.status, 403, "a cross-site form post is not accepted");
+    const ownForm = await rawRequest(fixture.base, "/api/loop/resume", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", Host: `127.0.0.1:${port}`, Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin" }, body: "taskId=task-a" });
+    assert.equal(ownForm.status, 403, "even a same-origin form post lacks the custom header");
     const html = await withScripts(fixture.base, await (await fetch(`${fixture.base}/`)).text());
-    assert.match(html, /token=\(\[\^&\]\+\)/, "the page adopts the #token= login link");
-    assert.match(html, /history\.replaceState\(history\.state, "", location\.pathname \+ location\.search\)/);
+    assert.match(html, /"x-aidlc-request": "1"/, "the client sends the custom header on every POST");
+    assert.doesNotMatch(html, /aidlc-token|#token=|x-aidlc-token/, "no session token remains in the page or its scripts");
   } finally { await fixture.close(); }
 });
 
-test("token files must live outside the project, be private regular files, and can be created", async () => {
-  const { readUiTokenFile } = await import("../../src/task-ui.js");
+test("credential files must live outside the project, be private regular files, and can be created", async () => {
+  const { readCredentialFile } = await import("../../src/task-ui.js");
   const { chmodSync, symlinkSync, statSync } = await import("node:fs");
   const project = mkdtempSync(join(tmpdir(), "aidlc-ui-project-"));
   const outside = mkdtempSync(join(tmpdir(), "aidlc-ui-secrets-"));
   try {
-    assert.throws(() => readUiTokenFile(project, join(project, "ui.token"), { create: true }), /outside the project/);
+    assert.throws(() => readCredentialFile(project, join(project, "ui.token"), { create: true }), /outside the project/);
     const created = join(outside, "ui.token");
-    const token = readUiTokenFile(project, created, { create: true });
+    const token = readCredentialFile(project, created, { create: true });
     assert.ok(token.length >= 32);
     if (process.platform !== "win32") assert.equal(statSync(created).mode & 0o777, 0o600);
-    assert.equal(readUiTokenFile(project, created, { create: false }), token, "the same token survives a restart");
-    assert.throws(() => readUiTokenFile(project, join(outside, "missing.token"), { create: false }), /not found/);
+    assert.equal(readCredentialFile(project, created, { create: false }), token, "the same token survives a restart");
+    assert.throws(() => readCredentialFile(project, join(outside, "missing.token"), { create: false }), /not found/);
     if (process.platform !== "win32") {
       chmodSync(created, 0o644);
-      assert.throws(() => readUiTokenFile(project, created, { create: false }), /private/);
+      assert.throws(() => readCredentialFile(project, created, { create: false }), /private/);
       chmodSync(created, 0o600);
       symlinkSync(created, join(outside, "link.token"));
-      assert.throws(() => readUiTokenFile(project, join(outside, "link.token"), { create: false }), /symlink/);
+      assert.throws(() => readCredentialFile(project, join(outside, "link.token"), { create: false }), /symlink/);
     }
     writeFileSync(join(outside, "short.token"), "abc\n", { mode: 0o600 });
-    assert.throws(() => readUiTokenFile(project, join(outside, "short.token"), { create: false }), /16–256/);
+    assert.throws(() => readCredentialFile(project, join(outside, "short.token"), { create: false }), /16–256/);
   } finally { rmSync(project, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
 });
 
 test("child processes and the daemon never inherit UI or reviewer credentials", async () => {
   const { scrubbedEnv } = await import("../../src/task-ui.js");
   const previous = { ...process.env };
-  process.env.AIDLC_FLEET_REVIEWER_TOKEN = "r".repeat(32); process.env.AIDLC_UI_TOKEN = "u".repeat(32);
+  process.env.AIDLC_FLEET_REVIEWER_TOKEN = "r".repeat(32); process.env.AIDLC_UI_REVIEWER_TOKEN_FILE = "/secrets/reviewer";
   try {
     const env = scrubbedEnv({ AIDLC_LOOP_EVENT_LOG: "/tmp/x" });
     assert.equal(env.AIDLC_FLEET_REVIEWER_TOKEN, undefined);
-    assert.equal(env.AIDLC_UI_TOKEN, undefined);
+    assert.equal(env.AIDLC_UI_REVIEWER_TOKEN_FILE, undefined);
     assert.equal(env.AIDLC_LOOP_EVENT_LOG, "/tmp/x");
     assert.equal(scrubbedEnv({ AIDLC_FLEET_REVIEWER_TOKEN: "explicit" }).AIDLC_FLEET_REVIEWER_TOKEN, "explicit", "only an explicit per-call grant (approve) passes it");
   } finally { process.env = previous; }
@@ -1297,8 +1321,8 @@ else { console.error("unexpected " + action); process.exit(1); }
 `);
   const read = () => readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   const run = async (reviewerToken?: string) => {
-    const { server, port, token } = await startUiServer({ root, host: "127.0.0.1", port: 0, ...(reviewerToken ? { reviewerToken } : {}) });
-    return { base: `http://127.0.0.1:${port}`, token, close: () => new Promise<void>((done) => server.close(() => done())) };
+    const { server, port } = await startUiServer({ root, host: "127.0.0.1", port: 0, ...(reviewerToken ? { reviewerToken } : {}) });
+    return { base: `http://127.0.0.1:${port}`, close: () => new Promise<void>((done) => server.close(() => done())) };
   };
   const plain = await run();
   try {
@@ -1310,16 +1334,16 @@ else { console.error("unexpected " + action); process.exit(1); }
     assert.match(detail, /review snapshot/);
     assert.match(detail, /Snapshot body/);
     assert.match(detail, /remote-state\.mjs gate approve fleet-a/, "without a reviewer credential the page shows the reviewer command");
-    const denied = await fetch(`${plain.base}/api/gate/approve`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": plain.token }, body: JSON.stringify({ taskId: "fleet-a", source: "ok" }) });
+    const denied = await fetch(`${plain.base}/api/gate/approve`, { method: "POST", headers: postHeaders(plain.base), body: JSON.stringify({ taskId: "fleet-a", source: "ok" }) });
     assert.equal(denied.status, 403);
     // Feedback never needs the reviewer credential: it goes through loop-entry's `feedback` action as JSON on stdin.
     assert.match(detail, /id="feedback-button"/, "feedback is offered even without a reviewer credential");
     assert.doesNotMatch(detail, /id="approve-modal"/, "no approve dialog without a reviewer credential");
-    const fed = await fetch(`${plain.base}/api/gate/feedback`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": plain.token }, body: JSON.stringify({ taskId: "fleet-a", feedback: "split the plan", source: "reviewer note" }) });
+    const fed = await fetch(`${plain.base}/api/gate/feedback`, { method: "POST", headers: postHeaders(plain.base), body: JSON.stringify({ taskId: "fleet-a", feedback: "split the plan", source: "reviewer note" }) });
     assert.equal(fed.status, 200, await fed.text());
     const feedbackCall = read().find((call) => call.action === "feedback");
     assert.deepEqual({ taskId: feedbackCall.taskId, input: JSON.parse(feedbackCall.input), reviewer: feedbackCall.reviewer }, { taskId: "fleet-a", input: { reason: "split the plan", source: "reviewer note" }, reviewer: null });
-    const resumed = await fetch(`${plain.base}/api/loop/resume`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": plain.token }, body: JSON.stringify({ taskId: "fleet-b" }) });
+    const resumed = await fetch(`${plain.base}/api/loop/resume`, { method: "POST", headers: postHeaders(plain.base), body: JSON.stringify({ taskId: "fleet-b" }) });
     assert.equal(resumed.status, 200);
     assert.ok(read().some((call) => call.action === "resume-task" && call.taskId === "fleet-b"));
   } finally { await plain.close(); }
@@ -1327,7 +1351,7 @@ else { console.error("unexpected " + action); process.exit(1); }
   try {
     const detail = await (await fetch(`${reviewer.base}/tasks/fleet-a`)).text();
     assert.match(detail, /approve-button/);
-    const approved = await fetch(`${reviewer.base}/api/gate/approve`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": reviewer.token }, body: JSON.stringify({ taskId: "fleet-a", source: "looks good" }) });
+    const approved = await fetch(`${reviewer.base}/api/gate/approve`, { method: "POST", headers: postHeaders(reviewer.base), body: JSON.stringify({ taskId: "fleet-a", source: "looks good" }) });
     assert.equal(approved.status, 200);
     const all = read();
     const approve = all.find((call) => call.action === "approve");
@@ -1369,7 +1393,7 @@ test("the stepper pulse marks waiting tasks in the warning tone and stops when t
   assert.doesNotMatch(phaseStepper("done", "none", "done"), /ad-pulse/);
 });
 
-test("docs routes serve whitelisted guides and the markdown preview needs the session token", async () => {
+test("docs routes serve whitelisted guides and the markdown preview needs the same-origin request shape", async () => {
   const fixture = await startFixture(makeTask());
   try {
     const landing = await fetch(`${fixture.base}/docs`);
@@ -1379,8 +1403,8 @@ test("docs routes serve whitelisted guides and the markdown preview needs the se
     assert.equal((await fetch(`${fixture.base}/docs/unknown`)).status, 404);
     assert.equal((await fetch(`${fixture.base}/docs/..%2F..%2Fpackage`)).status, 404);
     const body = JSON.stringify({ markdown: "# Title\n\n**bold** <script>x</script>" });
-    assert.equal((await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers: { "content-type": "application/json" }, body })).status, 401);
-    const ok = await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers: { "content-type": "application/json", "x-aidlc-token": fixture.token }, body });
+    assert.equal((await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers: { "content-type": "application/json" }, body })).status, 403);
+    const ok = await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers: postHeaders(fixture.base), body });
     assert.equal(ok.status, 200);
     const { html } = await ok.json() as { html: string };
     assert.match(html, /<h1>Title<\/h1>/);
@@ -1414,11 +1438,26 @@ test("dashboard motion does not follow the OS reduced-motion setting and the pul
 test("markdown preview accepts an 8192-byte text whose JSON escaping exceeds 8 KiB and rejects larger text", async () => {
   const fixture = await startFixture(makeTask());
   try {
-    const headers = { "content-type": "application/json", "x-aidlc-token": fixture.token };
+    const headers = postHeaders(fixture.base);
     const lines = "a\n".repeat(4096); // 8192 bytes, ~12 KiB once JSON-escaped
     const ok = await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers, body: JSON.stringify({ markdown: lines }) });
     assert.equal(ok.status, 200);
     const big = await fetch(`${fixture.base}/api/markdown`, { method: "POST", headers, body: JSON.stringify({ markdown: "x".repeat(8193) }) });
     assert.equal(big.status, 400);
   } finally { await fixture.close(); }
+});
+
+test("a wildcard bind accepts only IP-literal or localhost Host values, so a rebound DNS name is refused", async () => {
+  const { requestAllowed } = await import("../../src/ui/security.js");
+  const fake = (host: string, extra: Record<string, string> = {}, method = "GET") =>
+    ({ method, headers: { host, ...extra }, socket: { localPort: 4173 } } as unknown as import("node:http").IncomingMessage);
+  const options = { host: "0.0.0.0" };
+  assert.equal(requestAllowed(options, fake("192.168.1.20:4173")).ok, true, "LAN IP literal");
+  assert.equal(requestAllowed(options, fake("localhost:4173")).ok, true, "localhost");
+  assert.equal(requestAllowed(options, fake("[::1]:4173")).ok, true, "IPv6 literal");
+  assert.equal(requestAllowed(options, fake("evil.example:4173")).ok, false, "a DNS name is refused on a wildcard bind");
+  const rebound = requestAllowed(options, fake("evil.example:4173", { origin: "http://evil.example:4173", "x-aidlc-request": "1", "sec-fetch-site": "same-origin" }, "POST"));
+  assert.equal(rebound.ok, false, "a rebound page with a matching Origin is still refused");
+  const lan = requestAllowed(options, fake("192.168.1.20:4173", { origin: "http://192.168.1.20:4173", "x-aidlc-request": "1" }, "POST"));
+  assert.equal(lan.ok, true, "the dashboard's own fetch from a LAN address is accepted");
 });

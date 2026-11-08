@@ -66,6 +66,21 @@ test("CLI rejects an unknown option", () => {
   assert.match(result.stderr + result.stdout, /Unknown option/);
 });
 
+test("CLI usage has no --token-file (the dashboard has no session token); ui keeps --reviewer-token-file", () => {
+  const cli = resolve("dist/src/cli.js");
+  const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0);
+  assert.doesNotMatch(help.stdout, /--token-file/);
+  assert.match(help.stdout, /aidlc-kit ui \[path\] \[--port 4173\] \[--host 127\.0\.0\.1\] \[--open\] \[--reviewer-token-file PATH\]/);
+  assert.doesNotMatch(help.stdout, /loop up .*--token-file/);
+  const removed = spawnSync(process.execPath, [cli, "ui", "--token-file", "/tmp/never-read"], { encoding: "utf8" });
+  assert.notEqual(removed.status, 0);
+  assert.match(removed.stderr + removed.stdout, /Unknown option: --token-file/);
+  const loop = spawnSync(process.execPath, [cli, "loop", "up", "--token-file", "/tmp/never-read"], { encoding: "utf8" });
+  assert.notEqual(loop.status, 0);
+  assert.match(loop.stderr + loop.stdout, /Unknown loop option: --token-file/);
+});
+
 test("CLI status --json emits parseable JSON with the expected fields", async () => {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

@@ -51,6 +51,98 @@ const onApproveConfirm = (button) => {
     } else failureToast(res, "Approval failed");
   });
 };
+/* ---- Container log viewer (Containers panel) -------------------------------
+ * The viewer (#container-log, [data-live-ignore]) is client-owned: a Log button
+ * fetches the raw tail of that assignment's log and, while Follow is on and the row
+ * still reports the container as running, re-fetches at the Settings live interval
+ * (fallback 1.5 s; never while polling is paused). The running state is read from
+ * the row's button on every tick, which live updates keep current. */
+const containerLog = { assignment: "", timer: 0, inflight: null, follow: true };
+const containerViewer = () => document.getElementById("container-log");
+const containerSettings = () => (window.aidlcSettings && window.aidlcSettings.get()) || {};
+const containerInterval = () => { const value = Number(containerSettings().livePoll); return Number.isFinite(value) ? value : 1500; };
+const containerButton = () => {
+  if (!containerLog.assignment) return null;
+  for (const button of document.querySelectorAll("[data-container-log]")) if (button.getAttribute("data-container-log") === containerLog.assignment) return button;
+  return null;
+};
+const containerRunning = () => { const button = containerButton(); return !!button && button.getAttribute("data-container-running") === "1"; };
+const fetchContainerLog = async () => {
+  const el = containerViewer();
+  if (!el || !containerLog.assignment) return;
+  if (containerLog.inflight) return containerLog.inflight;
+  const assignment = containerLog.assignment;
+  containerLog.inflight = (async () => {
+    const body = el.querySelector("[data-container-log-body]");
+    const state = el.querySelector("[data-container-log-state]");
+    try {
+      const kb = Number(containerSettings().logTailKb) || 64;
+      const url = "/api/tasks/" + encodeURIComponent(detailTask()) + "/containers/" + encodeURIComponent(assignment) + "/log?tail=" + (kb * 1024);
+      const response = await fetch(url, { cache: "no-store" });
+      const text = await response.text();
+      if (assignment !== containerLog.assignment) return;
+      if (!response.ok) { if (body) body.textContent = text || ("HTTP " + response.status); if (state) state.textContent = "unavailable"; return; }
+      const atBottom = body ? body.scrollHeight - body.scrollTop - body.clientHeight < 8 : false;
+      if (body) body.textContent = text || "(no output yet)";
+      const size = Number(response.headers.get("x-aidlc-log-size")) || 0;
+      if (state) state.textContent = (size >= 1024 ? Math.round(size / 1024) + " KiB" : size + " B") + (response.headers.get("x-aidlc-log-truncated") === "1" ? " · tail" : "") + (containerRunning() ? " · running" : " · ended");
+      if (body && (containerLog.follow || atBottom)) body.scrollTop = body.scrollHeight;
+    } catch (error) {
+      if (state) state.textContent = "unreachable";
+    } finally { containerLog.inflight = null; }
+  })();
+  return containerLog.inflight;
+};
+const scheduleContainerLog = () => {
+  clearTimeout(containerLog.timer);
+  containerLog.timer = 0;
+  const el = containerViewer();
+  if (!el || el.hidden || !containerLog.assignment || !containerLog.follow) return;
+  const interval = containerInterval();
+  if (!interval) return; // live updates paused in Settings
+  if (!containerRunning()) return; // the container ended: the last fetch was final
+  containerLog.timer = setTimeout(async () => { await fetchContainerLog(); scheduleContainerLog(); }, interval);
+};
+const openContainerLog = (button) => {
+  const el = containerViewer();
+  if (!el) return;
+  containerLog.assignment = button.getAttribute("data-container-log") || "";
+  containerLog.follow = true;
+  const name = el.querySelector("[data-container-log-name]");
+  if (name) name.textContent = (button.getAttribute("data-container-name") || containerLog.assignment) + " · " + containerLog.assignment;
+  const follow = el.querySelector("[data-container-follow]");
+  if (follow) follow.setAttribute("aria-pressed", "true");
+  const body = el.querySelector("[data-container-log-body]");
+  if (body) body.textContent = "loading…";
+  el.hidden = false;
+  el.scrollIntoView({ block: "nearest" });
+  fetchContainerLog().then(scheduleContainerLog);
+};
+const closeContainerLog = () => {
+  const el = containerViewer();
+  clearTimeout(containerLog.timer);
+  containerLog.timer = 0;
+  containerLog.assignment = "";
+  if (el) el.hidden = true;
+};
+const toggleContainerFollow = (button) => {
+  containerLog.follow = button.getAttribute("aria-pressed") !== "true";
+  button.setAttribute("aria-pressed", containerLog.follow ? "true" : "false");
+  if (containerLog.follow) fetchContainerLog().then(scheduleContainerLog); else scheduleContainerLog();
+};
+if (window.aidlcSettings) window.aidlcSettings.onChange((settings, changed) => { if (changed.includes("livePoll")) scheduleContainerLog(); });
+// A live update that re-renders the row (container ended) stops the follow loop on the next tick.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  const el = containerViewer();
+  if (!el || el.hidden) return;
+  // common.js answers Escape for the notifications dropdown, modals, and the side panel first.
+  if (typeof notifyOpen === "function" && notifyOpen()) return;
+  if (typeof modalOpen === "function" && modalOpen()) return;
+  if (typeof drawerOpen === "function" && drawerOpen()) return;
+  closeContainerLog();
+});
+
 document.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
@@ -58,5 +150,10 @@ document.addEventListener("click", (event) => {
   if (feedback) { onFeedbackSend(feedback); return; }
   if (target.closest("#approve-button")) { onApproveOpen(); return; }
   const confirm = target.closest("#approve-confirm");
-  if (confirm) onApproveConfirm(confirm);
+  if (confirm) { onApproveConfirm(confirm); return; }
+  const log = target.closest("[data-container-log]");
+  if (log && !log.disabled) { openContainerLog(log); return; }
+  const follow = target.closest("[data-container-follow]");
+  if (follow) { toggleContainerFollow(follow); return; }
+  if (target.closest("[data-container-close]")) closeContainerLog();
 });

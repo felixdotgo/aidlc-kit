@@ -60,6 +60,10 @@ export interface TaskState {
   legacyG2Wait?: { migratedAt: string; source: string };
   predecessorTaskId?: string;
   successorTaskId?: string;
+  /** Repository HEAD when the task was created (lowercase hex SHA, 7-64 chars). */
+  baseCommit?: string;
+  /** Repository HEAD when the task reached done (lowercase hex SHA, 7-64 chars). */
+  finalCommit?: string;
   createdAt: string;
   updatedAt: string;
 }

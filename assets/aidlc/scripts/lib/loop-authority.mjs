@@ -132,7 +132,7 @@ export function createLocalAuthority({ root, agent, workers = {}, workerImages =
 
 const FLEET_REQUIRED = ["AIDLC_FLEET_URL", "AIDLC_FLEET_WORKSPACE", "AIDLC_FLEET_TOKEN", "AIDLC_FLEET_INTEGRATION_BRANCH"];
 /** Credentials that must never reach a lead or worker process. */
-const REVIEWER_SECRETS = ["AIDLC_FLEET_REVIEWER_TOKEN", "AIDLC_UI_TOKEN", "AIDLC_UI_TOKEN_FILE", "AIDLC_UI_REVIEWER_TOKEN_FILE"];
+const REVIEWER_SECRETS = ["AIDLC_FLEET_REVIEWER_TOKEN", "AIDLC_UI_REVIEWER_TOKEN_FILE"];
 const LIMIT_ENV = { maxTurns: "AIDLC_FLEET_MAX_TURNS", turnTimeoutMs: "AIDLC_FLEET_TURN_TIMEOUT_MS", maxStallTurns: "AIDLC_FLEET_MAX_STALL_TURNS" };
 
 /** Build the lead environment for fleet runs: validated service settings, the

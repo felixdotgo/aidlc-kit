@@ -144,7 +144,6 @@ ${renderHeader(options.root, uiMode(options), reviewQueue(state))}
 <main class="section ad-main">
   <div class="container is-fluid">
     ${liveRegion("board", renderBoard(state))}
-    <p class="ad-help">Click a card to open it in the side panel; ctrl/cmd-click or middle-click opens the full page in a new tab, shift-click in this tab. "New task" creates a loop-owned task and starts the daemon if it is not running; "resume" re-activates a paused task. The bell in the header lists tasks waiting at a human gate; pick one to open its detail page, where gate feedback and approval live (also on the trusted terminal <code>node .agents/aidlc/scripts/loop-gate.mjs &lt;task-id&gt;</code>). The page updates itself as the loop advances. Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>Esc</kbd> close panel or dialog. Setup and usage guides: <a href="/docs">Docs</a>.</p>
   </div>
 </main>
 ${renderModals()}

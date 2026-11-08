@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { parseLauncherArgs, readUiRecord, uiStatePath } from "../../src/cli/loop-launcher.js";
+import { EXPOSED_WARNING, isLoopbackHost, parseLauncherArgs, readUiRecord, uiStatePath } from "../../src/cli/loop-launcher.js";
 import { applyPlan, planInit } from "../../src/installer.js";
 import { daemonStatus, ensureDaemon, stopDaemon } from "../../src/ui/daemon.js";
 
@@ -40,6 +41,48 @@ async function fakeDaemon(root: string, signals: number, count = join(root, "sig
   return child;
 }
 const exited = (child: ChildProcess): Promise<void> => new Promise((done) => { if (child.exitCode !== null || child.signalCode !== null) done(); else child.once("exit", () => done()); });
+
+/** A port nobody listens on right now (the dashboard needs an explicit port ≥ 1). */
+const freePort = (): Promise<number> => new Promise((done, fail) => {
+  const probe = createServer();
+  probe.once("error", fail);
+  probe.listen(0, "127.0.0.1", () => { const { port } = probe.address() as AddressInfo; probe.close(() => done(port)); });
+});
+/** Runs `aidlc-kit ui …` until its output matches `until` (or 15 s pass), stops it with SIGTERM, and returns everything it printed. */
+const serveUntil = (args: string[], until: RegExp): Promise<string> => new Promise((done, fail) => {
+  const child = spawn(process.execPath, [cli, "ui", ...args], { env: { PATH: process.env.PATH ?? "" } });
+  let output = "";
+  let stopped = false;
+  const stop = (): void => { if (!stopped) { stopped = true; child.kill("SIGTERM"); } };
+  const timer = setTimeout(stop, 15000);
+  child.stdout.on("data", (chunk) => { output += chunk; if (until.test(output)) stop(); });
+  child.stderr.on("data", (chunk) => { output += chunk; });
+  child.once("error", (error) => { clearTimeout(timer); fail(error); });
+  child.once("close", () => { clearTimeout(timer); done(output); });
+});
+
+test("isLoopbackHost tells loopback binds from exposed ones", () => {
+  for (const host of ["127.0.0.1", "localhost", "LOCALHOST", "::1", "[::1]"]) assert.equal(isLoopbackHost(host), true, host);
+  for (const host of ["0.0.0.0", "::", "192.168.1.20", "myhost.lan"]) assert.equal(isLoopbackHost(host), false, host);
+});
+
+test("the dashboard prints a plain Open URL (no login link) and warns only when bound beyond loopback", { skip: process.platform === "win32" }, async () => {
+  const box = project(local);
+  try {
+    const port = await freePort();
+    const loopback = await serveUntil([box.root, "--port", String(port)], /Open: /);
+    assert.match(loopback, new RegExp(`Loop \\(AI-DLC UI\\) listening on http://127\\.0\\.0\\.1:${port} \\(Ctrl-C to stop\\)`), loopback);
+    assert.match(loopback, new RegExp(`^Open: http://127\\.0\\.0\\.1:${port}$`, "m"), loopback);
+    assert.doesNotMatch(loopback, /#token=|signs this browser in/, "no login link");
+    assert.doesNotMatch(loopback, /no authentication/, "no warning on loopback");
+    const exposedPort = await freePort();
+    const exposed = await serveUntil([box.root, "--port", String(exposedPort), "--host", "0.0.0.0"], /no authentication/);
+    assert.match(exposed, new RegExp(`^Open: http://0\\.0\\.0\\.0:${exposedPort}$`, "m"), exposed);
+    assert.ok(exposed.includes(EXPOSED_WARNING), exposed);
+    assert.equal(EXPOSED_WARNING, "Warning: the dashboard has no authentication; expose it only on a trusted network.");
+    assert.doesNotMatch(exposed, /#token=/);
+  } finally { box.cleanup(); }
+});
 
 test("parseLauncherArgs enforces the per-action allowlist and value flags", () => {
   const parsed = parseLauncherArgs(["--root", "/tmp/x", "--open", "--port", "5000"], ["--root", "--open", "--port"]);

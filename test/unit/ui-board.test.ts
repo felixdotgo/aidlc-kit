@@ -68,3 +68,16 @@ test("list view drops the id column and links the title", () => {
   assert.match(row, /<a href="\/tasks\/list-task" data-task-link="list-task" title="list-task">Title of list-task<\/a>/);
   assert.doesNotMatch(row, /<code>list-task<\/code>/);
 });
+
+test("the dashboard page has no help footer under the board", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { renderDashboard } = await import("../../src/ui/views/board.js");
+  const root = mkdtempSync(join(tmpdir(), "aidlc-ui-board-"));
+  mkdirSync(join(root, ".agents", "data", "state"), { recursive: true });
+  writeFileSync(join(root, ".agents", "data", "state", "aidlc-state.json"), `${JSON.stringify(emptyState())}\n`);
+  const html = await renderDashboard({ root, host: "127.0.0.1", port: 0 });
+  assert.ok(!html.includes('class="ad-help"'), "no ad-help paragraph");
+  assert.ok(!html.includes("Click a card to open it in the side panel"), "no usage note");
+});

@@ -1,4 +1,5 @@
 import type { TaskState, WorkflowState } from "../../model.js";
+import { taskContainers, type ContainerEntry } from "../containers.js";
 import { ARTIFACT_NAMES, artifactPayload, pendingFeedback, readUiState, readUiTask, taskGatePayload } from "../data.js";
 import { escapeHtml } from "../http.js";
 import { markdownToHtml } from "../markdown.js";
@@ -23,6 +24,61 @@ export const copyIdButton = (id: string): string =>
 
 const panel = (title: string, body: string, extra = "", flush = false): string =>
   `<section class="ad-panel" data-key="panel:${escapeHtml(title)}"><header class="ad-panel-head"><h2>${escapeHtml(title)}</h2>${extra}</header><div class="ad-panel-body${flush ? " is-flush" : ""}">${body}</div></section>`;
+
+/* ---------------------------------------------------------------------------
+ * Containers panel (worker containers recorded under the task's runtime data)
+ * ------------------------------------------------------------------------- */
+
+const UUID_PATTERN = /([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+/** `aidlc-worker-3f2a1b9c-…` → `3f2a1b9c`; names without a uuid are shown whole. */
+export const shortContainerName = (name: string): string => UUID_PATTERN.exec(name)?.[1] ?? name;
+
+/** `endedAt - startedAt` as `4s`, `3m 12s`, or `1h 05m`; empty when either timestamp is unusable. */
+export const durationText = (startedAt: string | undefined, endedAt: string | undefined): string => {
+  const start = Date.parse(startedAt ?? ""); const end = Date.parse(endedAt ?? "");
+  if (Number.isNaN(start) || Number.isNaN(end)) return "";
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(seconds / 3600)}h ${String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")}m`;
+};
+
+const containerStatusPill = (entry: ContainerEntry): string => {
+  if (entry.running) return pill("running", "is-success is-live", "the container is running");
+  if (!entry.endedAt) return pill("unknown", "is-warning", "no end recorded and docker does not list the container");
+  if (entry.exitCode === null || entry.exitCode === undefined) return pill("signal", "is-warning", "ended without an exit code (signal or finalized)");
+  return pill(`exited ${entry.exitCode}`, entry.exitCode === 0 ? "is-ghost" : "is-danger", `exit code ${entry.exitCode}`);
+};
+
+/** The Containers panel: a table of the task's recorded worker containers (newest first) and the log viewer. */
+export const renderContainersPanel = (entries: ContainerEntry[], docker: "ok" | "unavailable"): string => {
+  const rows = [...entries].reverse().map((entry) => {
+    const logButton = entry.local
+      ? `<button type="button" class="button is-small" data-container-log="${escapeHtml(entry.assignmentId)}" data-container-name="${escapeHtml(entry.name)}" data-container-running="${entry.running ? "1" : "0"}" title="Show the raw container output">Log</button>`
+      : `<button type="button" class="button is-small" disabled title="log is on another host">Log</button>`;
+    return `<tr data-key="container:${escapeHtml(entry.name)}:${escapeHtml(String(entry.turn ?? ""))}">
+      <td><code title="${escapeHtml(entry.name)}">${escapeHtml(shortContainerName(entry.name))}</code>${entry.local || !entry.host ? "" : `<div class="is-size-7 has-text-grey" title="recorded on another host">${escapeHtml(entry.host)}</div>`}</td>
+      <td class="is-size-7">${escapeHtml(entry.workerId ?? "")}${entry.agent ? `<div class="has-text-grey">${escapeHtml(entry.agent)}</div>` : ""}</td>
+      <td><code>${escapeHtml(entry.itemId ?? "")}</code></td>
+      <td class="is-size-7">${entry.turn === undefined ? "" : escapeHtml(String(entry.turn))}</td>
+      <td>${containerStatusPill(entry)}</td>
+      <td class="is-size-7 has-text-grey">${relativeTime(entry.startedAt)}${entry.endedAt ? `<div title="duration">${escapeHtml(durationText(entry.startedAt, entry.endedAt))}</div>` : ""}</td>
+      <td>${logButton}</td>
+    </tr>`;
+  });
+  const table = rows.length
+    ? `<table class="table ad-table is-fullwidth"><thead><tr>${["container", "worker", "item", "turn", "status", "started", ""].map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("\n")}</tbody></table>`
+    : `<div class="ad-empty-line"><p>No worker containers recorded for this task</p><p class="is-size-7 mt-1">Containers appear here while the loop builds the task's work items; a task driven from the terminal without the loop never starts any.</p></div>`;
+  /* The viewer is client-owned (detail.js): live updates never morph inside it, so an open log survives polling. */
+  const viewer = `<section class="ad-terminal ad-container-log" id="container-log" data-live-ignore hidden>
+    <div class="ad-terminal-head"><strong>Container log</strong><span class="ad-log-state" data-container-log-name></span><span class="ad-log-state" data-container-log-state></span>
+      <div class="ad-terminal-tools"><button type="button" data-container-follow aria-pressed="true" title="Re-fetch the tail while the container runs">Follow</button><button type="button" data-container-close>Close</button></div>
+    </div>
+    <pre class="log-panel" data-container-log-body role="log" aria-live="off"></pre>
+  </section>`;
+  const tools = `<span class="ad-panel-tools">${pill(`docker · ${docker}`, docker === "ok" ? "is-ghost" : "is-warning", docker === "ok" ? "docker ps answers; running state is live" : "docker did not answer; running state follows the index only", false)}<span class="ad-count">${entries.length}</span></span>`;
+  return panel("Containers", table + viewer, tools, true);
+};
 
 /**
  * Task detail body shared by the full page (`detail` live region), the side
@@ -175,6 +231,14 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
   const evidence = table(["kind", "result", "gate", "source", "recorded"], task.evidence.map((entry) =>
     `<tr><td><strong>${escapeHtml(entry.kind)}</strong>${entry.area ? `<div class="is-size-7 has-text-grey">${escapeHtml(entry.area)}</div>` : ""}</td><td>${pill(entry.result, RESULT_TONE[entry.result] ?? "")}</td><td class="is-size-7">${escapeHtml(entry.gate ?? "")}</td><td class="is-size-7">${escapeHtml(entry.source ?? "")}${entry.detail ? `<div class="has-text-grey mt-1">${escapeHtml(entry.detail)}</div>` : ""}</td><td class="is-size-7 has-text-grey">${relativeTime(entry.recordedAt)}</td></tr>`), "No verification evidence yet");
 
+  /* Worker containers (full page only): the task's runtime record, the same in every
+   * mode; `docker ps` only refines `running` and is shared across live polls. */
+  let containersPanel = "";
+  if (!fragment) {
+    const containers = await taskContainers(options, id);
+    containersPanel = containers.status === 200 ? renderContainersPanel(containers.payload.containers, containers.payload.docker) : renderContainersPanel([], "unavailable");
+  }
+
   const handoff = task.handoff
     ? `<section class="ad-panel" data-key="handoff" style="box-shadow:0 0 0 1px var(--bulma-danger)"><header class="ad-panel-head"><h2>Handed off · ${escapeHtml(task.handoff.kind)}</h2></header><div class="ad-panel-body"><p>${escapeHtml(task.handoff.reason)}</p><p class="is-size-7 has-text-grey mt-2">Follow the handoff actions from <code>node .agents/aidlc/scripts/state.mjs task next ${escapeHtml(task.id)}</code>.</p></div></section>`
     : "";
@@ -239,6 +303,7 @@ ${fragment ? liveLog : ""}
     ${panel("Artifacts", artifacts || '<p class="ad-empty-line">No artifacts recorded</p>', `<span class="ad-count">${ARTIFACT_NAMES.filter((name) => task.artifacts?.[name]).length}</span>`, true)}
     ${panel("Decisions", decisions, `<span class="ad-count">${task.decisions.length}</span>`, true)}
     ${panel("Work items", workProgress + workItems, `<span class="ad-panel-tools"><a class="button is-small" href="${changesHref(task.id)}" data-changes-link="items" title="Code changes of this task">Changes</a><span class="ad-count">${doneItems}/${task.tasks.length}</span></span>`, true)}
+    ${containersPanel}
     ${panel("Evidence", evidence, `<span class="ad-count">${task.evidence.length}</span>`, true)}
     ${fragment ? "" : liveLog}
   </div>

@@ -53,6 +53,21 @@ test("Docker invocation passes only explicit provider credential without exposin
   for (const flag of ["--read-only", "--cap-drop", "--security-opt", "--user"]) assert.ok(call.args.includes(flag));
   assert.throws(() => workerDockerInvocation({ ...opts, credentialEnv: ["LEAD_TOKEN"] }), /Unsupported/);
   assert.throws(() => workerDockerInvocation({ ...opts, uid: 0 }), /Non-root/);
+  assert.equal(call.args.includes("--label"), false, "no labels unless requested");
+});
+
+test("Docker invocation renders validated labels right after the container name", async (t) => {
+  const { target } = fixture(t);
+  const { workerDockerInvocation } = await import(resolve("dist/assets/.agents/aidlc/scripts/lib/loop-worker-docker.mjs"));
+  const opts = { workspace: target, image: "trusted:tag", command: "codex", args: ["exec"], credentialEnv: ["OPENAI_API_KEY"], hostEnv: { PATH: "/bin", OPENAI_API_KEY: "secret" }, uid: 1000, gid: 1000, containerName: "aidlc-worker-1" };
+  const labels = { "aidlc.task": "task-a", "aidlc.item": "T1", "aidlc.worker": "worker-a", "aidlc.assignment": "7f0a2b" };
+  const call = workerDockerInvocation({ ...opts, labels });
+  const start = call.args.indexOf("--name");
+  assert.deepEqual(call.args.slice(start, start + 10), ["--name", "aidlc-worker-1", "--label", "aidlc.task=task-a", "--label", "aidlc.item=T1", "--label", "aidlc.worker=worker-a", "--label", "aidlc.assignment=7f0a2b"]);
+  assert.equal(call.args[start + 10], "--read-only");
+  assert.deepEqual(workerDockerInvocation({ ...opts, labels: {} }).args.filter((arg: string) => arg === "--label"), []);
+  for (const bad of [{ "aidlc.task": "task a" }, { "aidlc.task": "" }, { "aidlc.task": 1 }, { "a=b": "x" }, { "-lead": "x" }, { "aidlc.task": "x".repeat(129) }]) assert.throws(() => workerDockerInvocation({ ...opts, labels: bad as any }), /Invalid container label/);
+  assert.throws(() => workerDockerInvocation({ ...opts, labels: ["aidlc.task=x"] as any }), /Invalid container labels/);
 });
 
 test("isolated lead rejects OpenCode while the Docker worker path accepts it with an XDG redirect", async (t) => {

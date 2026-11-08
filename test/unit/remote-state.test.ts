@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -185,4 +186,41 @@ test("G0 and G1 snapshots do not require Git integration configuration", async (
       assert.equal(result.result.gate, gate);
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("fleet lead records baseCommit on create and finalCommit on transition to done", async () => {
+  const sh = (cwd: string, args: string[]) => execFileSync("git", ["-c", "user.name=aidlc", "-c", "user.email=aidlc@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const repo = await mkdtemp(resolve(tmpdir(), "aidlc-remote-commits-"));
+  try {
+    sh(repo, ["init", "-q"]); sh(repo, ["commit", "-q", "--allow-empty", "-m", "initial"]);
+    const head = sh(repo, ["rev-parse", "HEAD"]);
+    let revision = 0;
+    const state: any = { schemaVersion: 4, tasks: {}, archive: {} };
+    const client: any = {
+      get: async () => ({ revision, state: structuredClone(state) }),
+      apply: async (expected: number, id: string, task: any) => { assert.equal(expected, revision); state.tasks[id] = structuredClone(task); revision += 1; return { revision, state: structuredClone(state), nextActions: { [id]: { classification: "run_phase" } } }; }
+    };
+    const outside = await runRemoteState(["task", "create", "plain-task", "--title", "No repository"], client, "/tmp/aidlc-missing-project");
+    assert.equal("baseCommit" in outside.result.task, false);
+    const explicit = await runRemoteState(["task", "create", "explicit-task", "--title", "Explicit base", "--base-commit", "abcdef1"], client, "/tmp/aidlc-missing-project");
+    assert.equal(explicit.result.task.baseCommit, "abcdef1");
+    await assert.rejects(() => runRemoteState(["task", "create", "bad-task", "--title", "Bad base", "--base-commit", "nope"], client, repo), /Invalid baseCommit/);
+    const created = await runRemoteState(["task", "create", "fleet-task", "--title", "Fleet task"], client, repo);
+    assert.equal(created.result.task.baseCommit, head);
+    assert.equal(created.result.task.finalCommit, undefined);
+
+    const wrap = state.tasks["fleet-task"];
+    wrap.phase = "wrap"; wrap.gate = "none"; wrap.lessonDisposition = { status: "none", reason: "fixture", source: "unit test", recordedAt: "2026-10-22T00:00:01.000Z" };
+    await assert.rejects(() => runRemoteState(["task", "transition", "fleet-task", "--mode", "audited", "--reason", "r", "--source", "s", "--to", "clarify", "--final-commit", head], client, repo), /--final-commit is only accepted with --to done/);
+    const done = await runRemoteState(["task", "transition", "fleet-task", "--mode", "audited", "--reason", "finished", "--source", "lead", "--to", "done"], client, repo);
+    assert.equal(done.result.task.status, "done");
+    assert.equal(done.result.task.baseCommit, head);
+    assert.equal(done.result.task.finalCommit, head);
+    assert.equal(state.tasks["fleet-task"].finalCommit, head);
+
+    const explicitTask = state.tasks["explicit-task"];
+    explicitTask.phase = "wrap"; explicitTask.gate = "none"; explicitTask.lessonDisposition = { status: "none", reason: "fixture", source: "unit test", recordedAt: "2026-10-22T00:00:01.000Z" };
+    const overridden = await runRemoteState(["task", "transition", "explicit-task", "--mode", "audited", "--reason", "finished", "--source", "lead", "--to", "done", "--final-commit", "0123456789abcdef"], client, "/tmp/aidlc-missing-project");
+    assert.equal(overridden.result.task.finalCommit, "0123456789abcdef");
+  } finally { await rm(repo, { recursive: true, force: true }); }
 });

@@ -5,6 +5,8 @@ import { readyTaskItems } from "./items.js";
 import { archiveRecordPath } from "./paths.js";
 
 const taskStatuses = ["active", "blocked_on_user", "paused", "done", "closed", "superseded"] as const;
+const commitPattern = /^[0-9a-f]{7,64}$/;
+const commitFields = ["baseCommit", "finalCommit"] as const;
 
 export const validateLesson = (taskId: string, lesson: LessonRecord): void => {
   if (!lesson) throw new Error(`Invalid lesson: ${taskId}`);
@@ -60,6 +62,7 @@ export const validateTask = (id: string, task: TaskState): void => {
   if (task.closure && (!text(task.closure.reason) || !text(task.closure.source) || !iso(task.closure.recordedAt))) throw new Error(`Invalid task closure: ${id}`);
   if ((task.status === "superseded") !== Boolean(task.successorTaskId) || (task.status === "closed" && task.successorTaskId)) throw new Error(`Invalid task successor: ${id}`);
   if (task.predecessorTaskId !== undefined && !text(task.predecessorTaskId)) throw new Error(`Invalid task predecessor: ${id}`);
+  for (const field of commitFields) if (task[field] !== undefined && !(typeof task[field] === "string" && commitPattern.test(task[field]))) throw new Error(`Invalid task ${field}: ${id}`);
   for (const path of Object.values(task.artifacts)) if (path) assertTaskArtifactPath(id, path);
 };
 

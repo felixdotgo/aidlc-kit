@@ -1,19 +1,20 @@
 /**
- * Request routing and server start-up. Every request first passes the Host/Origin
- * guard; routes are then tried in table order (first match wins) and mutating
- * routes marked `token` require the session token before their handler runs.
+ * Request routing and server start-up. Every request first passes the request
+ * guards (Host pinning; Origin, Sec-Fetch-Site, and the custom header on every
+ * state-changing request — see ./security.ts); routes are then tried in table
+ * order (first match wins).
  */
-import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { listTaskSummaries } from "../state.js";
 import { staticAsset } from "./assets.js";
 import { activateTask, approveGate, childError, daemonStatus, ensureDaemon, feedbackGate, intakeTask, loopStatusJson, runNode } from "./daemon.js";
 import { taskChanges } from "./changes.js";
+import { containerLog, taskContainers } from "./containers.js";
 import { artifactPayload, readUiState, readUiTask, taskGatePayload } from "./data.js";
 import { BadRequest, readBody, readFields, sendAsset, sendHtml, sendJson } from "./http.js";
 import { livePayload } from "./live.js";
 import { loopArgs, resolveUiMode, uiMode, type UiOptions } from "./options.js";
-import { requestAllowed, suppliedToken, tokenMatches } from "./security.js";
+import { requestAllowed } from "./security.js";
 import { streamEvents } from "./sse.js";
 import { renderDashboard } from "./views/board.js";
 import { renderChangesPage } from "./views/changes.js";
@@ -38,8 +39,6 @@ export interface Route {
   method: "GET" | "POST";
   /** Params when the path matches, else undefined. May throw `URIError` (answered with 400). */
   match: (path: string) => RouteParams | undefined;
-  /** Mutating routes: the session token must arrive in a header before the handler runs. */
-  token?: boolean;
   handle: (ctx: RouteContext) => unknown;
 }
 
@@ -58,6 +57,12 @@ export const taskSubpath = (prefix: string, suffix: string) => (path: string): R
 
 /** The optional `?item=` selector (empty means the whole task). */
 const itemParam = (url: URL): string | null => url.searchParams.get("item") || null;
+/** The optional `?tail=<bytes>` of a log request: absent means the default; anything but digits is rejected downstream (NaN). */
+const tailParam = (url: URL): number | undefined => {
+  const raw = url.searchParams.get("tail");
+  if (raw === null || raw === "") return undefined;
+  return /^\d{1,12}$/.test(raw) ? Number(raw) : Number.NaN;
+};
 
 /** A POST body's fields (JSON object or form-encoded, 8 KiB cap). */
 const fieldsOf = async (req: IncomingMessage, limit?: number): Promise<Record<string, string>> => readFields(await readBody(req, limit), req.headers["content-type"]);
@@ -95,12 +100,31 @@ export const ROUTES: Route[] = [
   {
     method: "GET",
     match: taskSubpath("/tasks/", "/changes"),
-    handle: async ({ options, res, url, params }) => { const page = await renderChangesPage(options, params.id ?? "", itemParam(url)); sendHtml(res, page.html, page.status); },
+    handle: async ({ options, res, url, params }) => { const page = await renderChangesPage(options, params.id ?? "", itemParam(url), { ws: url.searchParams.get("ws") }); sendHtml(res, page.html, page.status); },
   },
   {
     method: "GET",
     match: taskSubpath("/api/tasks/", "/changes"),
-    handle: async ({ options, res, url, params }) => { const result = await taskChanges(options, params.id ?? "", itemParam(url)); sendJson(res, result.status, result.payload); },
+    handle: async ({ options, res, url, params }) => { const result = await taskChanges(options, params.id ?? "", itemParam(url), undefined, null, { ws: url.searchParams.get("ws") }); sendJson(res, result.status, result.payload); },
+  },
+  // Worker containers: the task's runtime record (`runtime/workers/`), enriched by `docker ps`.
+  {
+    method: "GET",
+    match: taskSubpath("/api/tasks/", "/containers"),
+    handle: async ({ options, res, params }) => { const result = await taskContainers(options, params.id ?? ""); sendJson(res, result.status, result.payload); },
+  },
+  // Raw log tail of one container assignment; `?tail=<bytes>` (default 64 KiB, clamped to 1 MiB).
+  {
+    method: "GET",
+    match: (path) => {
+      const match = /^\/api\/tasks\/([^/]+)\/containers\/([^/]+)\/log$/.exec(path);
+      return match ? { id: decodeURIComponent(match[1] ?? ""), assignment: decodeURIComponent(match[2] ?? "") } : undefined;
+    },
+    handle: async ({ options, res, url, params }) => {
+      const result = await containerLog(options, params.id ?? "", params.assignment ?? "", tailParam(url));
+      res.writeHead(result.status, { "content-type": result.contentType, "cache-control": "no-store", "x-aidlc-log-size": String(result.size), "x-aidlc-log-truncated": result.truncated ? "1" : "0" });
+      res.end(result.body);
+    },
   },
   {
     method: "GET",
@@ -175,7 +199,6 @@ export const ROUTES: Route[] = [
   {
     method: "POST",
     match: exact("/api/markdown"),
-    token: true,
     handle: async ({ req, res }) => {
       const markdown = (await fieldsOf(req, TEXT_BODY_LIMIT))["markdown"] ?? "";
       if (Buffer.byteLength(markdown) > 8192) return sendJson(res, 400, { ok: false, error: "markdown exceeds 8192 bytes" });
@@ -185,7 +208,6 @@ export const ROUTES: Route[] = [
   {
     method: "POST",
     match: exact("/api/loop/start"),
-    token: true,
     handle: async ({ options, req, res }) => {
       const fields = await fieldsOf(req, TEXT_BODY_LIMIT);
       const requirement = fields["requirement"] ?? "";
@@ -200,7 +222,6 @@ export const ROUTES: Route[] = [
   {
     method: "POST",
     match: exact("/api/loop/resume"),
-    token: true,
     handle: async ({ options, req, res }) => {
       const fields = await fieldsOf(req);
       const taskId = fields["taskId"] ?? "";
@@ -221,7 +242,6 @@ export const ROUTES: Route[] = [
   {
     method: "POST",
     match: exact("/api/gate/feedback"),
-    token: true,
     handle: async ({ options, req, res }) => {
       const fields = await fieldsOf(req);
       const taskId = fields["taskId"] ?? "";
@@ -246,7 +266,6 @@ export const ROUTES: Route[] = [
   {
     method: "POST",
     match: exact("/api/gate/approve"),
-    token: true,
     handle: async ({ options, req, res }) => {
       const fields = await fieldsOf(req);
       const taskId = fields["taskId"] ?? "";
@@ -287,7 +306,6 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
           if (route.method !== method) continue;
           const params = route.match(path);
           if (!params) continue;
-          if (route.token && !tokenMatches(options.token ?? "", suppliedToken(req))) return sendJson(res, 401, { ok: false, error: "Invalid or missing approve token" });
           await route.handle({ options, req, res, url, params });
           return;
         }
@@ -302,16 +320,15 @@ export const createUiHandler = (options: UiOptions): (req: IncomingMessage, res:
 };
 
 /** Starts the UI HTTP server and resolves once it is listening. */
-export const startUiServer = (options: UiOptions): Promise<{ server: Server; port: number; token: string }> =>
+export const startUiServer = (options: UiOptions): Promise<{ server: Server; port: number }> =>
   new Promise((resolveServer, reject) => {
-    const token = options.token ?? randomUUID();
     const mode = options.mode ?? resolveUiMode(options.root);
     const reviewerToken = options.reviewerToken ?? (mode === "fleet" ? process.env["AIDLC_FLEET_REVIEWER_TOKEN"] || undefined : undefined);
-    const server = createServer(createUiHandler({ ...options, token, mode, ...(reviewerToken ? { reviewerToken } : {}) }));
+    const server = createServer(createUiHandler({ ...options, mode, ...(reviewerToken ? { reviewerToken } : {}) }));
     server.once("error", reject);
     server.listen(options.port, options.host, () => {
       const address = server.address();
       const port = typeof address === "object" && address !== null ? address.port : options.port;
-      resolveServer({ server, port, token });
+      resolveServer({ server, port });
     });
   });
