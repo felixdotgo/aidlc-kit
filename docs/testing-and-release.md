@@ -83,7 +83,7 @@ AIDLC_TEST_PROJECT="$(mktemp -d /tmp/aidlc-project.XXXXXX)"
 
 npm run build
 npm pack --pack-destination "$AIDLC_PACK_DIR"
-tar -xzf "$AIDLC_PACK_DIR/felixdotgo-aidlc-kit-0.2.0.tgz" -C "$AIDLC_EXTRACT_DIR"
+tar -xzf "$AIDLC_PACK_DIR/felixdotgo-aidlc-kit-0.3.0.tgz" -C "$AIDLC_EXTRACT_DIR"
 node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" init "$AIDLC_TEST_PROJECT" --agent codex --dry-run
 node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" init "$AIDLC_TEST_PROJECT" --agent codex --yes
 node "$AIDLC_EXTRACT_DIR/package/dist/src/cli.js" status "$AIDLC_TEST_PROJECT"

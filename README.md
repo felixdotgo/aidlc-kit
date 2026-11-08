@@ -1,6 +1,6 @@
 # aidlc-kit
 
-[![version](https://img.shields.io/badge/version-0.2.0-blue)](https://www.npmjs.com/package/@felixdotgo/aidlc-kit)
+[![version](https://img.shields.io/badge/version-0.3.0-blue)](https://www.npmjs.com/package/@felixdotgo/aidlc-kit)
 [![license](https://img.shields.io/npm/l/@felixdotgo/aidlc-kit)](https://github.com/felixdotgo/aidlc-kit/blob/main/LICENSE)
 [![node](https://img.shields.io/node/v/@felixdotgo/aidlc-kit)](https://nodejs.org/)
 
@@ -14,8 +14,8 @@ Installs an AI-DLC workflow into an existing project: a shared task lifecycle, e
 Requires Node.js 20.17+ and Codex, Claude Code, or OpenCode (Linux/macOS; Windows is best-effort).
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init .          # previews, then installs after you confirm
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit doctor . --strict
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit init .          # previews, then installs after you confirm
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit doctor . --strict
 ```
 
 In a terminal, `init` asks for the adapter (unless exactly one is detected or you pass `--agent codex|claude|opencode` / `--all`) and the loop mode (unless `--loop-mode …`), previews the files, then asks you to confirm; `--yes` skips the confirmation, `--dry-run` writes nothing. The installed lifecycle scripts run locally and never contact a registry.
@@ -32,7 +32,20 @@ The agent creates a task and stops at three review steps — Confirm requirement
 
 A daemon drives tasks end-to-end on a Linux host with Docker, stopping at every review step for you:
 
-1. In `.agents/config.json`: `"loop": { "mode": "local", "agents": { "lead": "opencode", "workers": { "worker-a": "opencode" } } }` (providers: `codex`, `claude`, `opencode`).
+1. In `.agents/config.json` update the `loop` section to match your environment, e.g.,
+    ```json
+    ...
+    "loop": {
+        "mode": "local",
+        "agents": {
+            "lead": "opencode",
+            "workers": {
+                "worker-a": "opencode"
+            }
+        }
+    }
+    ...
+    ```
 2. Put credentials in the git-ignored `.agents/loop.env`; keys your tools already store are detected.
 3. `./.agents/aidlc/scripts/loop.sh up` checks the environment, starts the daemon, and serves the dashboard (`--open` launches the browser); `loop.sh down` stops both.
 

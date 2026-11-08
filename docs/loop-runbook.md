@@ -25,12 +25,12 @@ Setup for the end-to-end loop: a **lead** agent runs clarify, plan, and wrap, **
 - Edit `.agents/config.json` directly; fields in [Configuration](./configuration.md#optional-loop-configuration).
 - New install, with `init`:
   ```sh
-  npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init . \
+  npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit init . \
     --loop-mode local --loop-lead codex --loop-workers a=codex,b=opencode
   ```
 - Existing install, with the human-only `upgrade` (omitting the loop flags preserves the config). Stop the daemon first; a newer loop refuses to start while an older one holds a task (`A loop from a previous aidlc-kit version is still running …`).
   ```sh
-  npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit upgrade . \
+  npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit upgrade . \
     --loop-mode local --loop-lead codex --loop-workers a=codex,b=opencode --dry-run
   ```
 
@@ -96,8 +96,8 @@ npx @felixdotgo/aidlc-kit loop worker-image --provider opencode # → aidlc-work
 Underneath, `loop start` runs the singleton daemon (one per project) and reads no requirement. Add tasks with the dashboard **New task** or with intake (stdin only, capped at 8192 bytes):
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start
-echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop intake
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop start
+echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop intake
 ```
 
 - The daemon runs only loop-owned tasks, keeps polling after a gate or completion, and auto-resumes approved tasks; there is no `loop resume`.
@@ -157,8 +157,8 @@ The lead agent is `loop.agents.lead`. Do not export `AIDLC_FLEET_REVIEWER_TOKEN`
 `loop start --mode fleet` preflights the service (`fleet_get`) and the remote integration branch, then runs the same daemon as local mode, failing closed instead of falling back to local:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start --mode fleet
-echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop intake --mode fleet
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop start --mode fleet
+echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop intake --mode fleet
 ```
 
 - **Intake** creates the remote task under a short lead claim and writes `.agents/data/tasks/<task-id>/runtime/intake.json` with `authority: "fleet"`; only those tasks are fleet loop-owned.

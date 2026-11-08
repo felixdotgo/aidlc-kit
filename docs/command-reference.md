@@ -2,7 +2,7 @@
 
 Lookup reference for every `aidlc-kit` command, flag, and loop environment variable, plus the lifecycle scripts installed into a project. Concepts: [Operating the workflow](./operating-workflow.md); `.agents/config.json` fields: [Configuration](./configuration.md).
 
-- All commands operate on local files. Examples run version `0.2.0` through npm (`npx` may ask to fetch the package once); replace `.` with the target project path. Source checkout: [development guide](./development.md).
+- All commands operate on local files. Examples run version `0.3.0` through npm (`npx` may ask to fetch the package once); replace `.` with the target project path. Source checkout: [development guide](./development.md).
 - Global flags: `--version` (`-v`) prints the package version and exits; `--help` prints usage.
 
 Contents:
@@ -21,7 +21,7 @@ Contents:
 ## `init`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
 ```
 
 - Prints a preview and writes only after confirmation (or `--yes`); `--dry-run` prints the plan without writing.
@@ -33,7 +33,7 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit init [path] [--agent <name[,
 ## `status`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit status [path] [--json]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit status [path] [--json]
 ```
 
 - Reports the installed version and local installation status; never queries a registry.
@@ -42,7 +42,7 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit status [path] [--json]
 ## `doctor`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit doctor [path] [--strict] [--json]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit doctor [path] [--strict] [--json]
 ```
 
 - Checks the local manifest, configuration, and canonical state; never queries a registry.
@@ -52,7 +52,7 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit doctor [path] [--strict] [--
 ## `profile validate`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit profile validate [path]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit profile validate [path]
 ```
 
 - Resolves the `.agents/config.json` profile chain and prints the effective order. Run it after changing `extends` or local profiles.
@@ -60,7 +60,7 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit profile validate [path]
 ## `uninstall`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit uninstall [path] [--yes] [--dry-run]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit uninstall [path] [--yes] [--dry-run]
 ```
 
 - Prints the removal plan, then removes eligible unchanged managed assets; project configuration and state are preserved. Run `--dry-run` first in an existing project.
@@ -68,7 +68,7 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit uninstall [path] [--yes] [--
 ## `mcp setup`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit mcp setup [path] [--dry-run] [--yes] [--storage sqlite|postgres] [--deployment docker|remote] [--bind localhost|network] [--workspace <id>] [--poll-ms <n>] [--token-env <name>] [--providers <p,...>] [--enable]
 ```
 
 - Previews the coordination service configuration and writes only after confirmation. Non-interactive use requires `--deployment`, `--storage`, `--bind`, and `--workspace`.
@@ -79,7 +79,7 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit mcp setup [path] [--dry-run]
 ## `upgrade`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--dry-run]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--dry-run]
 ```
 
 - Human-only: rejects `--yes` and `--force`, requires an interactive terminal and an exact typed confirmation of the package version (same styled prompt as `init`). Agents must never run, preview, detect, or suggest upgrades.
@@ -89,15 +89,15 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit upgrade [path] [--loop-mode 
 ## `loop`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop up [--root PATH] [--loop-env PATH] [--port 4173] [--host 127.0.0.1] [--open] [--no-ui]
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop down|stop [--root PATH] [--now]
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop env [--root PATH] [--loop-env PATH] [--json]
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop status [--root PATH] [--json]
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start [--root PATH] [--mode local|fleet] [--loop-env PATH]
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop intake [--task-id ID] [--title TITLE] [--root PATH] [--mode local|fleet]
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop status --task-id ID [--root PATH] [--mode local|fleet]
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop worker-image [--provider opencode|codex|claude] [--tag TAG] [--root PATH]
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop leases [--task-id ID] [--root PATH] [--json] [--clear-stale]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop up [--root PATH] [--loop-env PATH] [--port 4173] [--host 127.0.0.1] [--open] [--no-ui]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop down|stop [--root PATH] [--now]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop env [--root PATH] [--loop-env PATH] [--json]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop status [--root PATH] [--json]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop start [--root PATH] [--mode local|fleet] [--loop-env PATH]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop intake [--task-id ID] [--title TITLE] [--root PATH] [--mode local|fleet]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop status --task-id ID [--root PATH] [--mode local|fleet]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop worker-image [--provider opencode|codex|claude] [--tag TAG] [--root PATH]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop leases [--task-id ID] [--root PATH] [--json] [--clear-stale]
 ```
 
 > [!WARNING]
@@ -198,7 +198,7 @@ Fleet workers run through the fleet runner on each worker machine; a reviewer ap
 ## `ui`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--reviewer-token-file PATH]
+npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit ui [path] [--port 4173] [--host 127.0.0.1] [--open] [--reviewer-token-file PATH]
 ```
 
 - Web dashboard on `node:http` (no extra dependencies). The project is the positional `path` (default `.`); there is no `--root` flag.
