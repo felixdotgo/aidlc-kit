@@ -37,8 +37,18 @@ export const staticAsset = (route: string): { contentType: string; body: string 
   return asset ? { contentType: asset.contentType, body: load(route, asset.file).body } : undefined;
 };
 
+/** Stylesheets served from `/assets`, loaded in this order. */
+export type Stylesheet = "bulma" | "dashboard";
+
 /** `<script src>` for a client script; `?v=<content hash>` makes an upgrade bust the browser cache. */
 export const scriptTag = (name: ClientScript): string => {
   const route = `/assets/${name}.js`;
   return `<script src="${route}?v=${load(route, `${name}.js`).version}"></script>`;
+};
+
+/** `<link rel="stylesheet">` for a stylesheet, versioned like `scriptTag` so an upgrade is not
+ * stuck behind the cached theme while the hashed scripts already changed. */
+export const stylesheetTag = (name: Stylesheet): string => {
+  const route = `/assets/${name}.css`;
+  return `<link rel="stylesheet" href="${route}?v=${load(route, ASSETS.get(route)!.file).version}">`;
 };

@@ -4,7 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import type { WorkflowState } from "../../model.js";
-import { scriptTag, type ClientScript } from "../assets.js";
+import { scriptTag, stylesheetTag, type ClientScript } from "../assets.js";
 import { daemonHealth, daemonStatus, type DaemonError } from "../daemon.js";
 import { pendingFeedback } from "../data.js";
 import { escapeHtml } from "../http.js";
@@ -20,8 +20,8 @@ export const pageHead = (title: string, task = ""): string => `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
 <meta name="color-scheme" content="light dark">
-<link rel="stylesheet" href="/assets/bulma.css">
-<link rel="stylesheet" href="/assets/dashboard.css">
+${stylesheetTag("bulma")}
+${stylesheetTag("dashboard")}
 <script>try { document.documentElement.setAttribute("data-view", localStorage.getItem("aidlc-view") === "list" ? "list" : "kanban"); } catch (error) { /* storage disabled */ }</script>
 </head>
 <body${task ? ` data-task="${escapeHtml(task)}"` : ""} data-notify-page="${NOTIFY_PAGE}">`;

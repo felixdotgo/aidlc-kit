@@ -51,8 +51,8 @@ const withLoading = async (button, work) => {
   catch (error) { toast("Request failed", "danger", String(error && error.message || error)); return undefined; }
   finally { if (button) { button.classList.remove("is-loading"); button.disabled = false; } }
 };
-const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-/* Overlay timings match the CSS transitions (dashboard.css "Overlays"). */
+/* Overlay timings match the CSS transitions (dashboard.css "Overlays"). The dashboard
+ * animates regardless of the OS reduced-motion setting, so these timers always run. */
 const MODAL_CLOSE_MS = 160;
 const DRAWER_CLOSE_MS = 240;
 const modalOpen = () => !!document.querySelector(".modal.is-active:not(.is-closing)");
@@ -81,7 +81,7 @@ const hideDrawer = (el) => {
   if (!el || el.hidden || !el.classList.contains("is-open")) return false;
   el.classList.remove("is-open");
   const finish = () => { if (!el.classList.contains("is-open")) el.hidden = true; };
-  if (reducedMotion()) finish(); else el._hideTimer = setTimeout(finish, DRAWER_CLOSE_MS);
+  el._hideTimer = setTimeout(finish, DRAWER_CLOSE_MS);
   releaseScroll();
   const back = el._returnFocus;
   el._returnFocus = null;
@@ -101,8 +101,8 @@ const openModal = (id) => {
 };
 const closeModalEl = (el) => {
   if (!el.classList.contains("is-active") || el.classList.contains("is-closing")) return;
-  if (reducedMotion()) el.classList.remove("is-active");
-  else { el.classList.add("is-closing"); el._hideTimer = setTimeout(() => el.classList.remove("is-active", "is-closing"), MODAL_CLOSE_MS); }
+  el.classList.add("is-closing");
+  el._hideTimer = setTimeout(() => el.classList.remove("is-active", "is-closing"), MODAL_CLOSE_MS);
 };
 const closeModal = (id) => { const el = document.getElementById(id); if (el) closeModalEl(el); releaseScroll(); };
 const closeAllModals = () => { document.querySelectorAll(".modal").forEach(closeModalEl); releaseScroll(); };

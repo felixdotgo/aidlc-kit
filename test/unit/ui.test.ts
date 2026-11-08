@@ -101,7 +101,11 @@ test("ui server serves the styled dashboard, vendored CSS, and read-only JSON en
     assert.match(homeHtml, /<title>Loop<\/title>/);
     assert.match(homeHtml, /<span class="ad-logo" aria-hidden="true">L<\/span>Loop<\/a>/);
     assert.doesNotMatch(homeHtml, /AI-DLC Loop/);
-    assert.match(homeHtml, /href="\/assets\/bulma\.css"[\s\S]*href="\/assets\/dashboard\.css"/, "theme layer loads after Bulma");
+    assert.match(homeHtml, /href="\/assets\/bulma\.css\?v=[0-9a-f]{12}"[\s\S]*href="\/assets\/dashboard\.css\?v=[0-9a-f]{12}"/, "theme layer loads after Bulma; both links carry a content hash like the scripts");
+    const versioned = homeHtml.match(/href="(\/assets\/dashboard\.css\?v=[0-9a-f]{12})"/)?.[1] ?? "";
+    const hashed = await fetch(`${fixture.base}${versioned}`);
+    assert.equal(hashed.status, 200, "the versioned stylesheet URL serves the same whitelisted asset");
+    assert.equal(hashed.headers.get("cache-control"), "public, max-age=3600");
     assert.match(homeHtml, /<meta name="color-scheme" content="light dark">/);
 
     const css = await fetch(`${fixture.base}/assets/bulma.css`);
@@ -1389,8 +1393,22 @@ test("the changes page file list can stick: its panel clips without becoming a s
   const css = source("assets/ui/dashboard.css");
   assert.match(css, /\.ad-panel\.ad-changes-item \{ overflow: visible; overflow: clip; \}/);
   assert.match(css, /\.ad-changes-files \{ position: sticky;/);
-  assert.match(css, /@keyframes ad-pulse/);
-  assert.match(css, /prefers-reduced-motion: reduce/);
+});
+
+test("dashboard motion does not follow the OS reduced-motion setting and the pulse keyframes do not collide", () => {
+  const css = source("assets/ui/dashboard.css");
+  assert.doesNotMatch(css, /prefers-reduced-motion/, "no media query switches the theme's animations off");
+  assert.equal(css.match(/@keyframes ad-pulse\b(?!-)/g)?.length, 1, "one opacity blink for the live dot");
+  assert.equal(css.match(/@keyframes ad-pulse-ring\b/g)?.length, 1, "one expanding ring for the current stepper step");
+  assert.match(css, /\.ad-pulse::before, \.ad-pulse::after \{[^}]*animation: ad-pulse-ring /);
+  assert.match(css, /\.ad-pill\.is-live \.ad-dot \{ animation: ad-pulse /);
+  for (const script of ["common", "changes", "dashboard", "detail", "live-log"]) {
+    assert.doesNotMatch(source(`assets/ui/${script}.js`), /prefers-reduced-motion/, `${script}.js never consults the OS setting`);
+  }
+  const common = source("assets/ui/common.js");
+  assert.match(common, /el\._hideTimer = setTimeout\(finish, DRAWER_CLOSE_MS\);/, "drawer close always waits for its transition");
+  assert.match(common, /el\.classList\.add\("is-closing"\);\n\s*el\._hideTimer = setTimeout/, "modal close always plays its exit animation");
+  assert.match(source("assets/ui/changes.js"), /scrollIntoView\(\{ behavior: "smooth"/);
 });
 
 test("markdown preview accepts an 8192-byte text whose JSON escaping exceeds 8 KiB and rejects larger text", async () => {

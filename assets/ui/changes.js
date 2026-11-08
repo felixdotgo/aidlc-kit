@@ -26,14 +26,13 @@
       history.replaceState(history.state, "", url);
     });
   }
-  const reduceMotion = () => window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   document.addEventListener("click", (event) => {
     const link = event.target instanceof Element ? event.target.closest("a[data-changes-file]") : null;
     if (!link) return;
     const target = document.getElementById((link.getAttribute("href") || "").slice(1));
     if (!target) return;
     event.preventDefault();
-    target.scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" });
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
     history.replaceState(history.state, "", location.pathname + location.search + "#" + target.id);
     target.classList.add("is-target");
     setTimeout(() => target.classList.remove("is-target"), 1500);

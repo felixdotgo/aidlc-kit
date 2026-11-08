@@ -474,10 +474,6 @@ html[data-view="list"] #kanban-view { display: none; }
   .ad-drawer-body { padding: 1rem; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
-}
-
 /* ---------- Collapsed kanban column ---------- */
 .ad-column-more {
   display: block; width: 100%; margin-top: 0.25rem; padding: 0.45rem; border: 1px dashed var(--bulma-border); border-radius: var(--ad-radius);
@@ -543,10 +539,12 @@ html[data-view="list"] #kanban-view { display: none; }
 .ad-pulse.is-waiting { color: var(--bulma-warning); }
 .ad-pulse::before, .ad-pulse::after {
   content: ""; position: absolute; inset: 0; border-radius: inherit; border: 2px solid currentColor;
-  animation: ad-pulse 1.8s cubic-bezier(0.25, 0.6, 0.35, 1) infinite;
+  animation: ad-pulse-ring 1.8s cubic-bezier(0.25, 0.6, 0.35, 1) infinite;
 }
 .ad-pulse::after { animation-delay: 0.9s; }
-@keyframes ad-pulse { 0% { transform: scale(1); opacity: 0.75; } 100% { transform: scale(2.1); opacity: 0; } }
+/* Named apart from the `ad-pulse` opacity blink above: two keyframes with one name would
+ * make the last declaration win for both the live dot and this ring. */
+@keyframes ad-pulse-ring { 0% { transform: scale(1); opacity: 0.75; } 100% { transform: scale(2.1); opacity: 0; } }
 .ad-stepper li.is-current .ad-stepper-marker { z-index: 0; }
 
 /* ---------- New task panel + Markdown editor ---------- */
