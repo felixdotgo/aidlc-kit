@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 if (process.argv.includes("--doctor")) {
   const check = spawnSync("opencode", ["--version"], { encoding: "utf8", timeout: 10_000, shell: false });
-  process.stdout.write(JSON.stringify({ available: !check.error && check.status === 0, driver: "opencode", protocolVersion: 2, version: check.stdout.trim(), diagnostic: check.error?.message ?? check.stderr.trim() }));
+  // spawnSync leaves stdout/stderr null when the CLI is missing (ENOENT); report that instead of crashing.
+  process.stdout.write(JSON.stringify({ available: !check.error && check.status === 0, driver: "opencode", protocolVersion: 2, version: (check.stdout ?? "").trim(), diagnostic: check.error?.message ?? (check.stderr ?? "").trim() }));
   process.exit(check.error || check.status !== 0 ? 1 : 0);
 }
 
@@ -54,7 +55,12 @@ const shellResult = (state: Record<string, unknown> | undefined): { exitCode: nu
   return { exitCode: typeof inner?.exit === "number" ? inner.exit : undefined, output };
 };
 
-// Keep project configuration from leaking user or project MCP servers into the evaluation.
+// OpenCode merges the global config (~/.config/opencode), OPENCODE_CONFIG, and the
+// project config, so an empty project `mcp` block cannot remove user MCP servers.
+// Point XDG_CONFIG_HOME at an empty workspace directory and drop OPENCODE_CONFIG so
+// only the workspace config loads; XDG_DATA_HOME stays untouched so auth.json works.
+const xdgConfigHome = join(request.workspace, ".aidlc-eval", "xdg-config");
+mkdirSync(xdgConfigHome, { recursive: true });
 writeFileSync(join(request.workspace, "opencode.json"), `${JSON.stringify({ mcp: {} }, null, 2)}\n`, "utf8");
 
 const allEvents: Array<Record<string, unknown>> = []; const transcripts: string[] = []; const diagnostics: string[] = []; const turnLatencies: number[] = [];
@@ -80,7 +86,8 @@ for (const [index, turn] of request.scenario.turns.entries()) {
     const turnStarted = Date.now();
     // OpenCode resolves its project directory from the inherited PWD rather than
     // the spawned process cwd, so pin PWD to the isolated scenario workspace.
-    const turnEnv = { ...process.env, PWD: request.workspace };
+    const turnEnv: NodeJS.ProcessEnv = { ...process.env, PWD: request.workspace, XDG_CONFIG_HOME: xdgConfigHome };
+    delete turnEnv.OPENCODE_CONFIG;
     const run = spawnSync("opencode", args, { cwd: request.workspace, encoding: "utf8", timeout: Number(process.env.AIDLC_EVAL_TIMEOUT_MS ?? 120000), env: turnEnv, shell: false, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
     turnLatencies.push(Date.now() - turnStarted);
     if (run.error || run.status !== 0) { transport = run.error && "code" in run.error && run.error.code === "ETIMEDOUT" ? "timeout" : "error"; const detail = run.error?.message || run.stderr.trim() || `OpenCode runner exited ${run.status}`; allEvents.push({ type: "runner-error", detail }); diagnostics.push(detail); break; }

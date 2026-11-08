@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 if (process.argv.includes("--doctor")) {
   const check = spawnSync("claude", ["--version"], { encoding: "utf8", timeout: 10_000, shell: false });
-  process.stdout.write(JSON.stringify({ available: !check.error && check.status === 0, driver: "claude", protocolVersion: 2, version: check.stdout.trim(), diagnostic: check.error?.message ?? check.stderr.trim() }));
+  // spawnSync leaves stdout/stderr null when the CLI is missing (ENOENT); report that instead of crashing.
+  process.stdout.write(JSON.stringify({ available: !check.error && check.status === 0, driver: "claude", protocolVersion: 2, version: (check.stdout ?? "").trim(), diagnostic: check.error?.message ?? (check.stderr ?? "").trim() }));
   process.exit(check.error || check.status !== 0 ? 1 : 0);
 }
 

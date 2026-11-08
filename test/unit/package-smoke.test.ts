@@ -12,7 +12,12 @@ test("packed tarball initializes a clean local project without a registry instal
     const archiveDir = join(root, "archives"); mkdirSync(archiveDir);
     const npmCli = process.env.npm_execpath;
     assert.ok(npmCli, "npm_execpath is required to create the local package tarball");
-    const packed = spawnSync(process.execPath, [npmCli, "pack", "--ignore-scripts", "--json", "--pack-destination", archiveDir], { cwd: resolve("."), encoding: "utf8" });
+    // npm exports its own flags to lifecycle scripts as npm_config_* (for example
+    // npm_config_dry_run=true under `npm publish --dry-run`), and a nested npm inherits
+    // them: a dry-run `npm pack` reports the filename without writing the archive.
+    // The env is poisoned on purpose so the tarball assertion below proves the filter.
+    const packEnv = Object.fromEntries(Object.entries({ ...process.env, npm_config_dry_run: "true" }).filter(([key]) => !/^npm_(config|lifecycle)_/i.test(key)));
+    const packed = spawnSync(process.execPath, [npmCli, "pack", "--ignore-scripts", "--json", "--pack-destination", archiveDir], { cwd: resolve("."), encoding: "utf8", env: packEnv });
     assert.equal(packed.status, 0, packed.stderr);
     const packedResult = JSON.parse(packed.stdout) as Array<{ filename: string }>;
     const filename = packedResult[0]?.filename;

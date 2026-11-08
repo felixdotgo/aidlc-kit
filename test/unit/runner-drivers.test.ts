@@ -174,31 +174,45 @@ test("drivers normalize vendor web tools into provider-neutral network events", 
   }
 });
 
-test("OpenCode driver advertises its version through the doctor protocol", { skip: process.platform === "win32" }, () => {
-  const root = mkdtempSync(join(tmpdir(), "aidlc-opencode-doctor-"));
-  try {
-    executable(root, "opencode", `if (process.argv.includes("--version")) { console.log("2.2.0"); process.exit(0); } console.error("unexpected doctor arguments"); process.exit(9);`);
-    const result = spawnSync(process.execPath, [resolve("dist/dev/evaluator/runners/opencode.js"), "--doctor"], { encoding: "utf8", env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ""}` } });
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), { available: true, driver: "opencode", protocolVersion: 2, version: "2.2.0", diagnostic: "" });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+test("every driver advertises its CLI version through the doctor protocol and fails closed without the CLI", { skip: process.platform === "win32" }, () => {
+  const versions: Record<"codex" | "claude" | "opencode", string> = { codex: "codex-cli 0.151.0", claude: "2.1.319 (Claude Code)", opencode: "2.2.0" };
+  for (const driver of ["codex", "claude", "opencode"] as const) {
+    const root = mkdtempSync(join(tmpdir(), `aidlc-${driver}-doctor-`));
+    try {
+      executable(root, driver, `if (process.argv.includes("--version")) { console.log(${JSON.stringify(versions[driver])}); process.exit(0); } console.error("unexpected doctor arguments"); process.exit(9);`);
+      const result = spawnSync(process.execPath, [resolve(`dist/dev/evaluator/runners/${driver}.js`), "--doctor"], { encoding: "utf8", env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ""}` } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), { available: true, driver, protocolVersion: 2, version: versions[driver], diagnostic: "" });
+      const missing = spawnSync(process.execPath, [resolve(`dist/dev/evaluator/runners/${driver}.js`), "--doctor"], { encoding: "utf8", env: { ...process.env, PATH: join(root, "empty") } });
+      assert.equal(missing.status, 1);
+      const payload = JSON.parse(missing.stdout) as { available: boolean; driver: string; diagnostic: string };
+      assert.equal(payload.available, false); assert.equal(payload.driver, driver); assert.match(payload.diagnostic, /ENOENT/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
 });
 
-test("OpenCode driver runs one headless turn, isolates MCP servers, and captures usage", { skip: process.platform === "win32" }, () => {
+test("OpenCode driver runs one headless turn, isolates global and project config, and captures usage", { skip: process.platform === "win32" }, () => {
   const root = mkdtempSync(join(tmpdir(), "aidlc-opencode-turn-")); const observedPath = join(root, "observed.json");
   try {
-    executable(root, "opencode", `const fs=require("node:fs"); const args=process.argv.slice(2); fs.writeFileSync(process.env.FAKE_ARGS_PATH,JSON.stringify({args,cwd:process.cwd(),pwd:process.env.PWD,config:fs.readFileSync("opencode.json","utf8")})); const sid="fixture-session";
+    executable(root, "opencode", `const fs=require("node:fs"); const args=process.argv.slice(2); fs.writeFileSync(process.env.FAKE_ARGS_PATH,JSON.stringify({args,cwd:process.cwd(),pwd:process.env.PWD,config:fs.readFileSync("opencode.json","utf8"),xdgConfigHome:process.env.XDG_CONFIG_HOME,xdgEntries:fs.readdirSync(process.env.XDG_CONFIG_HOME),xdgDataHome:process.env.XDG_DATA_HOME,opencodeConfig:process.env.OPENCODE_CONFIG})); const sid="fixture-session";
 console.log(JSON.stringify({type:"step_start",timestamp:1,sessionID:sid,part:{type:"step-start"}}));
 console.log(JSON.stringify({type:"tool_use",timestamp:2,sessionID:sid,part:{type:"tool",tool:"shell",state:{status:"completed",input:{command:"node .agents/aidlc/scripts/state.mjs task list"},output:"ok",metadata:{metadata:{exit:0},content:[{type:"text",text:"ok"}]}}}}));
 console.log(JSON.stringify({type:"step_finish",timestamp:3,sessionID:sid,part:{type:"step-finish",reason:"stop",cost:0.01,tokens:{input:2,output:1}}}));
 console.log(JSON.stringify({type:"text",timestamp:4,sessionID:sid,part:{type:"text",text:"OK"}}));`);
-    const result = run("opencode", root, root, { FAKE_ARGS_PATH: observedPath }); assert.equal(result.status, 0, result.stderr);
+    // Host OpenCode settings that must never reach the evaluated turn: the user's
+    // global config directory (MCP servers, agents, plugins) and a custom config path.
+    const hostConfig = join(root, "host-config"); mkdirSync(join(hostConfig, "opencode"), { recursive: true });
+    writeFileSync(join(hostConfig, "opencode", "opencode.json"), JSON.stringify({ mcp: { leaked: { type: "remote", url: "https://example.invalid" } } }), "utf8");
+    const result = run("opencode", root, root, { FAKE_ARGS_PATH: observedPath, XDG_CONFIG_HOME: hostConfig, XDG_DATA_HOME: join(root, "host-data"), OPENCODE_CONFIG: join(root, "custom.json") }); assert.equal(result.status, 0, result.stderr);
     const payload = JSON.parse(result.stdout) as { transport: string; transcript: string; usage: Record<string, number>; events: Array<{ type: string }> };
-    const observed = JSON.parse(readFileSync(observedPath, "utf8")) as { args: string[]; cwd: string; pwd: string; config: string };
+    const observed = JSON.parse(readFileSync(observedPath, "utf8")) as { args: string[]; cwd: string; pwd: string; config: string; xdgConfigHome: string; xdgEntries: string[]; xdgDataHome: string; opencodeConfig?: string };
     assert.equal(payload.transport, "completed"); assert.equal(payload.transcript, "OK");
     assert.equal(payload.usage.inputTokens, 2); assert.equal(payload.usage.outputTokens, 1); assert.equal(payload.usage.costUsd, 0.01); assert.equal(typeof payload.usage.latencyMs, "number");
     assert.deepEqual(JSON.parse(observed.config), { mcp: {} });
     assert.equal(observed.cwd, root); assert.equal(observed.pwd, root);
+    assert.ok(observed.xdgConfigHome.startsWith(`${root}/`), `XDG_CONFIG_HOME must live inside the workspace: ${observed.xdgConfigHome}`);
+    assert.notEqual(observed.xdgConfigHome, hostConfig); assert.deepEqual(observed.xdgEntries, []);
+    assert.equal(observed.xdgDataHome, join(root, "host-data")); assert.equal(observed.opencodeConfig, undefined);
     assert.deepEqual(observed.args.slice(0, 5), ["run", "--format", "json", "--standalone", "--auto"]);
     assert.equal(observed.args[observed.args.indexOf("--model") + 1], "opencode-go/fixture");
     assert.ok(!observed.args.includes("--session"));

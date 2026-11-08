@@ -106,7 +106,7 @@ node dist/dev/evaluator/cli.js run --runner local-simulated
 Pinned `opencode-beam` runner: adapter `opencode`, model `opencode-go/beam-free`, version `opencode-2.2.0`, protocol version `2`, real evidence, 300000 ms timeout; `economy` category uses `opencode-go/beam-free#medium` to fit that timeout. Runs `opencode run --format json --standalone --auto` per turn, resuming with `--session`.
 
 - Runner and loop driver pin `PWD` to the workspace: OpenCode resolves its project from inherited `PWD`, not the spawned cwd; unpinned, commands silently run in the invoking repository.
-- Each scenario workspace gets `opencode.json` `{"mcp": {}}` so project MCP servers do not leak; local Console auth is reused and user plugins or agents can still load. This is configuration, not a security boundary.
+- Each scenario turn runs with `XDG_CONFIG_HOME` pointed at an empty directory inside the workspace and without `OPENCODE_CONFIG`, so the user's global config (MCP servers, agents, plugins) never loads; the workspace also gets `opencode.json` `{"mcp": {}}`. `XDG_DATA_HOME` is untouched, so local Console auth is reused. This is configuration, not a security boundary.
 
 Release-eligible suite: `aidlc-official-agentic` `2.5.0`. `supported-adapters` expects the agent to state Codex, Claude Code, and OpenCode support without running remote code or shell strings; `build-multi-item-continuation` starts with three build items and requires one run to finish all, record verification/review evidence, and stop only at a ready G2.
 
@@ -167,7 +167,7 @@ npm view @felixdotgo/aidlc-kit dist-tags --json --registry https://registry.npmj
 ```
 
 - `npm view` `404` means unpublished (not proof of scope ownership); if the version exists, stop: npm versions cannot be overwritten. `npm whoami` `401`: sign in again.
-- `prepublishOnly` runs unit tests, lint, and the release check; answer npm's auth or two-factor prompt. A scoped package's first publish needs `--access public` ([npm scope docs](https://docs.npmjs.com/cli/v11/using-npm/scope)).
+- `prepublishOnly` runs unit tests, lint, and the release check; answer npm's auth or two-factor prompt. `npm publish --dry-run` runs the same checks and packs without uploading, so it is the rehearsal to run first. A scoped package's first publish needs `--access public` ([npm scope docs](https://docs.npmjs.com/cli/v11/using-npm/scope)).
 - Expect version `<version>`, tarball URL and integrity, and `latest` at `<version>`.
 - Git tags, GitHub releases, commits, and pushes need separate delivery authorisation.
 
