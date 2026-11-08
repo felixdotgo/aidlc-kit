@@ -149,7 +149,8 @@ test("corrupt record and dangling symlink fail closed", () => {
   const { root, taskId } = fixture();
   try {
     const path = runtime.loopRecordPath(root, taskId);
-    mkdirSync(join(root, ".agents/data/loop"), { recursive: true });
+    assert.equal(path, join(root, ".agents/data/tasks", taskId, "runtime", "run.json"));
+    mkdirSync(join(root, ".agents/data/tasks", taskId, "runtime"), { recursive: true });
     writeFileSync(path, "{");
     assert.throws(() => runtime.readLoopRecord(root, taskId), /Corrupt loop run record/);
     rmSync(path);

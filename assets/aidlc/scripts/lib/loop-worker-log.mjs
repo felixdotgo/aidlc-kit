@@ -16,6 +16,7 @@
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { taskRuntimeDir } from "./task-runtime.mjs";
 
 export const WORKER_LOG_MAX_BYTES = 5 * 1024 * 1024;
 export const WORKER_INDEX_MAX_ENTRIES = 500;
@@ -32,9 +33,8 @@ const refuseSymlink = (path) => {
 
 /** `.agents/data/tasks/<taskId>/runtime/workers`, refusing symlinked components. */
 export function workerLogDirectory(root, taskId) {
-  safeId(taskId, "task id");
-  let path = resolve(root);
-  for (const part of [".agents", "data", "tasks", taskId, "runtime", "workers"]) { path = join(path, part); refuseSymlink(path); }
+  const path = join(taskRuntimeDir(root, safeId(taskId, "task id")), "workers");
+  refuseSymlink(path);
   return path;
 }
 export const workerIndexPath = (root, taskId) => join(workerLogDirectory(root, taskId), "index.json");

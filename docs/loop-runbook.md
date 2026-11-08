@@ -102,6 +102,7 @@ echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-k
 
 - The daemon runs only loop-owned tasks, keeps polling after a gate or completion, and auto-resumes approved tasks; there is no `loop resume`.
 - Stuck: `aidlc-kit loop leases`, then [Loop leases, locks and claims](./troubleshooting.md#loop-leases-locks-and-claims).
+- Upgraded from a version that kept assignments, event logs, run records, and intake files under `.agents/data/loop/` or at the task directory root: the daemon moves them under `.agents/data/tasks/<id>/runtime/` when it starts; `aidlc-kit loop migrate-data --dry-run` previews, `aidlc-kit loop migrate-data` runs it by hand ([Command reference](./command-reference.md#loop)).
 - Status, stopping, resuming, the streaming log, and the dashboard: [Local loop walkthrough](./loop-local-run.md#start-the-daemon-and-add-tasks).
 
 ### Step 5 — Approve gates, or send feedback, from the trusted host terminal
@@ -160,7 +161,7 @@ npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start --mode fleet
 echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop intake --mode fleet
 ```
 
-- **Intake** creates the remote task under a short lead claim and writes `.agents/data/tasks/<task-id>/loop-intake.json` with `authority: "fleet"`; only those tasks are fleet loop-owned.
+- **Intake** creates the remote task under a short lead claim and writes `.agents/data/tasks/<task-id>/runtime/intake.json` with `authority: "fleet"`; only those tasks are fleet loop-owned.
 - **Each actionable task** runs the fleet supervisor bounded (claim the supervisor lease, fenced lead turns and worker dispatch, publish the gate snapshot, release); after reviewer approval the next poll re-claims it.
 - An unreachable service shows as `daemon_poll_error`; the daemon keeps running.
 

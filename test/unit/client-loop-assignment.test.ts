@@ -74,7 +74,8 @@ test("show reports an overdue claim as expired without writing; a mutation persi
   const { root, taskId } = fixture();
   try {
     const api = store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "worker-api", ownedPaths: ["src/api"], leaseMs: 1000 });
-    const path = join(root, ".agents/data/loop/assignments", `${taskId}.json`);
+    const path = store.assignmentPath(root, taskId);
+    assert.equal(path, join(root, ".agents/data/tasks", taskId, "runtime", "assignments.json"));
     const raw = JSON.parse(readFileSync(path, "utf8"));
     raw.assignments[0].leaseExpiresAt = new Date(Date.now() - 1000).toISOString();
     writeFileSync(path, JSON.stringify(raw));
@@ -94,8 +95,8 @@ test("show reports an overdue claim as expired without writing; a mutation persi
 test("assignment lock is a v2 holder; a stale v1 lock is reclaimed and a recent corrupt one fails closed", () => {
   const { root, taskId } = fixture();
   try {
-    const lock = join(root, ".agents/data/loop/assignments", `${taskId}.lock`);
-    mkdirSync(join(root, ".agents/data/loop/assignments"), { recursive: true });
+    const lock = store.assignmentPath(root, taskId, ".lock");
+    mkdirSync(join(root, ".agents/data/tasks", taskId, "runtime"), { recursive: true });
     writeFileSync(lock, JSON.stringify({ pid: 2147483647, token: "dead" }));
     store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "worker-api", ownedPaths: ["src/api"] });
     assert.equal(existsSync(lock), false, "the lock is released after the mutation");
@@ -140,15 +141,32 @@ test("expired claim becomes uncertain and needs explicit release before retry", 
 test("assignment command works on installed assets and symlink paths fail closed", () => {
   const { root, taskId } = fixture();
   try {
-    const path = join(root, ".agents/data/loop");
+    const path = join(root, ".agents/data/tasks", taskId);
     mkdirSync(path, { recursive: true });
-    symlinkSync(join(root, "missing"), join(path, "assignments"));
+    symlinkSync(join(root, "missing"), join(path, "runtime"));
     assert.throws(() => store.showLocalAssignments(root, taskId), /symlink/);
-    rmSync(join(path, "assignments"));
+    rmSync(join(path, "runtime"));
     const output = execFileSync(process.execPath, [join(scripts, "assignment.mjs"), "claim", taskId, "api", "--worker", "native-worker", "--paths", "src/api", "--root", root], { encoding: "utf8" });
     assert.equal(JSON.parse(output).result.itemId, "api");
     const result = spawnSync(process.execPath, [join(scripts, "assignment.mjs"), "claim", taskId, "api", "--worker", "other", "--paths", "src/api", "--root", root], { encoding: "utf8" });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /already leased/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a pre-runtime assignments file is read in place and moved under runtime/ by the first mutation", () => {
+  const { root, taskId } = fixture();
+  try {
+    const legacy = join(root, ".agents/data/loop/assignments", `${taskId}.json`);
+    const now = new Date().toISOString();
+    mkdirSync(join(root, ".agents/data/loop/assignments"), { recursive: true });
+    writeFileSync(legacy, JSON.stringify({ schemaVersion: 1, taskId, assignments: [{ id: "legacy-1", taskId, itemId: "api", workerId: "old", ownedPaths: ["src/api"], attempt: 1, state: "reported", leaseExpiresAt: now, createdAt: now, updatedAt: now }] }));
+    assert.equal(store.assignmentReadPath(root, taskId), legacy, "read falls back to the old location");
+    assert.equal(store.showLocalAssignments(root, taskId).assignments[0].id, "legacy-1");
+    assert.equal(existsSync(store.assignmentPath(root, taskId)), false, "a read never migrates");
+    assert.throws(() => store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "worker-api", ownedPaths: ["src/api"] }), /unresolved assignment/);
+    assert.equal(existsSync(legacy), false, "the mutation moved the record first");
+    assert.equal(JSON.parse(readFileSync(store.assignmentPath(root, taskId), "utf8")).assignments[0].id, "legacy-1");
+    assert.equal(store.assignmentReadPath(root, taskId), store.assignmentPath(root, taskId));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

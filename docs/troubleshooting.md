@@ -100,9 +100,9 @@ aidlc-kit loop leases --clear-stale                    # remove stale holders on
 
 | Word | Meaning | Local files under `.agents/data/` | Fleet (coordination service) |
 | --- | --- | --- | --- |
-| **lock** | Short mutex held only while a file is read-modified-written | `state/.aidlc-state.lock` (lifecycle state), `loop/assignments/<task>.lock` | — |
+| **lock** | Short mutex held only while a file is read-modified-written | `state/.aidlc-state.lock` (lifecycle state), `tasks/<task>/runtime/assignments.lock` | — |
 | **lease** | A process owns something: the loop daemon, or a task's loop run | `loop/daemon.lock`, `loop/<task>.lease` | supervisor lease, lead lease (`run_claim`) |
-| **claim** | A worker owns an item and its paths | `loop/assignments/<task>.json` (assignment records) | job claim (`job_*`) |
+| **claim** | A worker owns an item and its paths | `tasks/<task>/runtime/assignments.json` (assignment records; a `loop/assignments/<task>.json` left by an older version is read until migrated) | job claim (`job_*`) |
 
 Local holder files share one format:
 
@@ -145,10 +145,22 @@ Local holder files share one format:
 - Inspect with `aidlc-kit loop leases --task-id <task-id>` or `node .agents/aidlc/scripts/assignment.mjs show <task-id>`, plus the worker's branch or worktree. `assignment.mjs reconcile <task-id>` when the outcome is recorded; `assignment.mjs release <task-id> <assignment-id>` only after confirming the work is abandoned. Then re-activate the task (dashboard **resume** or `state.mjs task status <task-id> --status active`).
 - `Build item <item> requires an owned path scope for Docker dispatch` — an item reached build without `--owns`; fix the plan (`PARTITION_SCOPE`).
 
+## Task data still in the old place after an upgrade
+
+Versions before the `runtime/` layout kept per-task loop files under `.agents/data/loop/` (`assignments/<task>.json`, `events/<task>.jsonl`, `<task>.json` run record) and at the task directory root (`loop-intake.json`, `requirement.md`). Every reader still falls back to those locations, so nothing breaks, but the dashboard and diagnostics are simplest once they are moved:
+
+```bash
+aidlc-kit loop migrate-data --dry-run    # list what would move
+aidlc-kit loop migrate-data              # move it (also runs when the daemon starts)
+```
+
+- A file is moved only when `.agents/data/tasks/<id>/runtime/<name>` does not exist yet; an existing destination is reported `skipped` and the old file is left for inspection (`loop leases` lists such a leftover assignment file as `legacy`). Nothing is deleted or overwritten.
+- Leases, locks, and guards are not moved: locks expire on their own, leases belong to `.agents/data/loop/`. `<task>.supervisor.json` and `<task>.gate-receipt.json` stay there too.
+
 ## `Git worktree must be clean before handoff or integration`
 
 - The lead checkout must have no uncommitted or untracked changes before a worker handoff or integration. Commit, stash, or remove them, then re-activate the task.
-- Host-local loop files under `.agents/data/loop/` (daemon lock, `daemon.log`, `ui-events.jsonl`) are ignored.
+- Host-local loop files under `.agents/data/loop/` (daemon lock, `daemon.log`, `ui-events.jsonl`, leases) and per-task runtime data under `.agents/data/tasks/<id>/runtime/` (assignments, event history, run record, intake, worker logs) are ignored; the installer's `.agents/.gitignore` excludes both as well.
 
 ## Worker image missing at build dispatch
 
@@ -184,7 +196,7 @@ Local holder files share one format:
 
 ### Live log is empty or stuck on "connecting…"
 
-- The log reads `.agents/data/loop/events/<task-id>.jsonl`, falling back to the **fixed** global `.agents/data/loop/ui-events.jsonl`. The daemon writes only when `AIDLC_LOOP_EVENT_LOG` points at that exact path (set automatically); if the shell exports another path, unset it and restart the daemon.
+- The log reads `.agents/data/tasks/<task-id>/runtime/events.jsonl` (or, until `loop migrate-data` has moved it, `.agents/data/loop/events/<task-id>.jsonl` from an older version), falling back to the **fixed** global `.agents/data/loop/ui-events.jsonl`. The daemon writes only when `AIDLC_LOOP_EVENT_LOG` points at that exact path (set automatically); if the shell exports another path, unset it and restart the daemon.
 - The full log is on the **detail** page (`/tasks/<id>`); the side panel shows the last 20 important lines.
 - A stopped daemon produces no events; the header shows whether it runs, and `.agents/data/loop/daemon.log` has start-up errors.
 - Daemon-wide events (`daemon_poll`, written only when the actionable set or error state changes) are only in the global file. If **Important** shows little, switch to **All** or **Raw JSON**.

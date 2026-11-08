@@ -13,6 +13,10 @@
  *                 what it blocks, and how to clear it. Works with any loop mode.
  *                 `leases [task-id] [root] [--json] [--clear-stale]`; --clear-stale
  *                 removes only stale/old-corrupt lease, lock and guard files.
+ *   migrate-data  move per-task runtime files of older versions (loop assignments,
+ *                 events, run records, intake) under .agents/data/tasks/<id>/runtime/.
+ *                 `migrate-data [root] [--dry-run] [--json]`; idempotent, never
+ *                 overwrites or deletes (the daemon also runs it at start).
  * Dashboard JSON actions (fleet authority; local dashboards read local state in-process):
  *   tasks | task <id> | gate <id> | resume-task <id> | approve <id> (source on stdin,
  *   reviewer credential only from AIDLC_FLEET_REVIEWER_TOKEN of this process) |
@@ -34,6 +38,7 @@ import { streamLog } from "./lib/loop-stream.mjs";
 import * as localSupervisor from "./lib/loop-supervisor-run-local.mjs";
 import { buildWorkerImage, defaultWorkerImageTag, recordWorkerImage } from "./lib/loop-worker-image.mjs";
 import { formatLeases, runLeases } from "./lib/loop-leases.mjs";
+import { migrateAllTaskRuntime } from "./lib/task-runtime-migrate.mjs";
 import { formatLoopEnvReport, loadLoopEnv, publicReport } from "./lib/loop-env.mjs";
 import { callRemoteTool } from "./lib/remote-state-client.mjs";
 
@@ -67,6 +72,20 @@ async function runLeasesAction(argv) {
   else console.log(formatLeases(report));
 }
 
+/** `migrate-data [root] [--dry-run] [--json]`: move pre-runtime per-task files under `runtime/`. */
+function runMigrateDataAction(argv) {
+  const flagSet = new Set(argv.filter((value) => value.startsWith("--")));
+  for (const flag of flagSet) if (!["--json", "--dry-run"].includes(flag)) throw new Error(`Unknown migrate-data option: ${flag}`);
+  const [rootValue = ""] = argv.filter((value) => !value.startsWith("--"));
+  const migrateRoot = resolve(rootValue || ".");
+  const result = migrateAllTaskRuntime(migrateRoot, { dryRun: flagSet.has("--dry-run") });
+  if (flagSet.has("--json")) { print({ schemaVersion: 1, root: migrateRoot, ...result }); return; }
+  const verb = result.dryRun ? "would move" : "moved";
+  if (!result.entries.length) { console.log(`Nothing to migrate: every task runtime file is already under .agents/data/tasks/<id>/runtime/ (${migrateRoot})`); return; }
+  for (const entry of result.entries) console.log(`${entry.action === "skipped" ? "skipped" : verb}: ${entry.from} -> ${entry.to}${entry.reason ? ` (${entry.reason})` : ""}`);
+  console.log(`${result.dryRun ? "Would move" : "Moved"} ${result.entries.filter((entry) => entry.action !== "skipped").length} file(s), skipped ${result.skipped}.`);
+}
+
 /** `env [root] [--json]`: the local daemon environment report (no secret values). */
 function runEnvAction(argv) {
   const flagSet = new Set(argv.filter((value) => value.startsWith("--")));
@@ -85,6 +104,8 @@ try {
     runEnvAction(process.argv.slice(3));
   } else if (action === "leases") {
     await runLeasesAction(process.argv.slice(3));
+  } else if (action === "migrate-data") {
+    runMigrateDataAction(process.argv.slice(3));
   } else if (action === "worker-image") {
     // Build (or rebuild) a worker image without requiring loop configuration.
     const provider = providerArg || "opencode";
@@ -95,7 +116,7 @@ try {
     console.log(`Built worker image: ${image}`);
     console.log("Recorded worker image; the loop supervisor will use it automatically.");
   } else {
-    if (!ACTIONS.includes(action)) throw new Error("Expected loop start, status, intake, env, leases, or worker-image");
+    if (!ACTIONS.includes(action)) throw new Error("Expected loop start, status, intake, env, leases, migrate-data, or worker-image");
     const config = JSON.parse(readFileSync(join(root, ".agents", "config.json"), "utf8"));
     const mode = modeArg || config.loop?.mode || "off";
     if (!["local", "fleet"].includes(mode)) throw new Error("Loop mode is off; configure an enabled loop mode first");

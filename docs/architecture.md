@@ -80,11 +80,21 @@ Dispatch derives from task `nextAction` and dependency-ready work; assignment re
 
 | Variant | Authority | How it runs |
 | --- | --- | --- |
-| Interactive | Local `.agents/data/state/` | In the current agent conversation; native workers claim and checkpoint via assignment records in `.agents/data/loop/`. |
-
-Every variant is a wrapper around the same data: the canonical task state (including `baseCommit`/`finalCommit`, written by `state.mjs` locally and `remote-state.mjs` in fleet mode through the shared core) and the task directory `.agents/data/tasks/<id>/` — review artifacts at its root, operational runtime data under `runtime/` (worker container index and logs, identical for local and fleet workers; absent without the loop). `.agents/data/loop/` holds only daemon and process state.
+| Interactive | Local `.agents/data/state/` | In the current agent conversation; native workers claim and checkpoint via assignment records in the task's `runtime/` directory. |
 | Local | Local `.agents/data/state/` | Singleton daemon (`loop start` or `loop.sh up`): host-executed lead, Docker-isolated workers; gate approval only via trusted host terminal or dashboard. |
 | Fleet | Coordination service | Service owns supervisor leases, gate checkpoints, reviewer approval; Docker workers hold own credentials; Git uses fenced lead/worker claims with commit handoff. SQLite single-host, PostgreSQL multi-host. |
+
+Every variant is a wrapper around the same data: the canonical task state (including `baseCommit`/`finalCommit`, written by `state.mjs` locally and `remote-state.mjs` in fleet mode through the shared core) and the task directory `.agents/data/tasks/<id>/`. Review artifacts (`intent.md`, `design.md`, `workplan.md`) sit at its root; everything operational sits under `runtime/`, identical for the no-loop workflow, the local loop, and fleet (one helper, `lib/task-runtime.mjs`, names every path and refuses symlinked components):
+
+| `.agents/data/tasks/<id>/runtime/` | Written by | Purpose |
+| --- | --- | --- |
+| `assignments.json`, `assignments.lock` | `assignment.mjs` (interactive), local supervisor | worker claims (local only; fleet claims live in the service) |
+| `events.jsonl` (+ `.1`) | `loop-stream.mjs` | the task's event history (dashboard live log) |
+| `run.json` | `loop-runtime.mjs` | the loop run record (run id, agent, status, session, checkpoint) |
+| `intake.json`, `requirement.md` | loop intake | loop ownership and the requirement text |
+| `workers/index.json`, `workers/<assignment>.log` | local and fleet workers | container index and raw output |
+
+`.agents/data/loop/` holds only daemon and process state: `daemon.lock`, `daemon.log`, `daemon.stop`, the global `ui-events.jsonl`, `ui.json`/`cli.json`, task leases (`<id>.lease`), the lead checkpoint (`<id>.supervisor.json`) and gate receipt. Both directories are operational: never committed, handed off, or clean-checked, and the installer's `.agents/.gitignore` excludes them. Files written by versions before this layout are read in place and moved by `aidlc-kit loop migrate-data` or the daemon at start ([Command reference](./command-reference.md#loop)).
 
 **Agent support.**
 

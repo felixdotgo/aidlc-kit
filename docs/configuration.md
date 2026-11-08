@@ -96,7 +96,7 @@ The `loop` object selects the loop mode, agents, and limits, set through `init`,
 
 - `loop.mode` is `off`, `local`, or `fleet`; an absent `loop` means `off`. Selecting a mode starts nothing: run `./.agents/aidlc/scripts/loop.sh up` (or `aidlc-kit loop start`).
 - Both enabled modes run one lock-enforced multi-task daemon per project. It polls its authority — canonical local state, or the coordination service in `fleet` mode — and auto-picks every actionable **loop-owned** task without prompting for a requirement.
-- A task is loop-owned when created through loop intake (dashboard **New task**, `aidlc-kit loop intake`, `loop-entry.mjs intake`) or, locally, when it has a loop run record; fleet ownership is `.agents/data/tasks/<id>/loop-intake.json` with `authority: "fleet"`. Interactive-lead tasks are never picked up.
+- A task is loop-owned when created through loop intake (dashboard **New task**, `aidlc-kit loop intake`, `loop-entry.mjs intake`) or, locally, when it has a loop run record; fleet ownership is `.agents/data/tasks/<id>/runtime/intake.json` with `authority: "fleet"`. Interactive-lead tasks are never picked up.
 - `loop.agents` maps one lead and named workers to `codex`, `claude`, or `opencode`, independently of `mcp.providers`.
 
 ### Polling and limits

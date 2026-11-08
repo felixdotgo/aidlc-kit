@@ -93,7 +93,7 @@ test("two no-progress turns pause without inventing completion and resume from c
     assert.equal(stopped.status, "paused");
     assert.match(stopped.stopReason, /without observable progress/);
     assert.equal(runState(root, "task", "show", id).result.status, "paused");
-    const record = JSON.parse(readFileSync(join(root, ".agents/data/loop", `${id}.json`), "utf8"));
+    const record = JSON.parse(readFileSync(join(root, ".agents/data/tasks", id, "runtime", "run.json"), "utf8"));
     assert.equal(record.iteration, 2);
     const progress = async ({ onSessionId }: { onSessionId: (id: string) => void }) => {
       onSessionId("stall-session");
@@ -132,7 +132,7 @@ test("context failures before the driver pause safely and permit resume after re
       assert.equal(stopped.status, "paused");
       assert.match(stopped.stopReason, /context packet generation or validation failed/);
       assert.equal(calls, 0);
-      const recordPath = join(root, ".agents/data/loop", `${id}.json`);
+      const recordPath = join(root, ".agents/data/tasks", id, "runtime", "run.json");
       const pausedRecord = JSON.parse(readFileSync(recordPath, "utf8"));
       assert.equal(pausedRecord.sessionId, null);
       assert.equal(pausedRecord.pausedByLoop, true);
@@ -178,7 +178,7 @@ test("maxTurns bounds each supervised run, not the task lifetime", { skip: proce
     assert.equal(second.status, "paused");
     assert.match(second.stopReason, /turn limit reached/);
     assert.equal(calls, 4);
-    const record = JSON.parse(readFileSync(join(root, ".agents/data/loop", `${id}.json`), "utf8"));
+    const record = JSON.parse(readFileSync(join(root, ".agents/data/tasks", id, "runtime", "run.json"), "utf8"));
     assert.equal(record.iteration, 4);
   });
 });

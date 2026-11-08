@@ -3,7 +3,8 @@ import { lstatSync, statSync, type Stats } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readRange } from "./files.js";
 import { sendJson } from "./http.js";
-import { eventsLogPath, loopDataDir, TASK_ID_PATTERN, taskEventsDir, taskEventsLogPath, type UiOptions } from "./options.js";
+import { join } from "node:path";
+import { eventsLogPath, legacyTaskEventsDir, legacyTaskEventsLogPath, loopDataDir, TASK_ID_PATTERN, taskEventsLogPath, taskRuntimeDir, tasksDataDir, type UiOptions } from "./options.js";
 
 /** On a fresh connection the SSE stream replays at most this many lines. */
 export const SSE_REPLAY_LINES = 200;
@@ -94,11 +95,19 @@ const globalLogTicker = (root: string, taskFilter: string, lastEventId: string, 
 const realDirectory = (path: string): boolean => { try { return lstatSync(path).isDirectory(); } catch { return false; } };
 const regularFile = (path: string): Stats | undefined => { try { const stat = lstatSync(path); return stat.isFile() ? stat : undefined; } catch { return undefined; } };
 
-/** The per-task log files, refusing symlinked directories or files (like the writer does). */
+/** The per-task log files, refusing symlinked directories or files (like the
+ * writer does). The task's `runtime/events.jsonl` wins when it (or its `.1`
+ * generation) exists; otherwise the pre-runtime `.agents/data/loop/events/`
+ * copy is read until `loop migrate-data` has moved it. */
 const taskLogFiles = (root: string, taskId: string): { path: string; rotated: string; stat: (path: string) => Stats | undefined } => {
-  const path = taskEventsLogPath(root, taskId);
-  const stat = (file: string): Stats | undefined => realDirectory(loopDataDir(root)) && realDirectory(taskEventsDir(root)) ? regularFile(file) : undefined;
-  return { path, rotated: `${path}.1`, stat };
+  const runtime = taskRuntimeDir(root, taskId);
+  const runtimeDirs = (): boolean => realDirectory(tasksDataDir(root)) && realDirectory(join(tasksDataDir(root), taskId)) && realDirectory(runtime);
+  const legacyDirs = (): boolean => realDirectory(loopDataDir(root)) && realDirectory(legacyTaskEventsDir(root));
+  const current = taskEventsLogPath(root, taskId);
+  if (runtimeDirs() && (regularFile(current) || regularFile(`${current}.1`))) return { path: current, rotated: `${current}.1`, stat: (file) => runtimeDirs() ? regularFile(file) : undefined };
+  const legacy = legacyTaskEventsLogPath(root, taskId);
+  if (legacyDirs() && (regularFile(legacy) || regularFile(`${legacy}.1`))) return { path: legacy, rotated: `${legacy}.1`, stat: (file) => legacyDirs() ? regularFile(file) : undefined };
+  return { path: current, rotated: `${current}.1`, stat: (file) => runtimeDirs() ? regularFile(file) : undefined };
 };
 
 /**

@@ -113,7 +113,7 @@ node dist/services/aidlc-coordination/src/fleet-run.mjs worker
 
 ### Unattended operation with the loop daemon
 
-`aidlc-kit loop start --mode fleet` on the lead machine replaces a hand-run supervisor: it runs each fleet loop-owned task until its next gate, releases the supervisor lease, and re-claims after reviewer approval. It takes `loop.limits` and `loop.pollMs` as defaults for the `AIDLC_FLEET_*` limits and never passes `AIDLC_FLEET_REVIEWER_TOKEN` to a lead or worker process. Steps: [loop runbook](./loop-runbook.md#fleet-multi-machine).
+`aidlc-kit loop start --mode fleet` on the lead machine replaces a hand-run supervisor: it runs each fleet loop-owned task until its next gate, releases the supervisor lease, and re-claims after reviewer approval. It takes `loop.limits` and `loop.pollMs` as defaults for the `AIDLC_FLEET_*` limits and never passes `AIDLC_FLEET_REVIEWER_TOKEN` to a lead or worker process. Steps: [loop runbook](./loop-runbook.md#fleet-multi-machine). On the lead machine the task's event history, run record, and intake files live under `.agents/data/tasks/<task-id>/runtime/` exactly as in local mode; worker machines write only `runtime/workers/` there. Claims are service-side, so no `assignments.json` exists in fleet mode.
 
 ## Shared coordination board
 

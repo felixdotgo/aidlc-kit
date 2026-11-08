@@ -28,6 +28,7 @@ import { readLoopRecord, validateLimits } from "./loop-runtime.mjs";
 import { createIsolatedLocalSupervisor } from "./loop-supervisor-run-local.mjs";
 import { explainFleetConflict } from "./loop-holder.mjs";
 import { loadState, loadTask, nextAction } from "./store.mjs";
+import { resolveTaskRuntimeRead, taskRuntimeDir } from "./task-runtime.mjs";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const byUpdatedAt = (a, b) => String(a.updatedAt ?? "").localeCompare(String(b.updatedAt ?? "")) || a.id.localeCompare(b.id);
@@ -36,7 +37,7 @@ const tasksDir = (root) => join(root, ".agents", "data", "tasks");
 /** The intake record written by `prepareLoopIntake`, or null. */
 export function readIntakeRecord(root, taskId) {
   if (!ID.test(taskId ?? "")) return null;
-  const path = join(tasksDir(root), taskId, "loop-intake.json");
+  const path = resolveTaskRuntimeRead(root, taskId, "intake.json");
   try { if (!lstatSync(path).isFile()) return null; return JSON.parse(readFileSync(path, "utf8")); }
   catch (error) { if (error?.code === "ENOENT") return null; throw error; }
 }
@@ -59,12 +60,14 @@ const uniqueTaskId = (root, slug, takenIds) => {
 
 /** Run intake and roll back the intake files this call created when no task came into being. */
 const guardedIntake = async (root, taskId, readTask, body) => {
-  const files = [join(tasksDir(root), taskId, "loop-intake.json"), join(tasksDir(root), taskId, "requirement.md")];
+  const files = [resolveTaskRuntimeRead(root, taskId, "intake.json"), resolveTaskRuntimeRead(root, taskId, "requirement.md")];
   const preexisting = files.map((path) => existsSync(path));
+  const runtimeExisted = existsSync(taskRuntimeDir(root, taskId));
   try { return await body(); }
   catch (error) {
     if (!(await readTask(taskId))) {
       files.forEach((path, index) => { if (!preexisting[index]) { try { unlinkSync(path); } catch (cleanupError) { if (cleanupError?.code !== "ENOENT") throw cleanupError; } } });
+      if (!runtimeExisted) { try { rmdirSync(taskRuntimeDir(root, taskId)); } catch { /* not empty or already gone */ } }
       try { rmdirSync(join(tasksDir(root), taskId)); } catch { /* not empty or already gone */ }
     }
     throw error;

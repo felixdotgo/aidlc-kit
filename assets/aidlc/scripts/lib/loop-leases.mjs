@@ -5,7 +5,8 @@
 // lifecycle state lock (that lock reclaims itself).
 import { lstatSync, readdirSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { ASSIGNMENT_STATE_LABELS, assignmentRemedy, showLocalAssignments } from "./assignment-store.mjs";
+import { ASSIGNMENT_STATE_LABELS, assignmentReadPath, assignmentRemedy, showLocalAssignments } from "./assignment-store.mjs";
+import { isRegularFile, legacyTaskRuntimePath, taskRuntimePath } from "./task-runtime.mjs";
 import { CLEAR_STALE_COMMAND, clearStaleHolder, explainHolder, formatAge, GUARD_STALE_MS, LEASE_TTL_MS, LOCK_TTL_MS, pidAlive, readGuard, readHolder } from "./loop-holder.mjs";
 
 export const LEASES_SCHEMA_VERSION = 1;
@@ -14,6 +15,8 @@ const STATE_LOCK_STALE_MS = 30000;
 
 const loopDir = (root) => join(root, ".agents", "data", "loop");
 const assignmentsDir = (root) => join(loopDir(root), "assignments");
+const tasksDir = (root) => join(root, ".agents", "data", "tasks");
+const isDirectory = (path) => { try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); } catch { return false; } };
 const listDir = (dir) => { try { return readdirSync(dir).sort(); } catch (error) { if (error?.code === "ENOENT") return []; throw error; } };
 const isFile = (path) => { try { const stat = lstatSync(path); return stat.isFile() && !stat.isSymbolicLink(); } catch { return false; } };
 
@@ -82,16 +85,16 @@ function claimState(effective) {
 
 function collectClaims(root, taskId) {
   const out = [];
-  let value;
-  try { value = showLocalAssignments(root, taskId); }
+  let value, recordPath;
+  try { recordPath = assignmentReadPath(root, taskId); value = showLocalAssignments(root, taskId); }
   catch (error) {
-    return [{ category: "claim", kind: "claim", scope: `assignments:${taskId}`, path: join(assignmentsDir(root), `${taskId}.json`), state: "corrupt", reason: error.message, holder: null, heartbeatAt: null, expiresAt: null, blocks: `every assignment command for ${taskId}`, remedy: "Inspect the file by hand; leases never edits assignment records", clearable: false, ttlMs: null }];
+    return [{ category: "claim", kind: "claim", scope: `assignments:${taskId}`, path: recordPath ?? join(assignmentsDir(root), `${taskId}.json`), state: "corrupt", reason: error.message, holder: null, heartbeatAt: null, expiresAt: null, blocks: `every assignment command for ${taskId}`, remedy: "Inspect the file by hand; leases never edits assignment records", clearable: false, ttlMs: null }];
   }
   for (const assignment of value.assignments) {
     if (!["leased", "reported", "uncertain"].includes(assignment.state)) continue;
     const effective = assignment.effectiveState;
     out.push({
-      category: "claim", kind: "claim", scope: `item:${taskId}/${assignment.itemId}`, path: join(assignmentsDir(root), `${taskId}.json`),
+      category: "claim", kind: "claim", scope: `item:${taskId}/${assignment.itemId}`, path: recordPath,
       state: claimState(effective), reason: ASSIGNMENT_STATE_LABELS[effective] ?? effective,
       holder: { worker: assignment.workerId, assignmentId: assignment.id, attempt: assignment.attempt, ownedPaths: assignment.ownedPaths, persistedState: assignment.state, effectiveState: effective },
       heartbeatAt: assignment.updatedAt ?? null, expiresAt: assignment.leaseExpiresAt,
@@ -137,17 +140,35 @@ export function collectLocalLeases(rootInput, { taskId } = {}) {
     }
   }
   const taskIds = new Set();
+  const assignmentLock = (path, id) => {
+    const entry = readHolder(path, { ttlMs: LOCK_TTL_MS });
+    entries.push(holderEntry({ category: "assignment-lock", kind: "lock", scope: `assignments:${id}`, entry, blocks: `assignment claim/report/reconcile/release for ${id} (they wait up to 5s)`, liveRemedy: "Short-lived; wait for the assignment command to finish", ttlMs: LOCK_TTL_MS }));
+  };
+  // Current layout: .agents/data/tasks/<id>/runtime/{assignments.json,assignments.lock}.
+  for (const id of listDir(tasksDir(root))) {
+    if (!ID.test(id) || !wanted(id) || !isDirectory(join(tasksDir(root), id))) continue;
+    let lock, guard, record;
+    try { lock = taskRuntimePath(root, id, "assignments.lock"); guard = `${lock}.guard`; record = taskRuntimePath(root, id, "assignments.json"); } catch { continue; }
+    if (isFile(lock)) assignmentLock(lock, id);
+    const guardFound = isFile(guard) ? guardEntry(guard, `assignments:${id}`) : null;
+    if (guardFound) entries.push(guardFound);
+    if (isFile(record)) taskIds.add(id);
+  }
+  // Pre-runtime layout (.agents/data/loop/assignments/<id>.*): a record still
+  // here is read as that task's claims until it is migrated; its lock files
+  // are short-lived leftovers that `--clear-stale` may remove.
   for (const name of listDir(assignmentsDir(root))) {
     const path = join(assignmentsDir(root), name);
     if (!isFile(path)) continue;
     let match;
-    if ((match = /^(.+)\.lock$/.exec(name)) && ID.test(match[1]) && wanted(match[1])) {
-      const entry = readHolder(path, { ttlMs: LOCK_TTL_MS });
-      entries.push(holderEntry({ category: "assignment-lock", kind: "lock", scope: `assignments:${match[1]}`, entry, blocks: `assignment claim/report/reconcile/release for ${match[1]} (they wait up to 5s)`, liveRemedy: "Short-lived; wait for the assignment command to finish", ttlMs: LOCK_TTL_MS }));
-    } else if ((match = /^(.+)\.lock\.guard$/.exec(name)) && ID.test(match[1]) && wanted(match[1])) {
+    if ((match = /^(.+)\.lock$/.exec(name)) && ID.test(match[1]) && wanted(match[1])) assignmentLock(path, match[1]);
+    else if ((match = /^(.+)\.lock\.guard$/.exec(name)) && ID.test(match[1]) && wanted(match[1])) {
       const guard = guardEntry(path, `assignments:${match[1]}`);
       if (guard) entries.push(guard);
-    } else if ((match = /^(.+)\.json$/.exec(name)) && ID.test(match[1]) && wanted(match[1])) taskIds.add(match[1]);
+    } else if ((match = /^(.+)\.json$/.exec(name)) && ID.test(match[1]) && wanted(match[1])) {
+      if (taskIds.has(match[1])) entries.push({ category: "legacy", kind: "leftover", scope: `assignments:${match[1]} (pre-runtime copy)`, path, state: "stale", reason: "superseded by the runtime/ record; left by a previous aidlc-kit version", holder: null, heartbeatAt: null, expiresAt: null, blocks: "nothing (the runtime/ record is authoritative)", remedy: "Inspect and delete by hand, or run: node .agents/aidlc/scripts/loop-entry.mjs migrate-data --dry-run --json", clearable: false, ttlMs: null });
+      else taskIds.add(match[1]);
+    }
   }
   for (const id of taskIds) entries.push(...collectClaims(root, id));
   const stateLock = stateLockEntry(root);

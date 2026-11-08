@@ -47,7 +47,7 @@ Numbered decisions that constrain future changes across modules or releases (run
 ## D8. Assignment records are operational metadata
 
 - **Context:** Worker assignment state must not become a second lifecycle authority.
-- **Decision:** Assignment records (`.agents/data/loop/assignments/`) are operational metadata; canonical task state is the authority.
+- **Decision:** Assignment records (`.agents/data/tasks/<id>/runtime/assignments.json`) are operational metadata; canonical task state is the authority.
 - **Consequences:** Assignment corruption or loss does not invalidate the task; `assignment.mjs reconcile` is required before dispatch.
 
 ## D9. Configured commands as executable + args arrays

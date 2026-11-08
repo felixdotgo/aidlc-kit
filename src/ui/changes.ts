@@ -244,10 +244,10 @@ const commitItem = async (root: string, itemId: string, recorded: string, flags:
 
 interface AssignmentRecord { itemId?: unknown; workerId?: unknown; state?: unknown; attempt?: unknown; commit?: unknown; baseCommit?: unknown; integrationCommit?: unknown }
 
-/** Local assignment records (read-only). Refuses symlinked path components like `assignmentPath`. */
-const readAssignments = (root: string, taskId: string): { records: AssignmentRecord[] } | { error: string } | undefined => {
+/** Walk `parts` under `root`, refusing symlinked components; `undefined` when a component is missing. */
+const safeFile = (root: string, parts: string[]): { path: string } | { error: string } | undefined => {
   let path = resolve(root);
-  for (const part of [".agents", "data", "loop", "assignments", `${taskId}.json`]) {
+  for (const part of parts) {
     path = join(path, part);
     try { if (lstatSync(path).isSymbolicLink()) return { error: "Assignment records path crosses a symlink; ignored" }; }
     catch (error) {
@@ -255,6 +255,17 @@ const readAssignments = (root: string, taskId: string): { records: AssignmentRec
       return { error: "Assignment records are unreadable" };
     }
   }
+  return { path };
+};
+
+/** Local assignment records (read-only): the task's `runtime/assignments.json`,
+ * else the pre-runtime `.agents/data/loop/assignments/<task>.json` until
+ * `loop migrate-data` has moved it. Refuses symlinked path components like `assignmentPath`. */
+const readAssignments = (root: string, taskId: string): { records: AssignmentRecord[] } | { error: string } | undefined => {
+  const found = safeFile(root, [".agents", "data", "tasks", taskId, "runtime", "assignments.json"]) ?? safeFile(root, [".agents", "data", "loop", "assignments", `${taskId}.json`]);
+  if (!found) return undefined;
+  if ("error" in found) return found;
+  const { path } = found;
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as { taskId?: unknown; assignments?: unknown };
     if (value?.taskId !== taskId || !Array.isArray(value.assignments)) return { error: "Assignment records are malformed" };

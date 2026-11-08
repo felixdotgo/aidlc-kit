@@ -13,32 +13,36 @@ import { assertKnownOptions, DOCTOR_FLAGS, flags, MCP_FLAGS, rootArg, STATUS_FLA
 import { loopDown, loopEnv, loopOverview, loopStop, loopUp, serveDashboard } from "./loop-launcher.js";
 import { confirmGeneral, mcpSetupSelections } from "./prompt.js";
 
-/** `loop leases [--task-id ID] [--root PATH] [--json] [--clear-stale]`. */
-const loopLeasesArgs = (args: string[]): { root: string; argv: string[] } => {
+/** `loop leases [--task-id ID] [--root PATH] [--json] [--clear-stale]` and
+ * `loop migrate-data [--root PATH] [--json] [--dry-run]`: forwarded to
+ * loop-entry.mjs as `<action> [task-id] <root> [switches]`. */
+const loopDiagnosticArgs = (action: "leases" | "migrate-data", args: string[]): { root: string; argv: string[] } => {
+  const allowedSwitches = action === "leases" ? ["--json", "--clear-stale"] : ["--json", "--dry-run"];
+  const allowedValues = action === "leases" ? ["--task-id", "--root"] : ["--root"];
   const parsed = new Map<string, string>();
   const switches = new Set<string>();
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index] ?? "";
-    if (key === "--json" || key === "--clear-stale") { if (switches.has(key)) throw new Error("Invalid or duplicate loop option"); switches.add(key); continue; }
+    if (allowedSwitches.includes(key)) { if (switches.has(key)) throw new Error("Invalid or duplicate loop option"); switches.add(key); continue; }
     const entry = args[index + 1];
-    if (!["--task-id", "--root"].includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
+    if (!allowedValues.includes(key) || !entry || entry.startsWith("--") || parsed.has(key)) throw new Error("Invalid or duplicate loop option");
     parsed.set(key, entry);
     index += 1;
   }
   const root = resolve(parsed.get("--root") ?? ".");
-  return { root, argv: ["leases", parsed.get("--task-id") ?? "", root, ...switches] };
+  return { root, argv: action === "leases" ? ["leases", parsed.get("--task-id") ?? "", root, ...switches] : ["migrate-data", root, ...switches] };
 };
 
 export const runLoopCommand = async (args: string[]): Promise<void> => {
   const action = args[0] ?? "";
-  if (!["up", "down", "stop", "env", "start", "status", "resume", "intake", "worker-image", "leases"].includes(action)) throw new Error("Expected loop up, down, stop, env, start, status, intake, leases, or worker-image");
+  if (!["up", "down", "stop", "env", "start", "status", "resume", "intake", "worker-image", "leases", "migrate-data"].includes(action)) throw new Error("Expected loop up, down, stop, env, start, status, intake, leases, migrate-data, or worker-image");
   if (action === "up") return loopUp(args.slice(1));
   if (action === "down") return loopDown(args.slice(1));
   if (action === "stop") return loopStop(args.slice(1));
   if (action === "env") return loopEnv(args.slice(1));
   if (action === "status" && !args.includes("--task-id")) return loopOverview(args.slice(1));
-  if (action === "leases") {
-    const { root, argv } = loopLeasesArgs(args.slice(1));
+  if (action === "leases" || action === "migrate-data") {
+    const { root, argv } = loopDiagnosticArgs(action, args.slice(1));
     const child = spawn(process.execPath, [join(root, ".agents", "aidlc", "scripts", "loop-entry.mjs"), ...argv], { stdio: "inherit" });
     const code = await new Promise<number | null>((resolveExit, rejectExit) => { child.once("error", rejectExit); child.once("exit", (exitCode) => resolveExit(exitCode)); });
     if (code !== 0) process.exitCode = code ?? 1;

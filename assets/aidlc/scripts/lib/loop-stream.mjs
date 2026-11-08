@@ -1,15 +1,17 @@
 import { appendFileSync, lstatSync, mkdirSync, renameSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, resolve } from "node:path";
+import { isTaskId, taskRuntimePath } from "./task-runtime.mjs";
+import { migrateTaskRuntime } from "./task-runtime-migrate.mjs";
 
 /** The event-log sidecar rotates to `<path>.1` (one generation kept) once it
  * reaches this size, so a 24/7 daemon cannot grow it without bound. */
 export const EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024;
-/** Per-task history files (`<log dir>/events/<taskId>.jsonl`) rotate the same
- * way at a smaller bound, since one exists for every task. */
+/** Per-task history files (`.agents/data/tasks/<taskId>/runtime/events.jsonl`)
+ * rotate the same way at a smaller bound, since one exists for every task. */
 export const TASK_EVENT_LOG_MAX_BYTES = 1024 * 1024;
-const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 let preparedDirectory;
+const migratedTasks = new Set();
 
 const rotate = (path, limit) => {
   try { if (statSync(path).size >= limit) renameSync(path, `${path}.1`); }
@@ -24,19 +26,33 @@ const safeEntry = (path, directory) => {
   } catch (error) { if (error?.code === "ENOENT") return true; throw error; }
 };
 
-/** Path of the per-task history file for `taskId` next to the global event log
- * `logPath`, or null when the id is not a canonical task id. */
-export const taskEventLogPath = (logPath, taskId) =>
-  typeof logPath === "string" && logPath && typeof taskId === "string" && TASK_ID.test(taskId) ? join(dirname(logPath), "events", `${taskId}.jsonl`) : null;
+/** Path of the per-task history file (`.agents/data/tasks/<taskId>/runtime/events.jsonl`),
+ * or null when `root` is not a string or the id is not a canonical task id. */
+export const taskEventLogPath = (root, taskId) => {
+  if (typeof root !== "string" || !root || !isTaskId(taskId)) return null;
+  try { return taskRuntimePath(root, taskId, "events.jsonl"); } catch { return null; }
+};
 
-/** Append one line to a task's history. Refuses symlinked (or non-regular) log
- * directories and files so a planted link cannot redirect the write. */
-function appendTaskEventLog(logPath, taskId, line) {
-  const path = taskEventLogPath(logPath, taskId);
+/** The project root a global event sidecar belongs to: the sidecar is always
+ * `<root>/.agents/data/loop/<file>`; any other location has no task history. */
+export const loopRootFromEventLog = (logPath) => {
+  if (typeof logPath !== "string" || !logPath) return null;
+  const loopDir = dirname(resolve(logPath));
+  const data = dirname(loopDir), agents = dirname(data);
+  return basename(loopDir) === "loop" && basename(data) === "data" && basename(agents) === ".agents" ? dirname(agents) : null;
+};
+
+/** Append one line to a task's history. Refuses symlinked (or non-regular)
+ * directories and files so a planted link cannot redirect the write. A
+ * pre-runtime `.agents/data/loop/events/<taskId>.jsonl` is moved under
+ * `runtime/` before the first append of this process. */
+function appendTaskEventLog(root, taskId, line) {
+  const path = taskEventLogPath(root, taskId);
   if (!path) return;
+  if (!migratedTasks.has(path)) { migratedTasks.add(path); migrateTaskRuntime(root, taskId, { names: ["events.jsonl", "events.jsonl.1"] }); }
   const directory = dirname(path);
   if (!safeEntry(dirname(directory), true) || !safeEntry(directory, true)) return;
-  mkdirSync(directory, { recursive: true });
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (!safeEntry(directory, true) || !safeEntry(path, false) || !safeEntry(`${path}.1`, false)) return;
   rotate(path, TASK_EVENT_LOG_MAX_BYTES);
   appendFileSync(path, line);
@@ -57,7 +73,7 @@ function appendEventLog(event) {
     line = `${JSON.stringify(record)}\n`;
     appendFileSync(path, line);
   } catch { /* best-effort: never break the loop on a log write failure */ }
-  try { if (line && typeof event?.taskId === "string") appendTaskEventLog(path, event.taskId, line); }
+  try { if (line && typeof event?.taskId === "string") appendTaskEventLog(loopRootFromEventLog(path), event.taskId, line); }
   catch { /* best-effort, independently of the global log */ }
 }
 

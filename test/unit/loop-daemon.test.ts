@@ -138,6 +138,7 @@ test("actionableTasks only picks loop-owned tasks (intake marker or loop record)
   const root = mkdtempSync(join(tmpdir(), "aidlc-daemon-owned-"));
   try {
     applyPlan(root, planInit({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false }));
+    // An intake record from a version before the runtime/ layout still marks the task loop-owned.
     mkdirSync(join(root, ".agents/data/tasks/from-intake"), { recursive: true });
     writeFileSync(join(root, ".agents/data/tasks/from-intake/loop-intake.json"), "{}");
     const state = { tasks: {
@@ -330,7 +331,7 @@ test("fleet authority lists only actionable fleet-owned tasks and runs bounded s
   const root = mkdtempSync(join(tmpdir(), "aidlc-fleet-authority-"));
   try {
     applyPlan(root, planInit({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false }));
-    const own = (id: string, authority: string) => { mkdirSync(join(root, ".agents/data/tasks", id), { recursive: true }); writeFileSync(join(root, ".agents/data/tasks", id, "loop-intake.json"), JSON.stringify({ schemaVersion: 1, taskId: id, authority, requirementHash: "x" })); };
+    const own = (id: string, authority: string) => { mkdirSync(join(root, ".agents/data/tasks", id, "runtime"), { recursive: true }); writeFileSync(join(root, ".agents/data/tasks", id, "runtime", "intake.json"), JSON.stringify({ schemaVersion: 1, taskId: id, authority, requirementHash: "x" })); };
     own("fleet-a", "fleet"); own("fleet-b", "fleet"); own("local-c", "local"); own("fleet-paused", "fleet");
     const mk = (id: string, status: string, updatedAt: string) => ({ id, title: id, type: "infra", phase: "clarify", gate: "G0_confirm", status, language: "en", risk: "normal", areas: ["root"], branch: "—", artifacts: {}, decisions: [], tasks: [], evidence: [], createdAt: "2026-01-01T00:00:00.000Z", updatedAt });
     const tasks = { "fleet-a": mk("fleet-a", "active", "2026-01-02T00:00:00.000Z"), "fleet-b": mk("fleet-b", "active", "2026-01-01T00:00:00.000Z"), "local-c": mk("local-c", "active", "2026-01-01T00:00:00.000Z"), "fleet-paused": mk("fleet-paused", "paused", "2026-01-01T00:00:00.000Z"), foreign: mk("foreign", "active", "2026-01-01T00:00:00.000Z") };
@@ -361,7 +362,8 @@ test("fleet authority feedback re-activates a gated task under a lead claim with
   try {
     applyPlan(root, planInit({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false }));
     mkdirSync(join(root, ".agents/data/tasks/fleet-a"), { recursive: true });
-    writeFileSync(join(root, ".agents/data/tasks/fleet-a/loop-intake.json"), JSON.stringify({ schemaVersion: 1, taskId: "fleet-a", authority: "fleet", requirementHash: "x" }));
+    mkdirSync(join(root, ".agents/data/tasks/fleet-a/runtime"), { recursive: true });
+    writeFileSync(join(root, ".agents/data/tasks/fleet-a/runtime/intake.json"), JSON.stringify({ schemaVersion: 1, taskId: "fleet-a", authority: "fleet", requirementHash: "x" }));
     // Record what the lead-side lifecycle CLI receives instead of talking to a coordination service.
     const record = join(root, "remote-state-calls.json");
     writeFileSync(join(root, ".agents/aidlc/scripts/remote-state.mjs"), `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env })); console.log(JSON.stringify({ ok: true, result: { id: "fleet-a", status: "active" } }));\n`);

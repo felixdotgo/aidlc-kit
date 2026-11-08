@@ -508,7 +508,8 @@ test("new task creates a loop-owned task through intake and reuses the live daem
     assert.equal(created.title, "Add login retry");
     assert.deepEqual(created.daemon, { pid: process.pid, started: false });
     assert.equal(fixture.state("task", "show", "add-login-retry").result.status, "active");
-    assert.ok(readFileSync(join(fixture.root, ".agents/data/tasks/add-login-retry/loop-intake.json"), "utf8").includes("\"authority\":\"local\""));
+    assert.ok(readFileSync(join(fixture.root, ".agents/data/tasks/add-login-retry/runtime/intake.json"), "utf8").includes("\"authority\":\"local\""));
+    assert.equal(readFileSync(join(fixture.root, ".agents/data/tasks/add-login-retry/runtime/requirement.md"), "utf8"), "Add login retry\nwith backoff");
 
     // A second loop task is allowed while the first (loop-owned) one is actionable, with a de-duplicated id.
     const second = await fetch(`${fixture.base}/api/loop/start`, { method: "POST", headers, body: JSON.stringify({ requirement: "Add login retry" }) });
@@ -523,11 +524,12 @@ test("new task creates a loop-owned task through intake and reuses the live daem
     const { existsSync } = await import("node:fs");
     assert.equal(existsSync(join(fixture.root, ".agents/data/tasks/another-thing")), false);
 
-    // A create failure after intake files are written rolls them back (no orphan loop-intake.json).
+    // A create failure after intake files are written rolls them back (no orphan runtime/intake.json or task directory).
     const { execFileSync } = await import("node:child_process");
     fixture.state("task", "status", "manual-work", "--status", "paused", "--mode", "audited", "--reason", "test", "--source", "test");
     assert.throws(() => execFileSync(process.execPath, [join(fixture.root, ".agents/aidlc/scripts/loop-entry.mjs"), "intake", "Manual-Work", fixture.root], { input: "Collides by case", stdio: ["pipe", "pipe", "pipe"] }), /collides case-insensitively/);
-    assert.equal(existsSync(join(fixture.root, ".agents/data/tasks/Manual-Work/loop-intake.json")), false);
+    assert.equal(existsSync(join(fixture.root, ".agents/data/tasks/Manual-Work/runtime/intake.json")), false);
+    assert.equal(existsSync(join(fixture.root, ".agents/data/tasks/Manual-Work")), false);
   } finally {
     await fixture.close();
   }
@@ -734,8 +736,9 @@ test("SSE streams a task's own event log: replays .1 then the current file, resu
   const fixture = await startFixture(makeTask());
   try {
     const loop = join(fixture.root, ".agents", "data", "loop");
-    const events = join(loop, "events");
-    const path = join(events, "task-a.jsonl");
+    const events = join(fixture.root, ".agents", "data", "tasks", "task-a", "runtime");
+    const path = join(events, "events.jsonl");
+    mkdirSync(loop, { recursive: true });
     mkdirSync(events, { recursive: true });
     // The global log also has task-a events: the per-task file wins when it exists.
     writeFileSync(join(loop, "ui-events.jsonl"), jsonl("global"));
@@ -816,16 +819,27 @@ test("SSE without a per-task log filters the global log; bad task ids and symlin
     const outside = mkdtempSync(join(tmpdir(), "aidlc-events-outside-"));
     try {
       writeFileSync(join(outside, "secret.jsonl"), jsonl("secret"));
-      mkdirSync(join(loop, "events"));
-      symlinkSync(join(outside, "secret.jsonl"), join(loop, "events", "task-a.jsonl"));
+      const runtime = join(fixture.root, ".agents", "data", "tasks", "task-a", "runtime");
+      mkdirSync(runtime, { recursive: true });
+      symlinkSync(join(outside, "secret.jsonl"), join(runtime, "events.jsonl"));
       const linkedFile = await readSse(`${fixture.base}/api/events?task-id=task-a`, (text) => sseNumbers(text).length >= 1, {}, 1500);
       assert.deepEqual(sseNumbers(linkedFile), ["global"]);
-      rmSync(join(loop, "events"), { recursive: true });
-      // A symlinked events directory is refused as well.
-      writeFileSync(join(outside, "task-a.jsonl"), jsonl("secret"));
-      symlinkSync(outside, join(loop, "events"));
+      rmSync(runtime, { recursive: true });
+      // A symlinked runtime directory is refused as well.
+      writeFileSync(join(outside, "events.jsonl"), jsonl("secret"));
+      symlinkSync(outside, runtime);
       const linkedDir = await readSse(`${fixture.base}/api/events?task-id=task-a`, (text) => sseNumbers(text).length >= 1, {}, 1500);
       assert.deepEqual(sseNumbers(linkedDir), ["global"]);
+      rmSync(runtime);
+      // The pre-runtime location is still read (and a planted link there refused too).
+      mkdirSync(join(loop, "events"), { recursive: true });
+      writeFileSync(join(loop, "events", "task-a.jsonl"), jsonl("legacy"));
+      const legacy = await readSse(`${fixture.base}/api/events?task-id=task-a`, (text) => sseNumbers(text).length >= 1, {}, 1500);
+      assert.deepEqual(sseNumbers(legacy), ["legacy"]);
+      rmSync(join(loop, "events"), { recursive: true });
+      symlinkSync(outside, join(loop, "events"));
+      const linkedLegacy = await readSse(`${fixture.base}/api/events?task-id=task-a`, (text) => sseNumbers(text).length >= 1, {}, 1500);
+      assert.deepEqual(sseNumbers(linkedLegacy), ["global"]);
     } finally { rmSync(outside, { recursive: true, force: true }); }
   } finally {
     await fixture.close();

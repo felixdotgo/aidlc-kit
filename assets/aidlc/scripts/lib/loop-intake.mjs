@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { ensureTaskRuntimeDir, resolveTaskRuntimeRead } from "./task-runtime.mjs";
+import { migrateTaskRuntime } from "./task-runtime-migrate.mjs";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -41,7 +43,11 @@ export async function prepareLoopIntake({ root, taskId, requirement, authority, 
   if (!existsSync(directory)) mkdirSync(directory, { mode: 0o700 });
   const stat = lstatSync(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe task directory");
-  const recordPath = join(directory, "loop-intake.json");
+  // Intake files live under runtime/ (the task directory root is for review
+  // artifacts); a pre-runtime loop-intake.json/requirement.md moves there first.
+  migrateTaskRuntime(project, taskId, { names: ["intake.json", "requirement.md"] });
+  ensureTaskRuntimeDir(project, taskId);
+  const recordPath = resolveTaskRuntimeRead(project, taskId, "intake.json");
   const record = { schemaVersion: 1, taskId, authority, requirementHash: digest(requirement) };
   if (!existsSync(recordPath) && await readTask(taskId)) throw new Error("Existing task has no matching loop intake record");
   try { writeFileSync(recordPath, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 }); }
@@ -52,7 +58,7 @@ export async function prepareLoopIntake({ root, taskId, requirement, authority, 
     let current; try { current = JSON.parse(readFileSync(recordPath, "utf8")); } catch { throw new Error("Invalid intake record"); }
     if (JSON.stringify(current) !== JSON.stringify(record)) throw new Error("Existing intake has different authority or requirement");
   }
-  const requirementPath = join(directory, "requirement.md");
+  const requirementPath = resolveTaskRuntimeRead(project, taskId, "requirement.md");
   try { writeFileSync(requirementPath, requirement, { flag: "wx", mode: 0o600 }); }
   catch (error) {
     if (error?.code !== "EEXIST") throw error;

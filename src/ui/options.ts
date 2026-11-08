@@ -71,10 +71,16 @@ export const loopDataDir = (root: string): string => join(root, ".agents", "data
 export const eventsLogPath = (root: string): string => join(loopDataDir(root), "ui-events.jsonl");
 /** Canonical task id (orchestrator §Turn routing); also the only names the per-task event logs use. */
 export const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-/** Directory of the per-task event logs (`<taskId>.jsonl`, rotated to `<taskId>.jsonl.1`). */
-export const taskEventsDir = (root: string): string => join(loopDataDir(root), "events");
-/** Per-task event log of a canonical task id (validate with TASK_ID_PATTERN first). */
-export const taskEventsLogPath = (root: string, taskId: string): string => join(taskEventsDir(root), `${taskId}.jsonl`);
+/** `.agents/data/tasks`: one directory per task (review artifacts at its root, operational data under `runtime/`). */
+export const tasksDataDir = (root: string): string => join(root, ".agents", "data", "tasks");
+/** `.agents/data/tasks/<taskId>/runtime`: the task's operational files (validate with TASK_ID_PATTERN first). */
+export const taskRuntimeDir = (root: string, taskId: string): string => join(tasksDataDir(root), taskId, "runtime");
+/** Where aidlc-kit versions before the `runtime/` layout kept the per-task event logs (`<taskId>.jsonl`, rotated to `.1`). */
+export const legacyTaskEventsDir = (root: string): string => join(loopDataDir(root), "events");
+/** Per-task event log (`runtime/events.jsonl`, rotated to `events.jsonl.1`) of a canonical task id (validate with TASK_ID_PATTERN first). */
+export const taskEventsLogPath = (root: string, taskId: string): string => join(taskRuntimeDir(root, taskId), "events.jsonl");
+/** The same log where older versions wrote it; read as a fallback until `loop migrate-data` has run. */
+export const legacyTaskEventsLogPath = (root: string, taskId: string): string => join(legacyTaskEventsDir(root), `${taskId}.jsonl`);
 export const daemonLockPath = (root: string): string => join(loopDataDir(root), "daemon.lock");
 export const daemonLogPath = (root: string): string => join(loopDataDir(root), "daemon.log");
 export const loopArgs = (root: string, action: string, taskId = ""): string[] => [loopEntryPath(root), action, taskId, root, "", "", "", ""];

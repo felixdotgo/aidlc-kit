@@ -6,7 +6,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { acquireTaskLease, assertLoopPath, heldTaskLease, readLiveLease, readTaskLease } from "./loop-lease.mjs";
+import { acquireTaskLease, heldTaskLease, readLiveLease, readTaskLease } from "./loop-lease.mjs";
+import { resolveTaskRuntimeRead, taskRuntimePath } from "./task-runtime.mjs";
+import { migrateTaskRuntime } from "./task-runtime-migrate.mjs";
 import { explainHolder } from "./loop-holder.mjs";
 import { isLoopProvider, LOOP_PROVIDER_LIST } from "./loop-drivers.mjs";
 import { isLoopOperationalPath } from "./loop-git.mjs";
@@ -36,7 +38,10 @@ export function validateRoot(root) {
   return absolute;
 }
 
-export const loopRecordPath = (root, taskId) => assertLoopPath(root, taskId);
+/** Write location of the loop run record (`.agents/data/tasks/<task>/runtime/run.json`). */
+export const loopRecordPath = (root, taskId) => taskRuntimePath(root, taskId, "run.json");
+/** Read location: the runtime record, else the pre-runtime `.agents/data/loop/<task>.json`. */
+export const loopRecordReadPath = (root, taskId) => resolveTaskRuntimeRead(root, taskId, "run.json");
 
 function validateRecord(value, taskId) {
   if (!value || value.schemaVersion !== 1 || value.taskId !== taskId || typeof value.runId !== "string" || !value.runId || !isLoopProvider(value.agent) || !states.has(value.status) || !Number.isSafeInteger(value.iteration) || value.iteration < 0 || !Number.isSafeInteger(value.stallTurns) || value.stallTurns < 0 || (value.sessionId !== null && (typeof value.sessionId !== "string" || !value.sessionId)) || !value.limits || !value.updatedAt || Number.isNaN(Date.parse(value.updatedAt))) throw new Error(`Corrupt loop run record for ${taskId}`);
@@ -47,7 +52,7 @@ function validateRecord(value, taskId) {
 }
 
 export function readLoopRecord(root, taskId) {
-  const path = loopRecordPath(root, taskId);
+  const path = loopRecordReadPath(root, taskId);
   try { lstatSync(path); } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
   let value;
   try { value = JSON.parse(readFileSync(path, "utf8")); }
@@ -57,6 +62,7 @@ export function readLoopRecord(root, taskId) {
 
 export function writeLoopRecord(root, record) {
   validateRecord(record, record.taskId);
+  migrateTaskRuntime(root, record.taskId, { names: ["run.json"] });
   const path = loopRecordPath(root, record.taskId);
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;

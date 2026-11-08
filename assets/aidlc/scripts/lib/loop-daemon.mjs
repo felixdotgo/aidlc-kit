@@ -7,6 +7,8 @@ import { acquireHolder, describeHolder, LEASE_TTL_MS, readHolder } from "./loop-
 import { validateLimits, validateRoot, readLoopRecord } from "./loop-runtime.mjs";
 import { createIsolatedLocalSupervisor } from "./loop-supervisor-run-local.mjs";
 import { loadState, nextAction } from "./store.mjs";
+import { resolveTaskRuntimeRead } from "./task-runtime.mjs";
+import { migrateAllTaskRuntime } from "./task-runtime-migrate.mjs";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -21,12 +23,12 @@ export function validateDaemonPollMs(value) {
 }
 
 /** A task is loop-owned when it was created through loop intake (CLI or web
- * dashboard: `.agents/data/tasks/<id>/loop-intake.json`) or already has a loop
+ * dashboard: `.agents/data/tasks/<id>/runtime/intake.json`) or already has a loop
  * run record. Tasks created by an interactive lead are not loop-owned, so the
  * daemon never runs them concurrently with that lead. */
 export function isLoopOwned(root, taskId) {
   if (!ID.test(taskId ?? "")) return false;
-  try { if (lstatSync(join(root, ".agents", "data", "tasks", taskId, "loop-intake.json")).isFile()) return true; }
+  try { if (lstatSync(resolveTaskRuntimeRead(root, taskId, "intake.json")).isFile()) return true; }
   catch (error) { if (error?.code !== "ENOENT") throw error; }
   return readLoopRecord(root, taskId) !== null;
 }
@@ -70,6 +72,15 @@ export function actionableTasks(state, root, { isOwned = (id) => isLoopOwned(roo
   return Object.values(state.tasks)
     .filter((task) => nextAction(task, root).classification === "run_phase" && owned(task.id))
     .sort((a, b) => String(a.updatedAt ?? "").localeCompare(String(b.updatedAt ?? "")) || a.id.localeCompare(b.id));
+}
+
+/** Move pre-runtime per-task files under `runtime/` once at daemon start; one
+ * diagnostic summarises the result, nothing when there was nothing to move. */
+function migrateTaskRuntimeOnStart(root, onEvent) {
+  let result;
+  try { result = migrateAllTaskRuntime(root); }
+  catch (error) { onEvent({ type: "diagnostic", message: `Task runtime migration failed: ${error.message}` }); return; }
+  if (result.moved || result.skipped) onEvent({ type: "diagnostic", message: `Task runtime migration: moved ${result.moved} file(s) under .agents/data/tasks/<id>/runtime/, skipped ${result.skipped} (run loop-entry.mjs migrate-data --dry-run --json for details)` });
 }
 
 export const DAEMON_BACKOFF_MAX_MS = 600000;
@@ -116,6 +127,7 @@ export async function runLoopDaemon({ root: rootInput, authority, pollMs = DEFAU
   const releaseLock = acquireDaemonLock(root, { onWarning: onEvent, onLost: (reason) => { onEvent({ type: "daemon_lease_lost", message: `Daemon lease lost; stopping after the current turn: ${reason}` }); lost.abort(); } });
   try {
     onEvent({ type: "daemon_start", authority: authority.mode ?? "unknown", pid: process.pid });
+    migrateTaskRuntimeOnStart(root, onEvent);
     return await daemonLoop({ root, poll, signal: signal ? AbortSignal.any([signal, lost.signal]) : lost.signal, cancelSignal, onEvent, now, listActionable: () => authority.listActionable(), turn: ({ taskId, signal: runSignal, cancelSignal: runCancel, onEvent: runEvent }) => authority.runTask({ taskId, signal: runSignal, cancelSignal: runCancel, onEvent: runEvent }) });
   } finally { releaseLock(); }
 }
@@ -132,6 +144,7 @@ export async function runLocalDaemon({ root: rootInput, agent, workers = {}, wor
   const lost = new AbortController();
   const releaseLock = acquireDaemonLock(root, { onWarning: onEvent, onLost: (reason) => { onEvent({ type: "daemon_lease_lost", message: `Daemon lease lost; stopping after the current turn: ${reason}` }); lost.abort(); } });
   try {
+    migrateTaskRuntimeOnStart(root, onEvent);
     return await daemonLoop({ root, agent, workers, workerImages, limits, poll, signal: signal ? AbortSignal.any([signal, lost.signal]) : lost.signal, cancelSignal, onEvent, now, turn: runTaskTurn });
   } finally { releaseLock(); }
 }

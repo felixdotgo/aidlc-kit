@@ -24,6 +24,8 @@ test("init always installs the launchers, an executable loop.sh, and a git-ignor
     assert.ok(manifest.files[".agents/aidlc/scripts/loop.sh"] && manifest.files[".agents/aidlc/scripts/loop.cmd"]);
     assert.equal(readFileSync(join(root, ".agents/loop.env"), "utf8"), LOOP_ENV_TEMPLATE);
     assert.match(readFileSync(join(root, ".agents/.gitignore"), "utf8"), /^loop\.env$/m);
+    assert.match(readFileSync(join(root, ".agents/.gitignore"), "utf8"), /^data\/loop\/$/m);
+    assert.match(readFileSync(join(root, ".agents/.gitignore"), "utf8"), /^data\/tasks\/\*\/runtime\/$/m);
     // The template is all comments: it sets nothing until the user edits it.
     assert.ok(LOOP_ENV_TEMPLATE.split("\n").every((line) => !line.trim() || line.startsWith("#")));
   } finally { rmSync(root, { recursive: true, force: true }); }

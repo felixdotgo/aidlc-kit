@@ -5,6 +5,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { loadMemoryRegistry, nextAction, selectAgenticMemory } from "./store.mjs";
+import { resolveTaskRuntimeRead } from "./task-runtime.mjs";
 
 const separator = process.platform === "win32" ? "\\" : "/";
 
@@ -228,10 +229,10 @@ export const compileContext = (root, task, phase = task.phase, options = {}) => 
   const phaseContract = readFileSync(phasePath, "utf8");
   let intake = "";
   if (phase === "clarify") {
-    const parts = [".agents", "data", "tasks", task.id, "requirement.md"];
-    let cursor = resolve(root), safe = true;
-    for (const part of parts) { cursor = join(cursor, part); if (!existsSync(cursor)) { safe = false; break; } if (lstatSync(cursor).isSymbolicLink()) throw new Error("Unsafe requirement path"); }
-    if (safe) { const requirement = readFileSync(cursor, "utf8"); if (Buffer.byteLength(requirement) > 8192) throw new Error("Requirement exceeds intake limit"); intake = `## User requirement\n${requirement}`; }
+    // The intake requirement (runtime/requirement.md, or the pre-runtime task-root copy); symlinked components are refused by the resolver.
+    let cursor;
+    try { cursor = resolveTaskRuntimeRead(root, task.id, "requirement.md"); } catch { throw new Error("Unsafe requirement path"); }
+    if (existsSync(cursor)) { const requirement = readFileSync(cursor, "utf8"); if (Buffer.byteLength(requirement) > 8192) throw new Error("Requirement exceeds intake limit"); intake = `## User requirement\n${requirement}`; }
   }
   let content = [`# AI-DLC phase packet — ${phase}`, `mode: ${options.mode ?? "standard"}${options.itemId ? ` · item: ${options.itemId}` : ""}`, "## Next action / stop contract", JSON.stringify(nextAction(task, root), null, 2), "## Phase contract", phaseContract, ...(intake ? [intake] : []), "## Canonical task state", compact, "## Resolved profiles", profiles.map((item) => JSON.stringify({ id: item.id, topology: item.topology, discovery: item.discovery, specs: item.specs, commands: item.commands })).join("\n"), "## Effective project configuration", JSON.stringify({ discovery: effective.discovery, specs: effective.specs, commands: effective.commands, risk: effective.risk, context: effective.context }, null, 2), "## Invariants", invariants].join("\n\n");
   if (content.length > config.context.maxChars) throw new Error("Context budget is too small for the full phase contract, next action, canonical task state, and mandatory invariants");

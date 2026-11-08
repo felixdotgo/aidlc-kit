@@ -1,27 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { acquireHolder, describeHolder } from "./loop-holder.mjs";
+import { resolveTaskRuntimeRead, taskRuntimePath } from "./task-runtime.mjs";
+import { migrateTaskRuntime } from "./task-runtime-migrate.mjs";
 
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const states = new Set(["leased", "reported", "uncertain", "integrated", "released"]);
 const safeId = (value, label) => { if (typeof value !== "string" || !idPattern.test(value)) throw new Error(`Invalid ${label}`); return value; };
 const iso = () => new Date().toISOString();
 
+/** Write location of the task's assignment records
+ * (`.agents/data/tasks/<task>/runtime/assignments.json`; `.lock` for the mutex),
+ * refusing symlinked path components. */
 export function assignmentPath(root, taskId, suffix = ".json") {
   safeId(taskId, "task id");
-  let path = resolve(root);
-  for (const part of [".agents", "data", "loop", "assignments", `${taskId}${suffix}`]) {
-    path = join(path, part);
-    try { if (lstatSync(path).isSymbolicLink()) throw new Error(`Assignment path crosses symlink: ${path}`); }
-    catch (error) { if (error?.code !== "ENOENT") throw error; }
-  }
-  return path;
+  if (![".json", ".lock"].includes(suffix)) throw new Error(`Unknown assignment file suffix: ${suffix}`);
+  return taskRuntimePath(root, taskId, suffix === ".lock" ? "assignments.lock" : "assignments.json");
 }
 
+/** Read location: the runtime file, else the pre-runtime
+ * `.agents/data/loop/assignments/<task>.json` until it has been migrated. */
+export const assignmentReadPath = (root, taskId) => resolveTaskRuntimeRead(root, safeId(taskId, "task id"), "assignments.json");
+
 function read(root, taskId) {
-  const path = assignmentPath(root, taskId);
+  const path = assignmentReadPath(root, taskId);
   let value;
   try { value = JSON.parse(readFileSync(path, "utf8")); }
   catch (error) {
@@ -59,6 +63,9 @@ function write(root, taskId, value) {
 /** Short mutex around one read-modify-write of `assignments/<task>.json`
  * (kind lock, 30s TTL, no heartbeat). Waits up to 5s for another holder. */
 function locked(root, taskId, action) {
+  // A legacy record moves under runtime/ before the first write, so the
+  // writer never has to choose between two locations.
+  migrateTaskRuntime(root, taskId, { names: ["assignments.json"] });
   const path = assignmentPath(root, taskId, ".lock");
   const handle = acquireHolder({
     path, kind: "lock", scope: `assignments:${taskId}`, purpose: "assignment read-modify-write", waitMs: 5000,

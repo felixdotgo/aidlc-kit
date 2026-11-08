@@ -60,7 +60,7 @@ Underneath, `loop start` runs the persistent daemon in the foreground and reads 
 npx --package @felixdotgo/aidlc-kit@0.2.0 aidlc-kit loop start
 ```
 
-- The daemon runs only **loop-owned** tasks: created through loop intake (`.agents/data/tasks/<id>/loop-intake.json`) or holding a loop run record. An interactively created task (`state.mjs task create`) is never picked up, so the daemon cannot race an interactive lead.
+- The daemon runs only **loop-owned** tasks: created through loop intake (`.agents/data/tasks/<id>/runtime/intake.json`) or holding a loop run record (`runtime/run.json`). An interactively created task (`state.mjs task create`) is never picked up, so the daemon cannot race an interactive lead.
 - It runs one bounded run per actionable task in turn and keeps polling after a gate or completion.
 
 Add a loop-owned task:
@@ -181,7 +181,7 @@ Branded **Loop**, binds `127.0.0.1:4173` by default and prints `Open: http://127
 | Live log (detail page) | Lines `time · actor · what happened`, grouped by turn. **Important** (default) hides bookkeeping, **All** shows everything, **Raw JSON** shows the events. |
 | Changes `/tasks/<id>/changes` | Files and diff per work item from the commits workers recorded; otherwise the task range from the task's `baseCommit` to its `finalCommit` (or `HEAD` plus the working tree while open) — so a task driven from the terminal, or a finished task whose worker worktrees are gone, still shows its changes; last resort, the uncommitted working tree. **Wrap lines** and **Ignore whitespace** toggles. |
 
-Live log files: the log replays the last 200 events of `.agents/data/loop/events/<task-id>.jsonl` (1 MiB, one `.1` generation), then follows live; older tasks fall back to the global `.agents/data/loop/ui-events.jsonl` (rotated to `.jsonl.1` at 5 MB), written only when `AIDLC_LOOP_EVENT_LOG` points at it. Container output is separate: `.agents/data/tasks/<task-id>/runtime/workers/<assignment>.log` (5 MiB, one `.log.1` generation) next to `index.json`, never committed. **Docs** in the header opens these guides.
+Live log files: the log replays the last 200 events of `.agents/data/tasks/<task-id>/runtime/events.jsonl` (1 MiB, one `.1` generation; a file an older version left in `.agents/data/loop/events/` is read until `loop migrate-data` moves it), then follows live; older tasks fall back to the global `.agents/data/loop/ui-events.jsonl` (rotated to `.jsonl.1` at 5 MB), written only when `AIDLC_LOOP_EVENT_LOG` points at it. Container output is separate: `.agents/data/tasks/<task-id>/runtime/workers/<assignment>.log` (5 MiB, one `.log.1` generation) next to `index.json`, never committed. **Docs** in the header opens these guides.
 
 ## Worker Docker image
 

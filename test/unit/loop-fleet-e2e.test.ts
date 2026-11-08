@@ -158,9 +158,9 @@ test("fleet intake plus the shared loop daemon drive a task through all gates to
     assert.equal(canonical.task.title, "Change src/a.txt to done through the supervised fleet loop.");
     assert.equal(canonical.task.tasks[0].status, "done");
     assert.equal(canonical.nextAction.classification, "complete");
-    const intake = JSON.parse(readFileSync(join(leadRoot, ".agents/data/tasks", taskId, "loop-intake.json"), "utf8"));
+    const intake = JSON.parse(readFileSync(join(leadRoot, ".agents/data/tasks", taskId, "runtime", "intake.json"), "utf8"));
     assert.equal(intake.authority, "fleet");
-    assert.ok(existsSync(join(leadRoot, ".agents/data/tasks", taskId, "requirement.md")));
+    assert.ok(existsSync(join(leadRoot, ".agents/data/tasks", taskId, "runtime", "requirement.md")));
     assert.match(git(leadRoot, "show", "HEAD:src/a.txt"), /done/);
   } finally { facade?.kill("SIGTERM"); service?.kill("SIGTERM"); rmSync(temp, { recursive: true, force: true }); }
 });

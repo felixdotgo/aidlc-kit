@@ -61,7 +61,7 @@ export const initialProjectFiles = (): FileSpec[] => [
   { path: ".agents/data/lessons/index.json", owner: "aidlc-state", ownershipClass: "state", content: `${JSON.stringify(createLessonIndex([], lessonStateDigest(emptyState())), null, 2)}\n` },
   { path: ".agents/data/memory/agentic-memory.json", owner: "aidlc-memory", ownershipClass: "project", content: `${JSON.stringify(emptyMemoryRegistry(), null, 2)}\n` },
   { path: ".agents/loop.env", owner: "aidlc-project", ownershipClass: "project", content: LOOP_ENV_TEMPLATE },
-  { path: ".agents/.gitignore", owner: "aidlc-project", ownershipClass: "project", content: "# Local loop credentials (aidlc-kit)\nloop.env\n" }
+  { path: ".agents/.gitignore", owner: "aidlc-project", ownershipClass: "project", content: "# Local loop credentials (aidlc-kit)\nloop.env\n# Loop daemon/process state and per-task runtime data (aidlc-kit)\ndata/loop/\ndata/tasks/*/runtime/\n" }
 ];
 
 export const manifestKey = (spec: Pick<FileSpec, "path" | "owner" | "strategy">): string => spec.strategy === "managed-block" ? `${spec.path}#${spec.owner}` : spec.path;

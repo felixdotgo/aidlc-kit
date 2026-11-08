@@ -43,7 +43,7 @@ const commit = (root: string, message: string, files: Record<string, string | Bu
 
 const writeAssignments = (root: string, taskId: string, assignments: Array<Record<string, unknown>>): void => {
   const now = new Date().toISOString();
-  writeFile(root, `.agents/data/loop/assignments/${taskId}.json`, JSON.stringify({
+  writeFile(root, `.agents/data/tasks/${taskId}/runtime/assignments.json`, JSON.stringify({
     schemaVersion: 1, taskId,
     assignments: assignments.map((entry, index) => ({ id: `a-${index}`, taskId, workerId: "w1", ownedPaths: ["src"], attempt: 1, leaseExpiresAt: now, createdAt: now, updatedAt: now, ...entry })),
   }));
@@ -283,7 +283,7 @@ test("task-range stands in when every assignment commit is gone from the reposit
     assert.deepEqual(res.body.items!.map((item) => item.itemId), ["task"]);
     assert.deepEqual(res.body.items![0]!.files.map((file) => file.path), ["src/kept.ts"]);
     // Malformed records with a base commit: the task range, not the working tree.
-    writeFile(root, ".agents/data/loop/assignments/task-a.json", "{not json");
+    writeFile(root, ".agents/data/tasks/task-a/runtime/assignments.json", "{not json");
     const malformed = await getJson(`${base}/api/tasks/task-a/changes`);
     assert.equal(malformed.body.source, "task-range");
     assert.equal(malformed.body.note, "Assignment records are unreadable; showing the task range instead");
@@ -331,9 +331,9 @@ test("a symlinked assignments directory is refused and the working tree is shown
   try {
     const { root, base } = fixture;
     const head = git(root, "rev-parse", "HEAD");
-    writeFileSync(join(outside, "task-a.json"), JSON.stringify({ schemaVersion: 1, taskId: "task-a", assignments: [{ itemId: "item-a", state: "integrated", integrationCommit: head }] }));
-    mkdirSync(join(root, ".agents/data/loop"), { recursive: true });
-    symlinkSync(outside, join(root, ".agents/data/loop/assignments"));
+    writeFileSync(join(outside, "assignments.json"), JSON.stringify({ schemaVersion: 1, taskId: "task-a", assignments: [{ itemId: "item-a", state: "integrated", integrationCommit: head }] }));
+    mkdirSync(join(root, ".agents/data/tasks/task-a"), { recursive: true });
+    symlinkSync(outside, join(root, ".agents/data/tasks/task-a/runtime"));
     const res = await getJson(`${base}/api/tasks/task-a/changes`);
     assert.equal(res.status, 200);
     assert.equal(res.body.source, "working-tree");

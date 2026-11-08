@@ -58,6 +58,8 @@ node .agents/aidlc/scripts/gate-view.mjs <task-id>
 
 `task next` is the authoritative next instruction; `gate-view` renders the review packet for every gate.
 
+Each task owns `.agents/data/tasks/<task-id>/`: review artifacts (`intent.md`, `design.md`, `workplan.md`) at its root, operational files (assignment claims, event history, loop run record, intake, worker logs) under `runtime/`, which is never committed. Layout and the migration from older versions: [Architecture](./architecture.md#loop-runtime).
+
 ### Script contract in brief
 
 - Every `state.mjs` and `task-next.mjs` command prints one JSON envelope `{ok, result, nextAction?}`; failures are one-line `{ok: false, error}` on stderr with exit code `1` (expected), `2` (continuation guard), or `3` (crash).

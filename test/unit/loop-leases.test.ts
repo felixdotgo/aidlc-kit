@@ -21,6 +21,7 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), "aidlc-leases-"));
   applyPlan(root, planInit({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false }));
   const loop = join(root, ".agents/data/loop");
+  mkdirSync(join(root, ".agents/data/tasks/build-task/runtime"), { recursive: true });
   mkdirSync(join(loop, "assignments"), { recursive: true });
   return { root, loop };
 }
@@ -32,10 +33,13 @@ function seed(root: string, loop: string) {
   writeFileSync(join(loop, "old-task.supervisor.lease"), JSON.stringify({ taskId: "old-task", pid: DEAD_PID, token: "v1" }));
   writeFileSync(join(loop, "old-task.supervisor.guard"), JSON.stringify({ taskId: "old-task", pid: DEAD_PID, token: "g" }));
   utimesSync(join(loop, "old-task.supervisor.guard"), old, old);
-  // Stale v1 assignment lock and claims: one overdue leased claim, one reported.
-  writeFileSync(join(loop, "assignments/build-task.lock"), JSON.stringify({ pid: DEAD_PID, token: "lock" }));
-  const claim = (id: string, itemId: string, state: string, expires: number) => ({ id, taskId: "build-task", itemId, workerId: `w-${itemId}`, ownedPaths: [`src/${itemId}`], attempt: 1, state, leaseExpiresAt: new Date(expires).toISOString(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-  writeFileSync(join(loop, "assignments/build-task.json"), JSON.stringify({ schemaVersion: 1, taskId: "build-task", assignments: [claim("asg-1", "api", "leased", Date.now() - 1000), claim("asg-2", "ui", "reported", Date.now() + 60000), claim("asg-3", "docs", "integrated", Date.now() - 1000)] }));
+  // Stale v1 assignment lock and claims (runtime/ layout): one overdue leased claim, one reported.
+  const runtime = join(root, ".agents/data/tasks/build-task/runtime");
+  writeFileSync(join(runtime, "assignments.lock"), JSON.stringify({ pid: DEAD_PID, token: "lock" }));
+  const claim = (id: string, itemId: string, state: string, expires: number, taskId = "build-task") => ({ id, taskId, itemId, workerId: `w-${itemId}`, ownedPaths: [`src/${itemId}`], attempt: 1, state, leaseExpiresAt: new Date(expires).toISOString(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  writeFileSync(join(runtime, "assignments.json"), JSON.stringify({ schemaVersion: 1, taskId: "build-task", assignments: [claim("asg-1", "api", "leased", Date.now() - 1000), claim("asg-2", "ui", "reported", Date.now() + 60000), claim("asg-3", "docs", "integrated", Date.now() - 1000)] }));
+  // A task whose claims still sit in the pre-runtime location is listed from there.
+  writeFileSync(join(loop, "assignments/old-claims.json"), JSON.stringify({ schemaVersion: 1, taskId: "old-claims", assignments: [claim("asg-9", "api", "leased", Date.now() + 60000, "old-claims")] }));
   // A lifecycle state lock held by a dead pid but recent (still counts as live).
   writeFileSync(join(root, ".agents/data/state/.aidlc-state.lock"), JSON.stringify({ token: "s", pid: DEAD_PID, createdAt: Date.now() }));
 }
@@ -74,6 +78,10 @@ test("leases lists daemon, task, legacy, assignment lock, claims, and state lock
     assert.match(expired.remedy, /assignment\.mjs release build-task asg-1/);
     assert.equal(find("claim", "item:build-task/ui")?.state, "live");
     assert.equal(find("claim", "item:build-task/docs"), undefined, "integrated claims block nothing");
+    assert.equal(expired.path, join(root, ".agents/data/tasks/build-task/runtime/assignments.json"));
+    const legacyClaim = find("claim", "item:old-claims/api");
+    assert.equal(legacyClaim?.state, "live");
+    assert.equal(legacyClaim?.path, join(loop, "assignments/old-claims.json"), "pre-runtime records are read in place");
     const stateLock = find("state-lock", "lifecycle-state");
     assert.equal(stateLock.state, "live");
     assert.equal(stateLock.clearable, false);
@@ -89,14 +97,15 @@ test("--clear-stale removes only stale holders and guards; live holders, claims,
   try {
     seed(root, loop);
     writeFileSync(join(loop, "fresh-corrupt.lease"), "{");
-    const claimsBefore = readFileSync(join(loop, "assignments/build-task.json"), "utf8");
+    const claimsBefore = readFileSync(join(root, ".agents/data/tasks/build-task/runtime/assignments.json"), "utf8");
     const { runLeases, formatLeases } = await leases();
     const report = await runLeases({ root, clearStale: true });
-    assert.deepEqual([...report.cleared].sort(), [join(loop, "assignments/build-task.lock"), join(loop, "old-task.supervisor.guard"), join(loop, "old-task.supervisor.lease"), join(loop, "stale-task.lease")].sort());
+    assert.deepEqual([...report.cleared].sort(), [join(root, ".agents/data/tasks/build-task/runtime/assignments.lock"), join(loop, "old-task.supervisor.guard"), join(loop, "old-task.supervisor.lease"), join(loop, "stale-task.lease")].sort());
     assert.ok(existsSync(join(loop, "daemon.lock")));
     assert.ok(existsSync(join(loop, "fresh-corrupt.lease")), "a recent corrupt file is not removed");
     assert.ok(existsSync(join(root, ".agents/data/state/.aidlc-state.lock")));
-    assert.equal(readFileSync(join(loop, "assignments/build-task.json"), "utf8"), claimsBefore);
+    assert.equal(readFileSync(join(root, ".agents/data/tasks/build-task/runtime/assignments.json"), "utf8"), claimsBefore);
+    assert.ok(existsSync(join(loop, "assignments/old-claims.json")), "claims are never removed, wherever they live");
     assert.equal(report.schemaVersion, 1);
     assert.ok(report.entries.some((entry: any) => entry.category === "task" && entry.state === "corrupt" && /becomes reclaimable/.test(entry.remedy)));
     const text = formatLeases(report);
