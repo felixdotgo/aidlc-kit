@@ -4,7 +4,7 @@ Local setup, dogfooding, source ownership, and the rules that keep package runti
 
 ## Requirements and dependencies
 
-- Node.js 20.17 or newer; npm installs the dev dependencies (TypeScript, `@types/node`).
+- Node.js 24 or newer; npm installs the dev dependencies (TypeScript, `@types/node`).
 - `@inquirer/prompts` is the only runtime dependency; installed lifecycle scripts are dependency-free.
 - Codex, Claude Code, or OpenCode: only for real evaluator drivers; OpenCode also needs `AIDLC_OPENCODE_MODEL` (`provider/model[#variant]`).
 

@@ -11,7 +11,7 @@ Installs an AI-DLC workflow into an existing project: a shared task lifecycle, e
 
 ## Quick start
 
-Requires Node.js 20.17+ and Codex, Claude Code, or OpenCode (Linux/macOS; Windows is best-effort).
+Requires Node.js 24+ and Codex, Claude Code, or OpenCode (Linux/macOS; Windows is best-effort).
 
 ```sh
 npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit init .          # previews, then installs after you confirm

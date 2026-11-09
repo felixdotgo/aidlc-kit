@@ -9,6 +9,7 @@ import { adapters } from "../../src/adapters.js";
 
 const scripts = resolve("dist/assets/.agents/aidlc/scripts");
 const store = await import(pathToFileURL(join(scripts, "lib/assignment-store.mjs")).href);
+const stateStore = await import(pathToFileURL(join(scripts, "lib/store.mjs")).href);
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "aidlc-client-loop-"));
@@ -45,9 +46,9 @@ test("local claims reject dependencies, overlap and duplicate dispatch; canonica
     const reported = store.reportLocalAssignment(root, taskId, api.id, { checkpoint: "API built", changedPaths: ["src/api/index.ts"] });
     assert.equal(reported.state, "reported");
     assert.throws(() => store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "retry", ownedPaths: ["src/api"] }), /unresolved/);
-    const raw = JSON.parse(readFileSync(join(root, ".agents/data/state/aidlc-state.json"), "utf8"));
+    const raw = stateStore.loadState(root);
     raw.tasks[taskId].tasks[0].status = "done";
-    writeFileSync(join(root, ".agents/data/state/aidlc-state.json"), JSON.stringify(raw));
+    stateStore.saveState(root, raw);
     assert.equal(store.reconcileLocalAssignments(root, taskId).assignments.find((entry: { id: string }) => entry.id === api.id).state, "integrated");
     assert.throws(() => store.claimLocalAssignment(root, { taskId, itemId: "api", workerId: "retry", ownedPaths: ["src/api"] }), /not dispatchable/);
   } finally { rmSync(root, { recursive: true, force: true }); }

@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { nextAction } from "./store.mjs";
+import { listFeaturesFromDb, loadFeatureFromDb, openStateDb, saveFeatureToDb } from "./store-sqlite.mjs";
 
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const checkedId = (id) => { if (!idPattern.test(id ?? "")) throw new Error(`Invalid feature/task id: ${id}`); return id; };
@@ -43,11 +44,29 @@ export const validateFeature = (feature, state) => {
 
 export const loadFeature = (root, id, state) => {
   const path = safePath(root, id);
-  return existsSync(path) ? validateFeature(JSON.parse(readFileSync(path, "utf8")), state) : undefined;
+  const db = openStateDb(root);
+  const stored = loadFeatureFromDb(db, id);
+  if (stored !== undefined) return validateFeature(stored, state);
+  if (!existsSync(path)) return undefined;
+  const feature = validateFeature(JSON.parse(readFileSync(path, "utf8")), state);
+  saveFeatureToDb(db, id, feature);
+  return feature;
 };
-export const listFeatures = (root, state) => existsSync(directory(root)) ? readdirSync(directory(root)).filter((name) => name.endsWith(".json")).map((name) => loadFeature(root, name.slice(0, -5), state)) : [];
+export const listFeatures = (root, state) => {
+  const db = openStateDb(root);
+  if (existsSync(directory(root))) for (const name of readdirSync(directory(root)).filter((entry) => entry.endsWith(".json"))) {
+    const id = name.slice(0, -5);
+    if (!loadFeatureFromDb(db, id)) {
+      const feature = validateFeature(JSON.parse(readFileSync(join(directory(root), name), "utf8")), state);
+      saveFeatureToDb(db, id, feature);
+    }
+  }
+  return listFeaturesFromDb(db).map(({ manifest }) => validateFeature(manifest, state));
+};
 export const saveFeature = (root, feature, state) => {
   validateFeature(feature, state);
+  const db = openStateDb(root);
+  saveFeatureToDb(db, feature.id, feature);
   const path = safePath(root, feature.id);
   mkdirSync(directory(root), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;

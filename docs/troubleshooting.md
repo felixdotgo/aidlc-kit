@@ -12,8 +12,8 @@ Symptom- and error-code recovery for the AI-DLC workflow and the loop: lifecycle
 
 ## Corrupt state or assignment files
 
-- Messages: `Corrupt local assignments for <task-id>`, `Corrupt loop run record`, `Corrupt <lease|lock> file <path> (modified <age> ago)` ([leases](#loop-leases-locks-and-claims)), `<label> is corrupted or unreadable: ...` (state JSON).
-- Restore from `.agents/data/state/backups/upgrade-<timestamp>` (created by `upgrade`/migration) or git; re-run `state.mjs state migrate` if schema-versioned. Never hand-edit canonical state.
+- Messages: `Corrupt local assignments for <task-id>`, `Corrupt loop run record`, `Corrupt <lease|lock> file <path> (modified <age> ago)` ([leases](#loop-leases-locks-and-claims)), `<label> is corrupted or unreadable: ...` (state JSON or the SQLite state row).
+- Canonical state lives in the SQLite database `.agents/data/state/aidlc.db`; `.agents/data/state/aidlc-state.json` and `archive/*.json` are checkpoint projections regenerated on every save. To recover, either restore those JSON files from `.agents/data/state/backups/upgrade-<timestamp>` (created by `upgrade`/migration) or git and delete the database (it re-imports on next access), or restore the database itself. Never hand-edit canonical state or its checkpoint.
 
 ## `LESSON_INDEX_STALE` warning
 

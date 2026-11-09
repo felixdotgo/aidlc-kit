@@ -150,8 +150,6 @@ if (group === "state" && action === "migrate") {
   const featureId = option(parsed, "--feature");
   const feature = featureId ? loadFeature(root, featureId, state) : undefined;
   if (featureId && !feature) throw new Error(`Unknown feature: ${featureId}`);
-  const stranded = actionable.filter((existing) => !acknowledged.includes(existing) && (!feature || state.tasks[existing].featureId !== featureId));
-  if (stranded.length) throw new Error(`Task create is blocked while other work is actionable: ${stranded.join(", ")}. With explicit user direction to switch, rerun with --switch-from ${actionable.join(",")}; acknowledged tasks keep their state and remain the resume target`);
   const recordedAt = now();
   const task = state.tasks[id] = {
     id, title, featureId, type: option(parsed, "--type") ?? "infra", phase: "clarify", gate: "G0_confirm", status: "active",

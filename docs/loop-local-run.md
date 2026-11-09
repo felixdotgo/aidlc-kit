@@ -17,7 +17,7 @@ Commands use the published package (`npx --package @felixdotgo/aidlc-kit@0.3.0 a
 
 ## Prerequisites
 
-- Linux host with Docker (`docker info` must pass for the build phase) and a POSIX shell; Node.js ≥ 20.17.
+- Linux host with Docker (`docker info` must pass for the build phase) and a POSIX shell; Node.js ≥ 24.
 - Lead provider CLI (`opencode`, `codex`, or `claude`) on the host `PATH`, matching `loop.agents.lead`.
 - If any provider is `opencode`: `AIDLC_OPENCODE_MODEL` naming a model listed by `opencode models`.
 - Worker credentials per provider/model: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENCODE_API_KEY`. The worker image is built automatically ([Worker Docker image](#worker-docker-image)).

@@ -2,17 +2,17 @@
 
 Numbered decisions that constrain future changes across modules or releases (runtime boundaries, state formats, safety policies). Local implementation choices belong in code comments or the originating task.
 
-## D1. Dual lifecycle cores with conformance instead of codegen
+## D1. One lifecycle core with a typed facade and conformance
 
 - **Context:** Installed projects need dependency-free lifecycle scripts; the package CLI is TypeScript.
-- **Decision:** Two cores: `src/state.ts` (TypeScript) and `assets/aidlc/scripts/lib/store.mjs` (dependency-free ESM), plus a committed byte-identical copy in `services/aidlc-coordination/src/lifecycle-core.mjs`.
-- **Consequences:** Parity is checked by `lifecycle-core-conformance` (byte identity + property/fuzz), not generated; a core change requires `npm run sync-core` and those tests.
+- **Decision:** One canonical core: `assets/aidlc/scripts/lib/store.mjs` (dependency-free ESM). A byte-identical copy is synced into `services/aidlc-coordination/src/lifecycle-core.mjs`, and `src/state/shared.ts` is a thin typed facade that delegates every lifecycle function to it. Persistence primitives live in `assets/aidlc/scripts/lib/store-sqlite.mjs`.
+- **Consequences:** Parity is checked by `lifecycle-core-conformance` (byte identity + property/fuzz); a core change requires `npm run sync-core` and those tests.
 
-## D2. Single JSON state with file lock and archive catalog
+## D2. Single SQLite state database with JSON checkpoint for git
 
-- **Context:** Local-first; no registry or database in consumer projects.
-- **Decision:** One JSON file (`.agents/data/state/aidlc-state.json`) serialized by a file lock (`.aidlc-state.lock` + guard); terminal records archived under `.agents/data/state/backups/`, digest-verified.
-- **Consequences:** Simple backup, restore, and git diffing; contention is bounded by the 5s/30s lock defaults; unsuited to high-concurrency multi-writer workloads.
+- **Context:** Local-first; no registry in consumer projects. Node.js ≥ 24 ships the built-in `node:sqlite` driver.
+- **Decision:** One SQLite database (`.agents/data/state/aidlc.db`, WAL + busy timeout) stores the canonical `WorkflowState` (JSON blob per workspace), archive records, and feature manifests, serialized by the file lock (`.aidlc-state.lock` + guard). On every save, `.agents/data/state/aidlc-state.json` and the archive records are regenerated as commit-friendly checkpoint projections for git recovery and diffs; the database is authoritative at runtime and git-ignored.
+- **Consequences:** One logic and one store shared by the interactive workflow, the local loop, and the coordination service; multiple task leads can progress concurrently (writers serialize briefly under the lock, readers proceed via WAL). Recovery stays simple: deleting the database re-imports from the checkpoint; digest verification still guards archive records.
 
 ## D3. Append-only evidence with append-order boundaries
 

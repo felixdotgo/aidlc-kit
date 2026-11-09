@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import { dbHasState, loadArchiveFromDb, loadStateFromDb, openStateDb, saveArchiveToDb, saveStateToDb, setDbMeta, sqliteDbPath } from "./store-sqlite.mjs";
 
 const phases = ["clarify", "plan", "build", "wrap", "done"];
 const gates = ["none", "G0_confirm", "G1_review", "G2_codereview"];
 const statuses = ["active", "blocked_on_user", "paused", "done", "closed", "superseded"];
 const handoffKinds = ["repair_exhausted", "review_exhausted", "g2_failed", "release_failed", "structural_change", "other"];
-const terminal = (task) => ["done", "closed", "superseded"].includes(task.status);
+export const terminal = (task) => ["done", "closed", "superseded"].includes(task.status);
 const separator = process.platform === "win32" ? "\\" : "/";
 const phaseGate = (phase) => phase === "clarify" ? "G0_confirm" : phase === "plan" ? "G1_review" : phase === "build" ? "G2_codereview" : "none";
 const iso = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString() === value;
@@ -14,12 +15,13 @@ const text = (value) => typeof value === "string" && Boolean(value.trim());
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const commitPattern = /^[0-9a-f]{7,64}$/;
 const commitFields = ["baseCommit", "finalCommit"];
-const digest = (content) => createHash("sha256").update(content).digest("hex");
+export const digest = (content) => createHash("sha256").update(content).digest("hex");
 const archiveRecordPath = (id) => `.agents/data/state/archive/${id}.json`;
-const taskRecordContent = (task) => `${JSON.stringify(task, null, 2)}\n`;
-const assertNoSymlinkPath = (root, relative) => { let cursor = resolve(root); for (const part of normalize(relative).split(/[\\/]/).filter(Boolean)) { cursor = join(cursor, part); if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) throw new Error(`State path crosses a symlink: ${relative}`); } };
+export const taskRecordContent = (task) => `${JSON.stringify(task, null, 2)}\n`;
+export const assertNoSymlinkPath = (root, relative) => { let cursor = resolve(root); for (const part of normalize(relative).split(/[\\/]/).filter(Boolean)) { cursor = join(cursor, part); if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) throw new Error(`State path crosses a symlink: ${relative}`); } };
+export const safeResolvedPath = (root, relative) => { assertNoSymlinkPath(root, relative); return join(resolve(root), relative); };
 
-const writeAtomic = (path, content) => {
+export const writeAtomic = (path, content) => {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(temporary, content, "utf8");
@@ -106,7 +108,7 @@ export const validateState = (value) => {
   return value;
 };
 
-const archivedSummary = (task, content = taskRecordContent(task)) => ({ id: task.id, title: task.title, type: task.type, phase: task.phase, gate: task.gate, status: task.status, risk: task.risk, areas: task.areas, record: archiveRecordPath(task.id), digest: digest(content), lessonCount: task.lessons?.length ?? 0, predecessorTaskId: task.predecessorTaskId, successorTaskId: task.successorTaskId, createdAt: task.createdAt, updatedAt: task.updatedAt });
+export const archivedSummary = (task, content = taskRecordContent(task)) => ({ id: task.id, title: task.title, type: task.type, phase: task.phase, gate: task.gate, status: task.status, risk: task.risk, areas: task.areas, record: archiveRecordPath(task.id), digest: digest(content), lessonCount: task.lessons?.length ?? 0, predecessorTaskId: task.predecessorTaskId, successorTaskId: task.successorTaskId, createdAt: task.createdAt, updatedAt: task.updatedAt });
 
 export const statePath = (root) => join(resolve(root), ".agents/data/state/aidlc-state.json");
 export const lessonIndexPath = (root) => join(resolve(root), ".agents/data/lessons/index.json");
@@ -181,17 +183,50 @@ export const retireAgenticMemory = (root, id, reason, retiredBy, retiredAt = new
 };
 const parseJsonText = (content, label, recovery = "") => { try { return JSON.parse(content); } catch (error) { throw new Error(`${label} is corrupted or unreadable: ${error instanceof Error ? error.message : String(error)}${recovery ? `; ${recovery}` : ""}`); } };
 const parseJsonFile = (path, label, recovery = "") => parseJsonText(readFileSync(path, "utf8"), label, recovery);
-export const loadState = (root) => { assertNoSymlinkPath(root, ".agents/data/state/aidlc-state.json"); return existsSync(statePath(root)) ? validateState(parseJsonFile(statePath(root), "AI-DLC state file", "restore it from git history or the archive records")) : emptyState(); };
+export const loadState = (root) => {
+  assertNoSymlinkPath(root, ".agents/data/state/aidlc.db");
+  assertNoSymlinkPath(root, ".agents/data/state/aidlc-state.json");
+  if (!existsSync(statePath(root)) && !existsSync(sqliteDbPath(root))) return emptyState();
+  const db = openStateDb(root);
+  const stored = dbHasState(db) ? loadStateFromDb(db) : undefined;
+  if (stored !== undefined) return validateState(stored);
+  if (!existsSync(statePath(root))) return emptyState();
+  const imported = validateState(parseJsonFile(statePath(root), "AI-DLC state file", "restore it from git history or the archive records"));
+  saveStateToDb(db, imported);
+  importArchiveRecordsToDb(root, db, imported);
+  setDbMeta(db, "json_import", new Date().toISOString());
+  return imported;
+};
+
+const importArchiveRecordsToDb = (root, db, state) => {
+  for (const summary of Object.values(state.archive ?? {})) {
+    assertNoSymlinkPath(root, summary.record);
+    const path = join(resolve(root), summary.record);
+    if (!existsSync(path)) continue;
+    const content = readFileSync(path, "utf8");
+    if (digest(content) !== summary.digest) throw new Error(`Archived task digest mismatch: ${summary.id}`);
+    saveArchiveToDb(db, summary.id, content, summary.digest);
+  }
+};
 
 export const loadTask = (root, id, state = loadState(root)) => {
   if (state.tasks[id]) return state.tasks[id];
   const summary = state.archive?.[id];
   if (!summary) return undefined;
-  const path = join(resolve(root), summary.record);
-  assertNoSymlinkPath(root, summary.record);
-  if (!existsSync(path)) throw new Error(`Archived task record is missing: ${summary.record}`);
-  const content = readFileSync(path, "utf8");
-  if (digest(content) !== summary.digest) throw new Error(`Archived task digest mismatch: ${id}`);
+  let content;
+  const db = openStateDb(root);
+  const stored = loadArchiveFromDb(db, id, summary.digest);
+  if (stored !== undefined) {
+    if (digest(stored) !== summary.digest) throw new Error(`Archived task digest mismatch: ${id}`);
+    content = stored;
+  } else {
+    const path = join(resolve(root), summary.record);
+    assertNoSymlinkPath(root, summary.record);
+    if (!existsSync(path)) throw new Error(`Archived task record is missing: ${summary.record}`);
+    content = readFileSync(path, "utf8");
+    if (digest(content) !== summary.digest) throw new Error(`Archived task digest mismatch: ${id}`);
+    saveArchiveToDb(db, id, content, summary.digest);
+  }
   const task = parseJsonText(content, `Archived task record ${id}`);
   validateTask(id, task);
   if (!terminal(task) || task.status !== summary.status || task.updatedAt !== summary.updatedAt || (task.lessons?.length ?? 0) !== summary.lessonCount) throw new Error(`Archived task summary mismatch: ${id}`);
@@ -200,7 +235,8 @@ export const loadTask = (root, id, state = loadState(root)) => {
 
 export const saveState = (root, state) => {
   const normalized = validateState(structuredClone(state));
-  const persisted = existsSync(statePath(root)) ? loadState(root) : undefined;
+  const persisted = dbHasState(openStateDb(root)) ? loadState(root) : undefined;
+  const db = openStateDb(root);
   const archived = [];
   if (normalized.schemaVersion >= 3) {
     normalized.archive ??= {};
@@ -218,10 +254,12 @@ export const saveState = (root, state) => {
           writeAtomic(path, content);
         }
       } else writeAtomic(path, content);
+      saveArchiveToDb(db, task.id, content, summary.digest);
       normalized.archive[task.id] = summary; delete normalized.tasks[task.id]; archived.push(task.id);
     }
     validateState(normalized);
   }
+  saveStateToDb(db, normalized);
   assertNoSymlinkPath(root, ".agents/data/state/aidlc-state.json"); writeAtomic(statePath(root), `${JSON.stringify(normalized, null, 2)}\n`);
   state.tasks = normalized.tasks; state.archive = normalized.archive; state.schemaVersion = normalized.schemaVersion;
   return archived;
@@ -422,7 +460,7 @@ export const searchLessons = (root, state, query, areas = [], limit = 5) => { co
 
 export const listTaskSummaries = (state, options = {}) => { const active = Object.values(state.tasks).map((task) => ({ id: task.id, title: task.title, phase: task.phase, gate: task.gate, status: task.status, risk: task.risk, areas: task.areas, updatedAt: task.updatedAt, source: "active" })); const archived = options.includeArchive ? Object.values(state.archive ?? {}).map((task) => ({ id: task.id, title: task.title, phase: task.phase, gate: task.gate, status: task.status, risk: task.risk, areas: task.areas, updatedAt: task.updatedAt, source: "archive" })) : []; const queryTokens = tokens(options.query ?? ""); const statusSet = new Set(options.statuses ?? []); const filtered = [...active, ...archived].filter((item) => (!statusSet.size || statusSet.has(item.status)) && (!queryTokens.length || queryTokens.every((token) => tokens(`${item.id} ${item.title} ${item.areas.join(" ")}`).includes(token)))).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id)); const cursor = Math.max(0, options.cursor ?? 0); const limit = Math.max(1, Math.min(options.limit ?? 20, 100)); const items = filtered.slice(cursor, cursor + limit); return { items, nextCursor: cursor + items.length < filtered.length ? String(cursor + items.length) : null, total: filtered.length }; };
 
-const workplanScope = (item) => { const parts = [item.ownedPaths?.length ? `owns: ${item.ownedPaths.join(", ")}` : "", item.dependsOn?.length ? `after: ${item.dependsOn.join(", ")}` : ""].filter(Boolean); return parts.length ? ` — ${parts.join(" · ")}` : ""; };
+export const workplanScope = (item) => { const parts = [item.ownedPaths?.length ? `owns: ${item.ownedPaths.join(", ")}` : "", item.dependsOn?.length ? `after: ${item.dependsOn.join(", ")}` : ""].filter(Boolean); return parts.length ? ` — ${parts.join(" · ")}` : ""; };
 export const renderWorkplan = (task) => { const decisions = task.decisions.length ? task.decisions.map((item) => `- [${item.status === "approved" ? "x" : " "}] ${item.id} — ${item.label}${item.resolution ? ` — ${item.resolution}` : ""}`).join("\n") : "- None"; const tasks = task.tasks.length ? task.tasks.map((item) => `- [${item.status === "done" ? "x" : item.status === "in_progress" ? "~" : " "}] ${item.id} — ${item.label}${workplanScope(item)}`).join("\n") : "- None"; const lifecycle = [`- Status: \`${task.status}\``, task.handoff ? `- Handoff: \`${task.handoff.kind}\` — ${task.handoff.reason}` : "", task.closure ? `- Closure: ${task.closure.reason}` : "", task.predecessorTaskId ? `- Predecessor: \`${task.predecessorTaskId}\`` : "", task.successorTaskId ? `- Successor: \`${task.successorTaskId}\`` : "", task.lessonDisposition ? `- Lessons: \`${task.lessonDisposition.status}\`` : ""].filter(Boolean).join("\n"); return `# Workplan — ${task.title} (\`${task.id}\`)\n\n> Generated from canonical JSON state.\n\n## Lifecycle\n${lifecycle}\n\n## 🧩 Decisions (Approve plan — before implementation)\n${decisions}\n\n## 🧩 Tasks (Review implementation — work items)\n${tasks}\n`; };
 export const renderViews = (root, state = loadState(root), selected = Object.values(state.tasks)) => { for (const task of selected) { if (!task.artifacts.workplan) continue; assertNoSymlinkPath(root, task.artifacts.workplan); writeAtomic(join(resolve(root), task.artifacts.workplan), renderWorkplan(task)); } };
 

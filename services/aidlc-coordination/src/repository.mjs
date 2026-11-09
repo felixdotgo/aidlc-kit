@@ -3,9 +3,8 @@ import pg from "pg";
 import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { hasCurrentBuildApproval, nextAction, stampLegacyG2Waits, transitionDiagnostics, transitionTask, validateState } from "./lifecycle-core.mjs";
+import { emptyState, hasCurrentBuildApproval, nextAction, stampLegacyG2Waits, transitionDiagnostics, transitionTask, validateState } from "./lifecycle-core.mjs";
 
-const emptyState = () => ({ schemaVersion: 4, tasks: {}, archive: {} });
 const emptyIndex = (revision) => ({ schemaVersion: 1, sourceRevision: revision, taskIds: [], updatedAt: new Date().toISOString() });
 const parse = (value) => JSON.parse(value);
 const encode = (value) => JSON.stringify(value);

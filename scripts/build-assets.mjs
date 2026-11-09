@@ -16,4 +16,9 @@ writeFileSync(servicePackagePath, JSON.stringify(servicePackage, null, 2) + "\n"
 const serviceLockPath = "dist/services/aidlc-coordination/package-lock.json";
 try { const lock = JSON.parse(readFileSync(serviceLockPath, "utf8")); if (Object.prototype.hasOwnProperty.call(lock, "version")) lock.version = rootVersion; if (lock.packages && lock.packages[""] && Object.prototype.hasOwnProperty.call(lock.packages[""], "version")) lock.packages[""].version = rootVersion; writeFileSync(serviceLockPath, JSON.stringify(lock, null, 2) + "\n"); } catch {}
 cpSync("assets/aidlc/scripts/lib/store.mjs", "dist/services/aidlc-coordination/src/lifecycle-core.mjs");
+cpSync("assets/aidlc/scripts/lib/store-sqlite.mjs", "dist/services/aidlc-coordination/src/store-sqlite.mjs");
+// TS facade (`dist/src/state/shared.js`) resolves the canonical module at
+// `../../assets/aidlc/scripts/lib/store.mjs`; mirror it next to the installed assets.
+cpSync("assets/aidlc/scripts/lib/store.mjs", "dist/assets/aidlc/scripts/lib/store.mjs");
+cpSync("assets/aidlc/scripts/lib/store-sqlite.mjs", "dist/assets/aidlc/scripts/lib/store-sqlite.mjs");
 cpSync("dev/evaluator/assets", "dist/dev/evaluator/assets", { recursive: true });

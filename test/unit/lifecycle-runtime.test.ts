@@ -3,6 +3,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { applyPlan, planInit, readManifest } from "../../src/installer.js";
 import type { InitOptions } from "../../src/model.js";
@@ -84,11 +85,10 @@ test("installed lifecycle CLI parses strictly and resolves one canonical project
     const nested = join(root, "packages/example/src");
     mkdirSync(nested, { recursive: true });
     const nestedId = "2026-nested-root";
-    const unacknowledged = spawnSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), "task", "create", nestedId, "--title", "Nested root"], { cwd: nested, encoding: "utf8" });
-    assert.notEqual(unacknowledged.status, 0); assert.match(unacknowledged.stderr, /--switch-from 2026-strict-argv/);
-    const wrongAcknowledgement = spawnSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), "task", "create", nestedId, "--title", "Nested root", "--switch-from", "missing-task"], { cwd: nested, encoding: "utf8" });
+    const unacknowledged = spawnSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), "task", "create", nestedId, "--title", "Nested root", "--switch-from", id], { cwd: nested, encoding: "utf8" });
+    assert.equal(unacknowledged.status, 0); assert.match(unacknowledged.stdout, /"id": "2026-nested-root"/); // concurrent tasks: no actionable-task block; --switch-from is optional provenance
+    const wrongAcknowledgement = spawnSync(process.execPath, [join(root, ".agents/aidlc/scripts/state.mjs"), "task", "create", "nested-second", "--title", "Nested second", "--switch-from", "missing-task"], { cwd: nested, encoding: "utf8" });
     assert.notEqual(wrongAcknowledgement.status, 0); assert.match(wrongAcknowledgement.stderr, /must name only actionable task/);
-    run(root, "state.mjs", ["task", "create", nestedId, "--title", "Nested root", "--switch-from", id], nested);
     assert.equal(JSON.parse(run(root, "state.mjs", ["task", "show", nestedId])).result.id, nestedId);
     const marker = JSON.parse(run(root, "state.mjs", ["task", "show", id])).result.evidence.at(-1);
     assert.equal(marker.kind, "diagnostic");
@@ -285,8 +285,9 @@ test("persisted mutations degrade derived-step failures to warnings instead of f
     run(root, "state.mjs", ["lesson", "none", first, "--reason", "none", "--source", "smoke"]);
     run(root, "state.mjs", ["task", "archive", first, "--reason", "done", "--source", "smoke"]);
 
-    const recordPath = join(root, ".agents/data/state/archive", `${first}.json`);
-    writeFileSync(recordPath, readFileSync(recordPath, "utf8").replace("First archived", "TAMPERED"));
+    const tamperDb = new DatabaseSync(join(root, ".agents/data/state/aidlc.db"));
+    tamperDb.prepare("UPDATE archive_records SET content = ? WHERE id = ?").run(JSON.stringify({ tampered: true }), first);
+    tamperDb.close();
     const second = "2026-0006-second";
     const created = JSON.parse(run(root, "state.mjs", ["task", "create", second, "--title", "Second", "--area", "root"]));
     assert.equal(created.warnings, undefined);
@@ -355,6 +356,7 @@ test("installed entry scripts fail with a one-line JSON envelope and typed exit 
     assert.equal(badLessonIndex.status, 1); assert.match(JSON.parse(badLessonIndex.stderr.trim()).error.message, /Lesson index is corrupted or unreadable/);
 
     writeFileSync(join(root, ".agents/data/state/aidlc-state.json"), "{broken");
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(join(root, ".agents/data/state", `aidlc.db${suffix}`), { force: true });
     const corrupted = spawnSync(process.execPath, [script("state.mjs"), "task", "list"], { cwd: root, encoding: "utf8" });
     assert.equal(corrupted.status, 1);
     assert.match(JSON.parse(corrupted.stderr.trim()).error.message, /corrupted or unreadable/);

@@ -68,10 +68,11 @@ Each task owns `.agents/data/tasks/<task-id>/`: review artifacts (`intent.md`, `
 - In build, `nextAction` names the next `in_progress` or `todo` item and stays `run_phase` after the last item until verification, adversarial review, and gate preparation finish.
 - Options, root discovery, warnings, and the full envelope are in [Installed lifecycle scripts](./command-reference.md#installed-lifecycle-scripts).
 
-### Task switch guard
+### Concurrent tasks
 
-- `task create` fails closed while another task is actionable until the agent passes the returned `--switch-from` acknowledgement with explicit user direction; this stamps a resume-marker diagnostic on the acknowledged task without mutating it.
-- The coordination service does not enforce this guard (remote `upsertTask`/`replaceState` can add tasks alongside actionable work); MCP-backed hosts rely on the adapter protocol.
+- Multiple tasks may be actionable at once; each lead or conversation follows one task through `task next <task-id>`, and review gates are per-task. Tasks that touch overlapping project paths are coordinated by humans, exactly as in fleet mode.
+- `task create` accepts an optional `--switch-from <task-id,...>` acknowledgement that stamps a resume-marker diagnostic on each named task (which must be actionable) without mutating it; it is provenance, not a precondition.
+- The coordination service has never required this acknowledgement (remote `upsertTask`/`replaceState` can add tasks alongside actionable work).
 
 ## Review steps and approvals
 

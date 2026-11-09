@@ -44,7 +44,7 @@
     "prepublishOnly": "npm test && npm run lint && npm run release:check"
   },
   "engines": {
-    "node": ">=20.17"
+    "node": ">=24"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.5.2"

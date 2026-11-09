@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "bin": { "aidlc-fleet": "src/fleet-run.mjs" },
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=24" },
   "scripts": {
     "start": "node src/server.mjs",
     "test": "node --test test/*.test.mjs",

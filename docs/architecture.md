@@ -80,8 +80,8 @@ Dispatch derives from task `nextAction` and dependency-ready work; assignment re
 
 | Variant | Authority | How it runs |
 | --- | --- | --- |
-| Interactive | Local `.agents/data/state/` | In the current agent conversation; native workers claim and checkpoint via assignment records in the task's `runtime/` directory. |
-| Local | Local `.agents/data/state/` | Singleton daemon (`loop start` or `loop.sh up`): host-executed lead, Docker-isolated workers; gate approval only via trusted host terminal or dashboard. |
+| Interactive | Local `.agents/data/state/` — the `aidlc.db` SQLite database, with `aidlc-state.json` as a commit-friendly checkpoint | In the current agent conversation; native workers claim and checkpoint via assignment records in the task's `runtime/` directory. |
+| Local | Local `.agents/data/state/` — the same `aidlc.db` SQLite database | Singleton daemon (`loop start` or `loop.sh up`): host-executed lead, Docker-isolated workers; gate approval only via trusted host terminal or dashboard. |
 | Fleet | Coordination service | Service owns supervisor leases, gate checkpoints, reviewer approval; Docker workers hold own credentials; Git uses fenced lead/worker claims with commit handoff. SQLite single-host, PostgreSQL multi-host. |
 
 Every variant is a wrapper around the same data: the canonical task state (including `baseCommit`/`finalCommit`, written by `state.mjs` locally and `remote-state.mjs` in fleet mode through the shared core) and the task directory `.agents/data/tasks/<id>/`. Review artifacts (`intent.md`, `design.md`, `workplan.md`) sit at its root; everything operational sits under `runtime/`, identical for the no-loop workflow, the local loop, and fleet (one helper, `lib/task-runtime.mjs`, names every path and refuses symlinked components):

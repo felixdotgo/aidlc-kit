@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { applyPlan, planInit } from "../../src/installer.js";
 
@@ -72,14 +73,14 @@ test("isolated local facade requires workers and wires a build dispatcher into t
 
 type Item = { id: string; ownedPaths?: string[]; dependsOn?: string[]; status?: string };
 const buildTask = (items: Item[]) => ({ id: "build-task", title: "Build", type: "infra", phase: "build", gate: "G2_codereview", status: "active", language: "en", risk: "normal", areas: ["root"], branch: "—", artifacts: { intent: ".agents/data/tasks/build-task/intent.md", design: ".agents/data/tasks/build-task/design.md", workplan: ".agents/data/tasks/build-task/workplan.md" }, decisions: [], tasks: items.map((item) => ({ label: item.id, area: "root", status: "todo", ...item })), evidence: [], createdAt: "2026-10-22T00:00:00.000Z", updatedAt: "2026-10-22T00:00:00.000Z" });
-const buildFixture = (items: Item[]) => {
+const buildFixture = async (items: Item[]) => {
   const root = mkdtempSync(join(tmpdir(), "aidlc-local-dispatch-"));
   cpSync(resolve("dist/assets/.agents/aidlc"), join(root, ".agents/aidlc"), { recursive: true });
+  const fixtureStore: any = await import(pathToFileURL(resolve("dist/assets/.agents/aidlc/scripts/lib/store.mjs")).href);
   mkdirSync(join(root, ".agents/data/state"), { recursive: true });
-  const statePath = join(root, ".agents/data/state/aidlc-state.json");
-  const writeTask = (task: any) => writeFileSync(statePath, JSON.stringify({ schemaVersion: 4, tasks: { [task.id]: task }, archive: {} }));
+  const writeTask = (task: any) => { const state = fixtureStore.emptyState(); state.tasks = { [task.id]: task }; state.archive = {}; fixtureStore.saveState(root, state); };
+  const readTask = () => fixtureStore.loadState(root).tasks["build-task"];
   writeTask(buildTask(items));
-  const readTask = () => JSON.parse(readFileSync(statePath, "utf8")).tasks["build-task"];
   return { root, taskId: "build-task", writeTask, readTask };
 };
 const loadAssignments = async (): Promise<any> => import(resolve("dist/assets/.agents/aidlc/scripts/lib/assignment-store.mjs"));
@@ -115,7 +116,7 @@ test("batch planner keeps unresolved assignment paths busy and names the blockin
 });
 
 test("local dispatch runs only the non-overlapping first item and emits build_deferred", async () => {
-  const { root, taskId, readTask } = buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src/a.ts"] }]);
+  const { root, taskId, readTask } = await buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src/a.ts"] }]);
   try {
     const { dispatchLocalBuild } = await load();
     const batches: any[][] = [], events: any[] = [];
@@ -127,7 +128,7 @@ test("local dispatch runs only the non-overlapping first item and emits build_de
 });
 
 test("local dispatch forwards its live-log event sink to the worker batch", async () => {
-  const { root, taskId, readTask } = buildFixture([{ id: "a", ownedPaths: ["src"] }]);
+  const { root, taskId, readTask } = await buildFixture([{ id: "a", ownedPaths: ["src"] }]);
   try {
     const { dispatchLocalBuild } = await load();
     const events: any[] = [];
@@ -140,7 +141,7 @@ test("local dispatch forwards its live-log event sink to the worker batch", asyn
 });
 
 test("local dispatch reconciles a done item's reported assignment so its dependent can claim the same path", async () => {
-  const { root, taskId, readTask, writeTask } = buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src"], dependsOn: ["a"] }]);
+  const { root, taskId, readTask, writeTask } = await buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src"], dependsOn: ["a"] }]);
   try {
     const { dispatchLocalBuild } = await load(), assignmentStore = await loadAssignments();
     const claim = assignmentStore.claimLocalAssignment(root, { taskId, itemId: "a", workerId: "w1", ownedPaths: ["src"] });
@@ -154,7 +155,7 @@ test("local dispatch reconciles a done item's reported assignment so its depende
 });
 
 test("local dispatch refuses to auto-release an uncertain assignment of an unfinished item", async () => {
-  const { root, taskId, readTask } = buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src/b.ts"] }]);
+  const { root, taskId, readTask } = await buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["src/b.ts"] }]);
   try {
     const { dispatchLocalBuild } = await load(), assignmentStore = await loadAssignments();
     const claim = assignmentStore.claimLocalAssignment(root, { taskId, itemId: "a", workerId: "w1", ownedPaths: ["src"] });

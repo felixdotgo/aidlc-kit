@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
 
 export const statePathRelative = ".agents/data/state/aidlc-state.json";
+export const dbPathRelative = ".agents/data/state/aidlc.db";
 export const lessonIndexPathRelative = ".agents/data/lessons/index.json";
 export const memoryRegistryPathRelative = ".agents/data/memory/agentic-memory.json";
 export const stateLockPathRelative = ".agents/data/state/.aidlc-state.lock";
