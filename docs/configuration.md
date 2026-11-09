@@ -39,7 +39,7 @@ kernel → built-in topology → local profile parents/child → project config/
 
 - Built-in topology profiles: `topology/generic`, `topology/single`, `topology/workspace`, `topology/git-submodules`.
 - Arrays are stable-deduplicated; command keys are last-wins, so a project can replace a profile command.
-- Validate the resolved chain with `npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit profile validate .` (source checkout: [development guide](./development.md)).
+- Validate the resolved chain with `npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit profile validate .` (source checkout: [development guide](./development.md)).
 
 ## Rules, project data, and managed assets
 

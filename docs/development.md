@@ -73,7 +73,7 @@ printf 'Local test project: %s\n' "$AIDLC_LOCAL_PROJECT"
 
 ```sh
 npm pack
-npx --package felixdotgo-aidlc-kit-0.3.0.tgz -- aidlc-kit init .
+npx --package felixdotgo-aidlc-kit-0.4.0.tgz -- aidlc-kit init .
 ```
 
 Run from the archive's directory; pass a disposable project instead of `.` to avoid writing into the current directory.

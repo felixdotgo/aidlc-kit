@@ -10,7 +10,7 @@ The optional, Docker-deployable authority for a workflow workspace: remote canon
 Preview first; outside an interactive terminal, provide all four selection flags:
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit mcp setup . --dry-run \
+npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit mcp setup . --dry-run \
   --deployment docker --storage sqlite --bind localhost --workspace engineering
 ```
 

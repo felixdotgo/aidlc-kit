@@ -5,7 +5,7 @@ Day-to-day operation of the loop in `local` mode on one machine: start the daemo
 > [!WARNING]
 > Experimental, pre-1.0. See [Status and stability](./loop-runbook.md#status-and-stability).
 
-Commands use the published package (`npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit …`) or the installed launcher `./.agents/aidlc/scripts/loop.sh`; both drive the installed `loop-entry.mjs`. Source checkout: [Dogfooding this repository](./development.md#dogfooding-this-repository).
+Commands use the published package (`npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit …`) or the installed launcher `./.agents/aidlc/scripts/loop.sh`; both drive the installed `loop-entry.mjs`. Source checkout: [Dogfooding this repository](./development.md#dogfooding-this-repository).
 
 ## How the loop works
 
@@ -57,7 +57,7 @@ AIDLC_OPENCODE_MODEL=<provider/model>
 Underneath, `loop start` runs the persistent daemon in the foreground and reads no requirement; one per project (a second fails with `Loop daemon already running (pid N)`):
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop start
+npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit loop start
 ```
 
 - The daemon runs only **loop-owned** tasks: created through loop intake (`.agents/data/tasks/<id>/runtime/intake.json`) or holding a loop run record (`runtime/run.json`). An interactively created task (`state.mjs task create`) is never picked up, so the daemon cannot race an interactive lead.
@@ -69,7 +69,7 @@ Add a loop-owned task:
 - **Terminal intake** reads the requirement from stdin (never an argument), at most 8192 bytes; id and title derive from the first line (`--task-id`/`--title` override).
 
   ```sh
-  echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop intake
+  echo "Add PDF report export" | npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit loop intake
   echo "Add PDF report export" | node .agents/aidlc/scripts/loop-entry.mjs intake "" .   # installed entry point
   ```
 
@@ -83,7 +83,7 @@ Stopping (`Ctrl-C` or `SIGTERM`) is staged: first signal stops after the current
 ## Watch status
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit loop status --task-id <task-id>
+npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit loop status --task-id <task-id>
 ```
 
 Prints `authority`, `record` (the loop run record), and `nextAction` (`classification`: `run_phase`, `await_user`, `blocked`, `complete`, …).
@@ -146,7 +146,7 @@ A clarify or plan turn can take minutes without output. At a gate the daemon pri
 ## Use the web dashboard
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.3.0 aidlc-kit ui .   # loop.sh up starts the same dashboard
+npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit ui .   # loop.sh up starts the same dashboard
 ```
 
 Branded **Loop**, binds `127.0.0.1:4173` by default and prints `Open: http://127.0.0.1:4173` (or pass `--open`).
