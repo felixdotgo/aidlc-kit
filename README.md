@@ -1,6 +1,6 @@
 # aidlc-kit
 
-[![version](https://img.shields.io/badge/version-0.4.0-blue)](https://www.npmjs.com/package/@felixdotgo/aidlc-kit)
+[![version](https://img.shields.io/badge/version-0.5.0-blue)](https://www.npmjs.com/package/@felixdotgo/aidlc-kit)
 [![license](https://img.shields.io/npm/l/@felixdotgo/aidlc-kit)](https://github.com/felixdotgo/aidlc-kit/blob/main/LICENSE)
 [![node](https://img.shields.io/node/v/@felixdotgo/aidlc-kit)](https://nodejs.org/)
 
@@ -14,8 +14,8 @@ Installs an AI-DLC workflow into an existing project: a shared task lifecycle, e
 Requires Node.js 24+ and Codex, Claude Code, or OpenCode (Linux/macOS; Windows is best-effort).
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit init .          # previews, then installs after you confirm
-npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit doctor . --strict
+npx --package @felixdotgo/aidlc-kit@0.5.0 aidlc-kit init .          # previews, then installs after you confirm
+npx --package @felixdotgo/aidlc-kit@0.5.0 aidlc-kit doctor . --strict
 ```
 
 In a terminal, `init` asks for the adapter (unless exactly one is detected or you pass `--agent codex|claude|opencode` / `--all`) and the loop mode (unless `--loop-mode …`), previews the files, then asks you to confirm; `--yes` skips the confirmation, `--dry-run` writes nothing. The installed lifecycle scripts run locally and never contact a registry.

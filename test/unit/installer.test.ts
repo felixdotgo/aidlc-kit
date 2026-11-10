@@ -83,7 +83,7 @@ test("installs bundled assets with manifest v2 and separate project/state owners
     applyPlan(root, plan);
     const manifest = readManifest(root);
     assert.equal(manifest?.schemaVersion, 2);
-    assert.equal(manifest?.packageVersion, "0.4.0");
+    assert.equal(manifest?.packageVersion, "0.5.0");
     assert.equal(manifest?.remoteUpdates, false);
     assert.ok(manifest?.files[".agents/aidlc/orchestrator.md"]);
     assert.ok(manifest?.files[".agents/aidlc/templates/model-contract.md"]);
@@ -116,7 +116,7 @@ test("installs bundled assets with manifest v2 and separate project/state owners
     assert.equal(JSON.parse(readFileSync(join(root, ".agents/data/memory/agentic-memory.json"), "utf8")).schemaVersion, 1);
     assert.equal(JSON.parse(readFileSync(join(root, ".agents/aidlc/schemas/state.schema.json"), "utf8")).properties.schemaVersion.const, 4);
     assert.match(doctor(root), /^OK:/);
-    assert.match(status(root), /installed version: 0.4.0/);
+    assert.match(status(root), /installed version: 0.5.0/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -148,7 +148,7 @@ test("--agent opencode installs only an owner-scoped AGENTS.md block", () => {
     assert.equal(existsSync(join(root, ".codex")), false);
     assert.deepEqual(readManifest(root)?.adapters, ["opencode"]);
     assert.match(doctor(root), /^OK:/);
-    assert.match(status(root), /installed version: 0.4.0/);
+    assert.match(status(root), /installed version: 0.5.0/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -210,7 +210,7 @@ test("init migrates legacy project data with transactional backup", () => {
     assert.match(readFileSync(join(root, ".agents/config.json"), "utf8"), /\.agents\/project\/rules/);
     assert.equal(readFileSync(join(root, ".agents/data/index/repo-map.md"), "utf8"), "legacy index\n");
     assert.deepEqual(readFileSync(join(root, ".agents/project/rules/custom.bin")), Buffer.from([0, 255, 1, 2]));
-    assert.equal(readManifest(root)?.packageVersion, "0.4.0");
+    assert.equal(readManifest(root)?.packageVersion, "0.5.0");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
