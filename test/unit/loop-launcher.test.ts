@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { EXPOSED_WARNING, isLoopbackHost, parseLauncherArgs, readUiRecord, uiStatePath } from "../../src/cli/loop-launcher.js";
 import { applyPlan, planInit } from "../../src/installer.js";
-import { daemonStatus, ensureDaemon, stopDaemon } from "../../src/ui/daemon.js";
+import { daemonStatus, ensureDaemon, intakeTask, stopDaemon } from "../../src/ui/daemon.js";
 
 const cli = resolve("dist/src/cli.js");
 
@@ -228,4 +228,29 @@ test("dashboardReachable matches the recorded instance id, not just any dashboar
     assert.equal(await dashboardReachable({ url, instance: "instance-a" }), false, "another project's dashboard on the same port");
     assert.equal(await dashboardReachable({ url }), false, "a record without an id is never trusted");
   } finally { await new Promise<void>((done) => server.close(() => done())); box.cleanup(); }
+});
+
+test("intakeTask passes --derive-model and the explicit title through the intake child", { skip: process.platform === "win32" }, async () => {
+  const box = project(local);
+  try {
+    // A codex lead has no AIDLC_OPENCODE_MODEL, so --derive-model must fall back to
+    // the slugify derivation; the explicit title wins over both.
+    const created = await intakeTask(box.root, "Add login\nwith backoff", "  Custom title  ");
+    assert.deepEqual(created, { taskId: "add-login", title: "Custom title" });
+    const { execFileSync } = await import("node:child_process");
+    const shown = JSON.parse(execFileSync(process.execPath, [join(box.root, ".agents/aidlc/scripts/state.mjs"), "task", "show", "add-login", "--root", box.root], { encoding: "utf8" })).result;
+    assert.equal(shown.title, "Custom title", "the created task keeps the explicit title");
+  } finally { box.cleanup(); }
+});
+
+test("loop intake accepts --derive-model and --title and rejects unknown options", { skip: process.platform === "win32" }, async () => {
+  const box = project(local);
+  try {
+    const { execFileSync } = await import("node:child_process");
+    const entry = join(box.root, ".agents/aidlc/scripts/loop-entry.mjs");
+    const created = JSON.parse(execFileSync(process.execPath, [entry, "intake", "", box.root, "--derive-model", "--title", "Derived fallback"], { input: "Add login\nwith backoff", encoding: "utf8" }));
+    assert.equal(created.ok, true);
+    assert.deepEqual({ taskId: created.taskId, title: created.title }, { taskId: "add-login", title: "Derived fallback" });
+    assert.throws(() => execFileSync(process.execPath, [entry, "intake", "", box.root, "--bogus"], { input: "x", stdio: ["pipe", "pipe", "pipe"] }), /Unknown intake option: --bogus/);
+  } finally { box.cleanup(); }
 });

@@ -4,7 +4,7 @@ import { ARTIFACT_NAMES, artifactPayload, pendingFeedback, readUiState, readUiTa
 import { escapeHtml } from "../http.js";
 import { markdownToHtml } from "../markdown.js";
 import { uiMode, type UiOptions } from "../options.js";
-import { DECISION_TONE, feedbackPill, GATE_LABELS, gateLabel, gatePill, ITEM_TONE, phaseStepper, pill, relativeTime, renderGateViewHtml, RESULT_TONE, riskPill, statusPill } from "./components.js";
+import { closedAtText, DECISION_TONE, feedbackPill, GATE_LABELS, gateLabel, gatePill, ITEM_TONE, phaseStepper, pill, relativeTime, renderGateViewHtml, RESULT_TONE, riskPill, statusPill } from "./components.js";
 import { changesHref } from "./changes.js";
 import { liveRegion, pageHead, pageScripts, renderHeader, renderModals, reviewQueue } from "./layout.js";
 
@@ -292,6 +292,7 @@ node .agents/aidlc/scripts/remote-state.mjs gate approve ${escapeHtml(task.id)} 
   const body = `${drawerCta}<h1 class="ad-page-title">${escapeHtml(task.title)}</h1>
 <div class="ad-page-sub">${copyIdButton(task.id)}${statusPill(task.status, Boolean(task.handoff))}${gatePill(task.gate)}${riskPill(task.risk)}${feedbackPill(pending.length)}</div>
 ${phaseStepper(task.phase, task.gate, task.status, Boolean(task.handoff))}
+${closedAtText(task.status, task.phase) ? `<div class="is-size-7 has-text-grey mt-2">${closedAtText(task.status, task.phase)}</div>` : ""}
 ${fragment ? liveLog : ""}
 <div class="columns is-desktop">
   <div class="column is-8-desktop">

@@ -145,6 +145,19 @@ Local holder files share one format:
 - Inspect with `aidlc-kit loop leases --task-id <task-id>` or `node .agents/aidlc/scripts/assignment.mjs show <task-id>`, plus the worker's branch or worktree. `assignment.mjs reconcile <task-id>` when the outcome is recorded; `assignment.mjs release <task-id> <assignment-id>` only after confirming the work is abandoned. Then re-activate the task (dashboard **resume** or `state.mjs task status <task-id> --status active`).
 - `Build item <item> requires an owned path scope for Docker dispatch` — an item reached build without `--owns`; fix the plan (`PARTITION_SCOPE`).
 
+## Worker integration blocked (`integration_blocked`)
+
+A worker finished and reported a verified commit, but the batch could not cherry-pick it onto the integration branch. The event's `message` names the exact reason:
+
+- `Local integration worktree must be clean outside workflow data: <paths>` — uncommitted or untracked files in the checkout outside `.agents/data/`.
+- A cherry-pick error such as `error: could not apply <commit> …` — the commit conflicts with the integration branch (for example a commit made directly on the branch touching the item's paths).
+
+What happens and how to recover:
+
+- The worker's commit stays on its `aidlc/local/<uuid>` branch and the assignment stays `reported` (**held**); the loop never discards or auto-releases it. Other verified commits of the same batch still integrate (`build_partial` lists what did not); when nothing at all integrated, the batch fails and the daemon retries with backoff.
+- Fix the checkout first: commit, stash, or remove the dirty paths (or resolve the divergence that caused the conflict). Then re-activate the task (dashboard **resume** or `state.mjs task status <task-id> --status active`); the next dispatch retries.
+- The held `reported` assignment blocks re-claiming the item: run `node .agents/aidlc/scripts/assignment.mjs reconcile <task-id>` once the item's outcome is recorded in canonical state, or `assignment.mjs release <task-id> <assignment-id>` only after confirming the work is abandoned (it discards the worker's unintegrated result). See [Loop leases, locks and claims](#loop-leases-locks-and-claims).
+
 ## Task data still in the old place after an upgrade
 
 Versions before the `runtime/` layout kept per-task loop files under `.agents/data/loop/` (`assignments/<task>.json`, `events/<task>.jsonl`, `<task>.json` run record) and at the task directory root (`loop-intake.json`, `requirement.md`). Every reader still falls back to those locations, so nothing breaks, but the dashboard and diagnostics are simplest once they are moved:

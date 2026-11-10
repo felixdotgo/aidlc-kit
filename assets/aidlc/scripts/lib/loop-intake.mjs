@@ -3,28 +3,23 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join, resolve } from "node:path";
 import { ensureTaskRuntimeDir, resolveTaskRuntimeRead } from "./task-runtime.mjs";
 import { migrateTaskRuntime } from "./task-runtime-migrate.mjs";
+import { normalizeTitle } from "./store.mjs";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 
-const firstLine = (text) => {
-  if (typeof text !== "string") return "";
-  return text.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? "";
-};
-
 const slugify = (text) => {
-  const slug = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 127).replace(/-+$/, "");
+  const slug = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 48).replace(/-+$/, "");
   return slug || "loop-task";
 };
 
-/** Derive a memorable task id (kebab-case slug) and a descriptive title from the
- * requirement's first non-empty line, replacing the opaque `loop-<uuid>` id and
+/** Derive a memorable task id (kebab-case slug, at most 48 characters) and a
+ * descriptive title (one line, at most 100 characters — see `normalizeTitle`) from
+ * the requirement's first non-empty line, replacing the opaque `loop-<uuid>` id and
  * the unhelpful `Loop task <id>` title. */
 export function deriveTaskIdentity(requirement) {
-  // The dashboard editor writes Markdown: drop a leading heading/list/quote marker,
-  // bold markers, and backticks ("__" stays: it is common in identifiers) so "# Fix login" titles the task "Fix login".
-  const line = firstLine(requirement).replace(/^(?:#{1,6}(?:\s+|$)|[-*+]\s+|\d+[.)]\s+|>\s*)/, "").replace(/(\*\*|`)/g, "").trim();
-  return { slug: slugify(line), title: line ? line.slice(0, 256) : "Loop task" };
+  const title = normalizeTitle(requirement);
+  return { slug: slugify(title), title };
 }
 
 /** Prepare a durable, idempotent intake without treating it as lifecycle state. */
@@ -65,7 +60,7 @@ export async function prepareLoopIntake({ root, taskId, requirement, authority, 
     const existing = lstatSync(requirementPath);
     if (!existing.isFile() || existing.isSymbolicLink() || digest(readFileSync(requirementPath, "utf8")) !== record.requirementHash) throw new Error("Existing requirement does not match intake");
   }
-  const titleText = typeof title === "string" && title.trim() ? title.trim().slice(0, 256) : deriveTaskIdentity(requirement).title;
+  const titleText = normalizeTitle(typeof title === "string" && title.trim() ? title : requirement);
   let task = await readTask(taskId);
   if (!task) {
     try { await createTask({ taskId, title: titleText }); }

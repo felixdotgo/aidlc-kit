@@ -3,7 +3,7 @@ import { listTaskSummaries } from "../../state.js";
 import { pendingFeedback, readUiState } from "../data.js";
 import { escapeHtml } from "../http.js";
 import { uiMode, type UiOptions } from "../options.js";
-import { feedbackPill, gateLabel, gatePill, PHASES, phaseSteps, relativeTime, RISK_TONE, riskPill, STATUS_META, statusPill } from "./components.js";
+import { CLOSED_STATUSES, closedAtText, feedbackPill, gateLabel, gatePill, isClosedStatus, PHASES, phaseSteps, relativeTime, RISK_TONE, riskPill, STATUS_META, statusPill } from "./components.js";
 import { liveRegion, pageHead, pageScripts, renderHeader, renderModals, reviewQueue } from "./layout.js";
 
 /* ---------------------------------------------------------------------------
@@ -38,13 +38,17 @@ const CARD_FLAG_STATUSES = new Set(["paused", "closed", "superseded"]);
 const cardFlag = (status: string, handedOff: boolean): string =>
   handedOff || CARD_FLAG_STATUSES.has(status) ? statusPill(status, handedOff) : "";
 
+/** Small muted "closed at <phase>" line for terminal-but-not-done cards (the pill stays). */
+const cardClosedHint = (task: CardTask): string =>
+  isClosedStatus(task.status) ? `<span class="is-size-7 has-text-grey">${closedAtText(task.status, task.phase)}</span>` : "";
+
 /** Kanban card: the title leads; the column is the phase, so no id, phase bar, gate, or
  * routine status badge. The whole card is a click target (`data-card-href`): a plain
  * click opens the side panel, ctrl/cmd/middle-click a new tab, shift-click this tab. */
 const renderTaskCard = (task: CardTask, handedOff = false): string => {
   const href = `/tasks/${encodeURIComponent(task.id)}`;
   const attention = task.status === "blocked_on_user" && !handedOff;
-  const meta = [cardFlag(task.status, handedOff), task.risk !== "normal" ? riskPill(task.risk) : "", feedbackPill(task.feedbackPending ?? 0)].join("");
+  const meta = [cardFlag(task.status, handedOff), cardClosedHint(task), task.risk !== "normal" ? riskPill(task.risk) : "", feedbackPill(task.feedbackPending ?? 0)].join("");
   return `<article class="ad-card${attention ? " is-attention" : ""}" data-key="card:${escapeHtml(task.id)}" data-card-href="${href}" ${itemAttrs(task, handedOff)}>
     <div class="ad-card-title"><a href="${href}" data-task-link="${escapeHtml(task.id)}" title="${escapeHtml(task.id)}">${escapeHtml(task.title)}</a></div>
     ${meta ? `<div class="ad-card-meta">${meta}</div>` : ""}
@@ -55,7 +59,7 @@ const renderTaskCard = (task: CardTask, handedOff = false): string => {
 /** List row: the title is the link (id on hover); the id column is gone. */
 const renderListRow = (task: CardTask, handedOff: boolean): string => `<tr data-key="row:${escapeHtml(task.id)}" data-card-href="/tasks/${encodeURIComponent(task.id)}" ${itemAttrs(task, handedOff)}>
   <td class="has-text-weight-semibold ad-row-title"><a href="/tasks/${encodeURIComponent(task.id)}" data-task-link="${escapeHtml(task.id)}" title="${escapeHtml(task.id)}">${escapeHtml(task.title)}</a></td>
-  <td><div class="is-size-7 mb-1">${escapeHtml(task.phase)}</div>${phaseSteps(task.phase)}</td>
+  <td><div class="is-size-7 mb-1">${escapeHtml(task.phase)}</div>${isClosedStatus(task.status) ? `<div class="is-size-7 has-text-grey">${closedAtText(task.status, task.phase)}</div>` : phaseSteps(task.phase)}</td>
   <td>${gatePill(task.gate) || '<span class="has-text-grey">—</span>'}</td>
   <td>${statusPill(task.status, handedOff)}${feedbackPill(task.feedbackPending ?? 0)}</td>
   <td>${riskPill(task.risk)}</td>
@@ -112,14 +116,20 @@ export const renderBoard = (state: WorkflowState): string => {
       <button class="button is-primary" data-open="new-task-drawer">＋ New task</button>
     </div>`;
 
+  /* Closed/superseded tasks keep their canonical phase but render in the LAST
+   * column (headed "done / closed"), so they leave their old phase column. */
   const kanban = PHASES.map((phase, index) => {
-    const tasks = items.filter((task) => task.phase === phase);
+    const last = index === PHASES.length - 1;
+    const tasks = items.filter((task) =>
+      last
+        ? task.phase === phase || CLOSED_STATUSES.has(task.status)
+        : task.phase === phase && !CLOSED_STATUSES.has(task.status));
     const cards = tasks.map((task) => renderTaskCard(task, handedOff.has(task.id))).join("\n");
     // The client hides cards past the limit (unless expanded or filtering) and labels the button.
     const collapse = phase === "done" ? ` data-collapse="${DONE_COLUMN_LIMIT}"` : "";
     const more = phase === "done" ? `<button type="button" class="ad-column-more" data-column-more${tasks.length > DONE_COLUMN_LIMIT ? "" : " hidden"}>Show ${Math.max(0, tasks.length - DONE_COLUMN_LIMIT)} more</button>` : "";
     return `<section class="ad-column" data-key="column:${phase}" data-phase-column="${phase}"${collapse}>
-      <header class="ad-column-head"><span class="ad-step-index">${index + 1}</span><span class="ad-column-title">${escapeHtml(phase)}</span><span class="ad-count" data-column-count>${tasks.length}</span></header>
+      <header class="ad-column-head"><span class="ad-step-index">${index + 1}</span><span class="ad-column-title">${escapeHtml(last ? "done / closed" : phase)}</span><span class="ad-count" data-column-count>${tasks.length}</span></header>
       <div class="ad-column-body">${cards}<p class="ad-column-empty" data-column-empty${tasks.length ? " hidden" : ""}>No tasks</p>${more}</div>
     </section>`;
   }).join("\n");

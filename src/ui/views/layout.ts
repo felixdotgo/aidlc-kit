@@ -212,7 +212,11 @@ export const renderModals = (): string => `
       <button type="button" class="delete" aria-label="Close the new task panel" data-drawer-close></button>
     </header>
     <div class="ad-drawer-body">
-      <p class="ad-compose-intro">Describe the feature, bug fix, or change. The first line becomes the task title; the loop creates the task and starts the daemon if it is not running.</p>
+      <p class="ad-compose-intro">Describe the feature, bug fix, or change. The optional Title field overrides the derived one; otherwise the loop asks the lead model for a short one-line title (at most 100 characters), falling back to the requirement's first line. The loop creates the task and starts the daemon if it is not running.</p>
+      <div class="field">
+        <label class="label is-small" for="new-task-title-field">Title (optional)</label>
+        <div class="control"><input class="input" id="new-task-title-field" type="text" maxlength="100" placeholder="Title (optional — otherwise derived)"></div>
+      </div>
       <div class="ad-editor" data-editor>
         <div class="ad-editor-bar">
           <div class="ad-editor-tabs" role="tablist" aria-label="Editor mode">

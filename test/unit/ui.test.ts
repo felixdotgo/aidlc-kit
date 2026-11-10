@@ -405,6 +405,22 @@ test("dashboard renders kanban as the default view with phase columns, modals, a
   }
 });
 
+test("the new task drawer has an optional Title field and mentions the model-derived title", async () => {
+  const fixture = await startFixture(makeTask());
+  try {
+    const html = await (await fetch(`${fixture.base}/`)).text();
+    assert.match(html, /id="new-task-title-field"/);
+    assert.match(html, /for="new-task-title-field">Title \(optional\)</);
+    const intro = html.slice(html.indexOf('class="ad-compose-intro"'), html.indexOf("</p>", html.indexOf('class="ad-compose-intro"')));
+    assert.match(intro, /lead model/);
+    assert.match(intro, /100 characters/);
+    const all = await withScripts(fixture.base, html);
+    assert.match(all, /getElementById\("new-task-title-field"\)/, "the client script reads the title field");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("task detail renders artifacts and gate view as structured HTML, not raw JSON", async () => {
   const fixture = await startFixture(makeTask({ status: "blocked_on_user" }), true);
   try {

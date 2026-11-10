@@ -23,9 +23,24 @@ const statusPaths = (root) => {
 const commitPaths = (root, base, head) => lines(git(root, "diff", "--name-only", "-z", "--no-renames", base, head, "--"));
 // Workflow state and assignment records are lead-owned and never in worker
 // scopes. Their ordinary updates must not block integrating code-only commits.
-const clean = (root) => { if (statusPaths(root).some((path) => !path.startsWith(".agents/data/"))) throw new Error("Local integration worktree must be clean outside workflow data"); };
+// The dirty paths are named so an `integration_blocked` event tells the operator
+// exactly what to clean before the next dispatch retries.
+const clean = (root) => {
+  const dirty = statusPaths(root).filter((path) => !path.startsWith(".agents/data/"));
+  if (dirty.length) throw new Error(`Local integration worktree must be clean outside workflow data: ${dirty.join(", ")}`);
+};
 // A worker container that may still be running (and writing) must keep its claim.
 const cleanupUncertain = (message) => Object.assign(new Error(message), { cleanupUncertain: true });
+// Failure text plus the underlying command output when present (execFileSync
+// attaches git's stderr, e.g. the `could not apply <commit>` conflict detail),
+// flattened to one line so event and batch-error messages stay deterministic.
+// execFileSync already embeds short stderr into the Error message, so append
+// the captured stderr only when the message does not already contain it.
+const reasonOf = (error) => {
+  const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
+  const output = error instanceof Error && typeof error.stderr === "string" ? error.stderr.trim().replace(/\s+/g, " ") : "";
+  return output && !message.includes(output) ? `${message}: ${output}` : message;
+};
 
 /**
  * Release the claims of failed jobs this batch itself stopped, so a timed-out,
@@ -53,9 +68,15 @@ export async function releaseFailedAssignments({ root, taskId, outcomes, release
  * Execute a batch of independent local jobs in isolated worktrees, then integrate
  * verified scoped commits sequentially. Assignment metadata is not lifecycle
  * state: the caller alone marks canonical items done after inspecting results.
- * A failed batch is not auto-retried: claims of failed jobs the batch stopped
- * for certain are released (see releaseFailedAssignments); the rest are left
- * for reconciliation.
+ * A rejected job never strands a sibling's good commit: every fulfilled result
+ * is integrated in order even when another job failed, and an integration the
+ * checkout blocks (dirty paths or a cherry-pick conflict) is reported through
+ * an `integration_blocked` event while its reported claim stays held. The batch
+ * throws only when nothing at all integrated, naming released and held claims;
+ * on partial integration it returns the integrated results (with a
+ * `build_partial` summary event) so the caller marks only those items done.
+ * Claims of failed jobs the batch stopped for certain are released (see
+ * releaseFailedAssignments); the rest are left for reconciliation.
  */
 export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, worktreesRoot: inputWorktreesRoot, docker, timeoutMs = 600000, leaseMs = 300000, maxTurns = 12, maxStallTurns = 2, claim = claimLocalAssignment, heartbeat = heartbeatLocalAssignment, report = reportLocalAssignment, release = releaseLocalAssignment, recordIntegration = recordLocalIntegration, onEvent = () => {}, signal } = {}) {
   const root = resolve(inputRoot), worktreesRoot = resolve(inputWorktreesRoot);
@@ -223,28 +244,60 @@ export async function runLocalWorkerBatch({ root: inputRoot, taskId, jobs, workt
     } finally { clearInterval(timer); signal?.removeEventListener("abort", onCancel); workerLog?.close(); }
   };
   const results = await Promise.allSettled(prepared.map(execute));
-  const failure = results.find((result) => result.status === "rejected");
-  if (failure) {
-    const cause = failure.reason instanceof Error ? failure.reason.message : String(failure.reason);
-    const { released, held } = await releaseFailedAssignments({ root, taskId, release, outcomes: prepared.map((entry, index) => ({ assignmentId: entry.assignment.id, itemId: entry.job.itemId, reported: entry.reported === true, settled: results[index] })) });
-    if (!held.length) throw new Error(`Local worker batch failed: ${cause}; released assignment(s) for retry: ${released.join(", ")}`);
-    throw new Error(`Local worker batch requires reconciliation: ${cause}; released: ${released.join(", ") || "none"}; still held: ${held.map(({ itemId, reason }) => `${itemId} (${reason})`).join(", ")}`);
-  }
-  const completed = results.map((result) => result.value);
+  // Integrate every fulfilled, verified, scoped worker commit in order even when
+  // another job in the batch rejected: a failed sibling must not strand a good
+  // commit on its `aidlc/local/<uuid>` branch forever. A blocked integration
+  // keeps its reported claim (the worker's work is real and recorded) and is
+  // retried once the human resolves the blocker.
+  const integrated = [], blocked = [];
   let expectedHead = base;
-  for (const result of completed) {
-    clean(root);
-    if (git(root, "symbolic-ref", "--short", "HEAD").trim() !== initialBranch) throw new Error("Integration branch changed during worker run");
-    if (git(root, "rev-parse", "HEAD").trim() !== expectedHead) throw new Error("Integration HEAD changed during worker run");
-    if (!scoped(commitPaths(root, base, result.commit), jobs.find((job) => job.itemId === result.itemId).ownedPaths)) throw new Error("Worker scope changed before integration");
-    git(root, "-c", "user.name=AI-DLC integrator", "-c", "user.email=aidlc-integrator@localhost", "cherry-pick", result.commit);
-    result.integrationCommit = git(root, "rev-parse", "HEAD").trim();
-    expectedHead = result.integrationCommit;
+  for (const result of results) {
+    if (result.status === "rejected") continue;
+    const outcome = result.value;
+    let picking = false;
+    try {
+      clean(root);
+      if (git(root, "symbolic-ref", "--short", "HEAD").trim() !== initialBranch) throw new Error("Integration branch changed during worker run");
+      if (git(root, "rev-parse", "HEAD").trim() !== expectedHead) throw new Error("Integration HEAD changed during worker run");
+      if (!scoped(commitPaths(root, base, outcome.commit), jobs.find((job) => job.itemId === outcome.itemId).ownedPaths)) throw new Error("Worker scope changed before integration");
+      picking = true;
+      git(root, "-c", "user.name=AI-DLC integrator", "-c", "user.email=aidlc-integrator@localhost", "cherry-pick", outcome.commit);
+      picking = false;
+      outcome.integrationCommit = git(root, "rev-parse", "HEAD").trim();
+      expectedHead = outcome.integrationCommit;
+    } catch (error) {
+      // A started cherry-pick that failed may have left the checkout conflicted;
+      // reset it (best-effort: guard failures start no pick and `--abort` without
+      // a pick in progress errors harmlessly) so the next result can integrate.
+      if (picking) { try { git(root, "cherry-pick", "--abort"); } catch { /* no pick in progress to abort */ } }
+      const message = reasonOf(error);
+      blocked.push({ itemId: outcome.itemId, message });
+      await onEvent({ type: "integration_blocked", taskId, itemId: outcome.itemId, assignmentId: outcome.assignmentId, message });
+      continue;
+    }
+    integrated.push(outcome);
     // Best-effort: the cherry-pick already happened, so a failed record must not
     // fail the batch; the dashboard then falls back to the worker commit.
-    try { await recordIntegration(root, taskId, result.assignmentId, result.integrationCommit); }
-    catch (error) { await onEvent({ type: "diagnostic", taskId, itemId: result.itemId, message: `Could not record integration commit: ${error instanceof Error ? error.message : String(error)}` }); }
-    await onEvent({ type: "job_integrated", taskId, actor: result.workerId, phase: "build", itemId: result.itemId, assignmentId: result.assignmentId, commit: result.integrationCommit, summary: summarize(`integrated ${result.changedPaths.length} file(s) as ${result.integrationCommit.slice(0, 12)}`) });
+    try { await recordIntegration(root, taskId, outcome.assignmentId, outcome.integrationCommit); }
+    catch (error) { await onEvent({ type: "diagnostic", taskId, itemId: outcome.itemId, message: `Could not record integration commit: ${error instanceof Error ? error.message : String(error)}` }); }
+    await onEvent({ type: "job_integrated", taskId, actor: outcome.workerId, phase: "build", itemId: outcome.itemId, assignmentId: outcome.assignmentId, commit: outcome.integrationCommit, summary: summarize(`integrated ${outcome.changedPaths.length} file(s) as ${outcome.integrationCommit.slice(0, 12)}`) });
   }
-  return completed;
+  const rejected = results.filter((result) => result.status === "rejected");
+  if (rejected.length || blocked.length) {
+    const { released, held } = await releaseFailedAssignments({ root, taskId, release, outcomes: prepared.map((entry, index) => ({ assignmentId: entry.assignment.id, itemId: entry.job.itemId, reported: entry.reported === true, settled: results[index] })) });
+    const causes = [
+      ...rejected.map((result) => reasonOf(result.reason)),
+      ...blocked.map(({ itemId, message }) => `integration blocked for ${itemId}: ${message}`),
+    ];
+    if (!integrated.length) {
+      if (!held.length) throw new Error(`Local worker batch failed: ${causes.join("; ")}; released assignment(s) for retry: ${released.join(", ")}`);
+      throw new Error(`Local worker batch requires reconciliation: ${causes.join("; ")}; released: ${released.join(", ") || "none"}; still held: ${held.map(({ itemId, reason }) => `${itemId} (${reason})`).join(", ")}`);
+    }
+    const failed = [
+      ...results.map((result, index) => result.status === "rejected" ? `${prepared[index].job.itemId} (${reasonOf(result.reason)})` : null).filter(Boolean),
+      ...blocked.map(({ itemId, message }) => `${itemId} (${message})`),
+    ];
+    await onEvent({ type: "build_partial", taskId, message: `Local worker batch partially integrated: ${integrated.length} of ${results.length} job(s) integrated; not integrated: ${failed.join("; ")}` });
+  }
+  return integrated;
 }

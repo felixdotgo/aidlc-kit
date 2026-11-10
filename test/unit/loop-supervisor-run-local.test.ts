@@ -167,3 +167,20 @@ test("local dispatch refuses to auto-release an uncertain assignment of an unfin
     assert.equal(assignmentStore.showLocalAssignments(root, taskId).assignments[0].state, "uncertain");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("local dispatch marks only integrated results done when the batch is partial", async () => {
+  const { root, taskId, readTask } = await buildFixture([{ id: "a", ownedPaths: ["src"] }, { id: "b", ownedPaths: ["docs"] }]);
+  try {
+    const { dispatchLocalBuild } = await load();
+    const done: string[] = [];
+    const integrated = { assignmentId: "asg-a", itemId: "a", workerId: "w1", agent: "codex", baseCommit: "base", branch: "branch-a", commit: "c1", changedPaths: ["src/a.ts"], workspace: "/tmp/ws", integrationCommit: "i1" };
+    await dispatchLocalBuild({
+      root, taskId, task: readTask(), workers: { w1: "codex", w2: "claude" }, credentials: {}, worktreesRoot: join(tmpdir(), "aidlc-unused-worktrees"),
+      prompt: (_root: string, _taskId: string, itemId: string) => `Implement ${itemId}`,
+      ensureImage: ({ provider }: any) => `image-${provider}`,
+      runBatch: async ({ jobs }: any) => { assert.deepEqual(jobs.map((job: any) => job.itemId), ["a", "b"]); return [integrated]; },
+      markDone: (_root: string, _taskId: string, itemId: string) => { done.push(itemId); },
+    });
+    assert.deepEqual(done, ["a"], "only the integrated result is marked done");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

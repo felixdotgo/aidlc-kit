@@ -6,7 +6,7 @@
 import { acquireStateLock, approveAndAdvance, checkGate, closeTask, failEntry, handoffTask, listTaskSummaries, loadMemoryRegistry, loadState, loadTask, migrateState, nextAction, option, parseArguments, promoteAgenticMemory, rebuildLessonIndex, recordLesson, recordNoLessons, renderViews, reopenTask, retireAgenticMemory, rootOption, saveState, searchLessons, supersedeTask, transitionTask, validateArguments } from "./lib/runtime.mjs";
 import { readLiveLease } from "./lib/loop-lease.mjs";
 import { listFeatures, loadFeature, readyFeatureTasks, saveFeature } from "./lib/feature-store.mjs";
-import { readyTaskItems, recordTaskCommit } from "./lib/store.mjs";
+import { readyTaskItems, recordTaskCommit, normalizeTitle } from "./lib/store.mjs";
 import { headCommit } from "./lib/repo-head.mjs";
 import { requireLocalAuthority } from "./lib/authority.mjs";
 
@@ -136,8 +136,10 @@ if (group === "state" && action === "migrate") {
   saveFeature(root, feature, state);
   task.featureId = id; task.updatedAt = now(); persist([task]); respond(task, { feature });
 } else if (group === "task" && action === "create") {
-  const title = option(parsed, "--title");
-  if (!id || !title) throw new Error("task create requires <task-id> and --title");
+  const rawTitle = option(parsed, "--title");
+  if (!id || !rawTitle) throw new Error("task create requires <task-id> and --title");
+  // One line, markdown markers stripped, cut at a word boundary (≤ 100 chars), never rejected.
+  const title = normalizeTitle(rawTitle);
   if (loadTask(root, id, state)) throw new Error(`Task already exists: ${id}; use task next ${id} to resume it`);
   const collision = [...Object.keys(state.tasks), ...Object.keys(state.archive ?? {})].find((existing) => existing.toLowerCase() === id.toLowerCase());
   if (collision) throw new Error(`Task id collides case-insensitively with existing task: ${collision}`);

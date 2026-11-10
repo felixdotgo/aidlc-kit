@@ -69,6 +69,37 @@ test("list view drops the id column and links the title", () => {
   assert.doesNotMatch(row, /<code>list-task<\/code>/);
 });
 
+/** One kanban column's markup (columns contain no nested `<section>`). */
+const column = (html: string, name: string): string => {
+  const match = new RegExp(`<section class="ad-column" data-key="column:${name}" data-phase-column="${name}"[\\s\\S]*?<\\/section>`).exec(html);
+  assert.ok(match, `column ${name} is rendered`);
+  return match[0];
+};
+
+test("closed and superseded tasks render in the last kanban column with a closed-at hint", () => {
+  const html = board(
+    task("closed-plan", { phase: "plan", gate: "G1_review", status: "closed" }),
+    task("superseded-build", { phase: "build", gate: "G2_codereview", status: "superseded" }),
+    task("active-plan", { phase: "plan", status: "active" }),
+  );
+  // The last column keeps its canonical key/phase but is headed "done / closed".
+  const doneColumn = column(html, "done");
+  assert.match(doneColumn, />done \/ closed</);
+  assert.match(doneColumn, /data-key="card:closed-plan"/);
+  assert.match(doneColumn, /data-key="card:superseded-build"/);
+  assert.match(doneColumn, /data-column-count>2</, "column count includes closed tasks");
+  // ...while the plan column only holds the still-active task.
+  const planColumn = column(html, "plan");
+  assert.match(planColumn, /data-key="card:active-plan"/);
+  assert.doesNotMatch(planColumn, /data-key="card:closed-plan"/);
+  // Card and list row both show the visible closed-at hint with the canonical phase.
+  assert.match(card(html, "closed-plan"), /closed at plan/);
+  assert.match(card(html, "superseded-build"), /superseded at build/);
+  const row = /<tr data-key="row:closed-plan"[\s\S]*?<\/tr>/.exec(html)?.[0] ?? "";
+  assert.match(row, /closed at plan/);
+  assert.doesNotMatch(row, /class="ad-steps/, "closed rows drop the step bars for the hint");
+});
+
 test("the dashboard page has no help footer under the board", async () => {
   const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

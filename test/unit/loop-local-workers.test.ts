@@ -50,7 +50,9 @@ test("local workers accept OpenCode and still require Docker isolation", async (
 // Fake `docker` on PATH standing in for the engine: `image inspect` yields an
 // immutable id, `run … --version` passes preflight, and `run … exec` plays a
 // one-turn codex session that edits a.txt in the bind-mounted snapshot and
-// writes to both stdout (JSONL) and stderr. Every invocation is logged.
+// writes to both stdout (JSONL) and stderr. A marker file `fail-<itemId>` in
+// the worktrees root (the snapshot's parent) makes that item's turn exit 1
+// instead (simulated job failure). Every invocation is logged.
 function fakeDocker(dir: string) {
   const bin = join(dir, "bin"), log = join(dir, "docker.log");
   mkdirSync(bin, { recursive: true });
@@ -64,6 +66,13 @@ case "$1" in
     [ "$last" = "--version" ] && exit 0
     ws=""
     for arg; do case "$arg" in type=bind,src=*,dst=/workspace) ws=\${arg#type=bind,src=}; ws=\${ws%,dst=/workspace} ;; esac; done
+    item=""
+    for arg; do case "$arg" in aidlc.item=*) item=\${arg#aidlc.item=} ;; esac; done
+    if [ -n "$item" ] && [ -e "$(dirname "$ws")/fail-$item" ]; then
+      printf '%s\\n' '{"type":"thread.started","thread_id":"thread-1"}'
+      printf 'simulated worker failure for %s\\n' "$item" >&2
+      exit 1
+    fi
     printf 'isolated\\n' > "$ws/a.txt"
     printf '%s\\n' '{"type":"thread.started","thread_id":"thread-1"}'
     printf 'fake docker stderr\\n' >&2
@@ -166,4 +175,124 @@ test("failed batch release errors are held without masking the batch failure", a
   const outcomes = [{ assignmentId: "a1", itemId: "one", reported: false, settled: rejected("plain string failure") }, { assignmentId: "a2", itemId: "two", reported: false, settled: rejected(new Error("Worker worker changed no files")) }];
   assert.deepEqual(await releaseFailedAssignments({ root: "/root", taskId: "task", outcomes, release: hook.release }), { released: ["two"], held: [{ itemId: "one", reason: "release failed: Assignment cannot be released" }] });
   assert.deepEqual(hook.calls, ["a1", "a2"]);
+});
+
+// Two non-overlapping single-file jobs driven by the fake docker above: `one`
+// edits a.txt (succeeds), `two` owns b.txt and is marked failing per test.
+const pairJobs = [
+  { itemId: "one", workerId: "w1", agent: "codex", ownedPaths: ["a.txt"], prompt: "Implement A" },
+  { itemId: "two", workerId: "w2", agent: "codex", ownedPaths: ["b.txt"], prompt: "Implement B" },
+];
+const commitB = (root: string) => {
+  writeFileSync(join(root, "b.txt"), "base\n"); git(root, "add", "b.txt");
+  git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "b");
+};
+// Per-item assignment ids and recorded hook calls, so a test can tell which
+// claim was released or reported.
+const pairHooks = () => {
+  const released: string[] = [], reported: string[] = [];
+  return {
+    released, reported,
+    claim: async (_root: string, { itemId }: { itemId: string }) => ({ id: `asg-${itemId}` }),
+    heartbeat: async () => {},
+    report: async (_root: string, _taskId: string, assignmentId: string) => { reported.push(assignmentId); },
+    release: async (_root: string, _taskId: string, assignmentId: string) => { released.push(assignmentId); },
+  };
+};
+// Put fake bins on PATH (docker and/or git) for one batch run, like the existing
+// docker tests do, and restore the environment afterwards.
+function fakeEnv(t: any, ...bins: string[]) {
+  const prior = { PATH: process.env.PATH, OPENAI_API_KEY: process.env.OPENAI_API_KEY };
+  process.env.PATH = `${bins.join(":")}:${process.env.PATH ?? "/usr/bin:/bin"}`;
+  process.env.OPENAI_API_KEY = "test-only";
+  t.after(() => { for (const [key, value] of Object.entries(prior)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+}
+// A `git` that delegates everything to the real binary except cherry-picks,
+// which it refuses like a conflicting pick (git prints the conflict detail and
+// exits 1). Lets the batch integration loop hit a real cherry-pick failure.
+function conflictGit(dir: string) {
+  const bin = join(dir, "bin"), realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "git"), `#!/bin/sh
+is_pick=0; is_abort=0
+for arg; do case "$arg" in cherry-pick) is_pick=1 ;; --abort) is_abort=1 ;; esac; done
+if [ "$is_pick" = 1 ] && [ "$is_abort" = 0 ]; then
+  printf 'error: could not apply simulated conflict\\n' >&2
+  printf 'hint: after resolving the conflicts, mark the corrected paths\\n' >&2
+  exit 1
+fi
+exec '${realGit}' "$@"
+`);
+  chmodSync(join(bin, "git"), 0o755);
+  return bin;
+}
+
+test("batch integrates a fulfilled job when a sibling fails and releases the failed claim", { skip: process.platform !== "linux" || !process.getuid?.() }, async (t) => {
+  const { root, worktreesRoot } = fixture(t), { runLocalWorkerBatch } = await load();
+  commitB(root);
+  const docker = fakeDocker(join(root, "..", "fake"));
+  mkdirSync(worktreesRoot, { recursive: true }); writeFileSync(join(worktreesRoot, "fail-two"), "fail\n");
+  fakeEnv(t, docker.bin);
+  const events: any[] = [], recorded: string[][] = [], hooks = pairHooks();
+  const recordIntegration = async (_root: string, taskId: string, assignmentId: string, commit: string) => { recorded.push([taskId, assignmentId, commit]); };
+  const result = await runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: pairJobs, ...hooks, recordIntegration, onEvent: (event: any) => { events.push(event); }, docker: { image: "worker:test", credentials: { codex: ["OPENAI_API_KEY"] } } });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].itemId, "one");
+  assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "isolated\n");
+  assert.equal(readFileSync(join(root, "b.txt"), "utf8"), "base\n");
+  assert.deepEqual(hooks.reported, ["asg-one"]);
+  assert.deepEqual(hooks.released, ["asg-two"], "only the failed job's claim is released");
+  assert.deepEqual(recorded, [["task", "asg-one", result[0].integrationCommit]]);
+  assert.ok(events.some((event) => event.type === "job_integrated" && event.itemId === "one"), "the good commit is integrated");
+  const partial = events.find((event) => event.type === "build_partial");
+  assert.ok(partial, "partial integration is announced");
+  assert.match(partial.message, /not integrated: two \(codex exited 1: simulated worker failure for two\)/);
+});
+
+test("batch throws and integrates nothing when every job fails", { skip: process.platform !== "linux" || !process.getuid?.() }, async (t) => {
+  const { root, worktreesRoot } = fixture(t), { runLocalWorkerBatch } = await load();
+  commitB(root);
+  const docker = fakeDocker(join(root, "..", "fake"));
+  mkdirSync(worktreesRoot, { recursive: true });
+  writeFileSync(join(worktreesRoot, "fail-one"), "fail\n");
+  writeFileSync(join(worktreesRoot, "fail-two"), "fail\n");
+  fakeEnv(t, docker.bin);
+  const hooks = pairHooks();
+  await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs: pairJobs, ...hooks, docker: { image: "worker:test", credentials: { codex: ["OPENAI_API_KEY"] } } }), /Local worker batch failed: codex exited 1: simulated worker failure for one; codex exited 1: simulated worker failure for two; released assignment\(s\) for retry: one, two/);
+  assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "base\n");
+  assert.equal(readFileSync(join(root, "b.txt"), "utf8"), "base\n");
+  assert.deepEqual(hooks.released, ["asg-one", "asg-two"]);
+});
+
+test("batch emits integration_blocked for a dirty checkout, holds the reported claim, and throws", { skip: process.platform !== "linux" || !process.getuid?.() }, async (t) => {
+  const { root, worktreesRoot } = fixture(t), { runLocalWorkerBatch } = await load();
+  const docker = fakeDocker(join(root, "..", "fake"));
+  fakeEnv(t, docker.bin);
+  const events: any[] = [], hooks = pairHooks();
+  // The dirty path appears only after the worker reported, so the batch starts
+  // clean and the per-result integration guard trips on it.
+  hooks.report = async (_root: string, _taskId: string, assignmentId: string) => { hooks.reported.push(assignmentId); writeFileSync(join(root, "dirty.txt"), "dirty\n"); };
+  await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs, ...hooks, onEvent: (event: any) => { events.push(event); }, docker: { image: "worker:test", credentials: { codex: ["OPENAI_API_KEY"] } } }), /Local worker batch requires reconciliation: integration blocked for one: Local integration worktree must be clean outside workflow data: dirty\.txt; released: none; still held: one \(reported, not integrated\)/);
+  const blockedEvent = events.find((event) => event.type === "integration_blocked");
+  assert.ok(blockedEvent, "integration_blocked event is emitted");
+  assert.equal(blockedEvent.taskId, "task"); assert.equal(blockedEvent.itemId, "one"); assert.equal(blockedEvent.assignmentId, "asg-one");
+  assert.match(blockedEvent.message, /dirty\.txt/);
+  assert.deepEqual(hooks.reported, ["asg-one"]);
+  assert.deepEqual(hooks.released, [], "the reported claim is held, never auto-released");
+  assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "base\n", "nothing integrated");
+});
+
+test("batch emits integration_blocked for a cherry-pick conflict and holds the claim", { skip: process.platform !== "linux" || !process.getuid?.() }, async (t) => {
+  const { root, worktreesRoot } = fixture(t), { runLocalWorkerBatch } = await load();
+  const docker = fakeDocker(join(root, "..", "fake"));
+  fakeEnv(t, docker.bin, conflictGit(join(root, "..", "fake-git")));
+  const events: any[] = [], hooks = pairHooks();
+  await assert.rejects(() => runLocalWorkerBatch({ root, worktreesRoot, taskId: "task", jobs, ...hooks, onEvent: (event: any) => { events.push(event); }, docker: { image: "worker:test", credentials: { codex: ["OPENAI_API_KEY"] } } }), /Local worker batch requires reconciliation: integration blocked for one: .*could not apply simulated conflict hint: after resolving the conflicts, mark the corrected paths\s*; released: none; still held: one \(reported, not integrated\)/);
+  const blockedEvent = events.find((event) => event.type === "integration_blocked");
+  assert.ok(blockedEvent, "integration_blocked event is emitted");
+  assert.match(blockedEvent.message, /could not apply simulated conflict/);
+  assert.equal(blockedEvent.message.split("could not apply simulated conflict").length, 2, "the git conflict detail appears exactly once (no execFileSync duplication)");
+  assert.deepEqual(hooks.reported, ["asg-one"]);
+  assert.deepEqual(hooks.released, [], "the conflicted claim is held, never auto-released");
+  assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "base\n", "the aborted pick left the checkout unchanged");
 });

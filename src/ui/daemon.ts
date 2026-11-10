@@ -172,8 +172,13 @@ export const stopDaemon = async (root: string, { now = false, timeoutMs = 15000,
   return { wasRunning: true, stopped, pid };
 };
 
-export const intakeTask = async (root: string, requirement: string): Promise<{ taskId: string; title: string }> => {
-  const output = await runNode(root, loopArgs(root, "intake"), { input: requirement, timeout: 30000 });
+/** Loop intake: creates the task from `requirement` (and starts the daemon from the
+ * caller). Always asks for a model-derived title/id (`--derive-model`; the slugify
+ * derivation is the fallback) and passes `title` as an explicit override when given.
+ * The long timeout covers lead-model latency. */
+export const intakeTask = async (root: string, requirement: string, title?: string): Promise<{ taskId: string; title: string }> => {
+  const args = [...loopArgs(root, "intake"), "--derive-model", ...(typeof title === "string" && title.trim() ? ["--title", title.trim()] : [])];
+  const output = await runNode(root, args, { input: requirement, timeout: 120000 });
   const parsed = JSON.parse(output) as { taskId?: unknown; title?: unknown };
   if (typeof parsed.taskId !== "string" || typeof parsed.title !== "string") throw new Error("loop intake returned no task id");
   return { taskId: parsed.taskId, title: parsed.title };

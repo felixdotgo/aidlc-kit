@@ -211,10 +211,13 @@ export const ROUTES: Route[] = [
     handle: async ({ options, req, res }) => {
       const fields = await fieldsOf(req, TEXT_BODY_LIMIT);
       const requirement = fields["requirement"] ?? "";
+      const rawTitle = fields["title"];
+      if (rawTitle !== undefined && typeof rawTitle !== "string") return sendJson(res, 400, { ok: false, error: "title must be a string" });
+      const title = typeof rawTitle === "string" ? rawTitle.trim() : "";
       if (!requirement.trim()) return sendJson(res, 400, { ok: false, error: "requirement is required" });
       if (Buffer.byteLength(requirement) > 8192) return sendJson(res, 400, { ok: false, error: "requirement exceeds 8192 bytes" });
       let created: { taskId: string; title: string };
-      try { created = await intakeTask(options.root, requirement); }
+      try { created = await intakeTask(options.root, requirement, title || undefined); }
       catch (error) { return sendJson(res, 409, { ok: false, error: childError(error) }); }
       sendJson(res, 201, { ok: true, ...created, daemon: ensureDaemon(options.root) });
     },

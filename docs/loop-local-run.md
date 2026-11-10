@@ -15,6 +15,16 @@ Commands use the published package (`npx --package @felixdotgo/aidlc-kit@0.4.0 a
 - It also stops after the per-run `maxTurns` budget (a resumed run gets a fresh one), after `maxStallTurns` unchanged turns, or at `blocked`/`terminal`/`complete` (`loop.limits`: [Configuration](./configuration.md#optional-loop-configuration)).
 - Config alone runs nothing; only `loop start` or `loop.sh up` runs the loop.
 
+## How worker commits reach the integration branch
+
+Each build batch runs its jobs in isolated worktrees (`aidlc/local/<uuid>` branches under the worktrees root, outside the checkout). A worker's verified, scoped commit is **reported** (event `worker_reported`, assignment stays `reported`), then cherry-picked onto the integration branch (the task checkout) as one commit per item, in item order, authored by `AI-DLC integrator`.
+
+Integration is per worker, never all-or-nothing:
+
+- If a job in the batch fails, the batch still integrates every other verified commit in order and marks only the integrated items done; the failed job's claim is released for retry and the partial outcome is announced once (`build_partial`, listing failed items and reasons).
+- If a reported commit cannot be applied — uncommitted changes outside `.agents/data/` in the checkout, or a cherry-pick conflict — the batch emits `integration_blocked` naming the reason, keeps that assignment held, and continues with the other results. Nothing at all integrated → the batch fails with released/held details (see [Troubleshooting](./troubleshooting.md#worker-integration-blocked-integration_blocked)).
+- The gate review at `G2_codereview` prints the integration commit.
+
 ## Prerequisites
 
 - Linux host with Docker (`docker info` must pass for the build phase) and a POSIX shell; Node.js ≥ 24.
@@ -142,6 +152,10 @@ A clarify or plan turn can take minutes without output. At a gate the daemon pri
 | `daemon_poll_error` | The task list could not be read; the daemon keeps polling. |
 | `daemon_turn_error` | A task run threw (or ended `blocked`/`reconcile`); retried with exponential backoff (poll interval doubled per failure, capped at 10 minutes). |
 | `build_deferred` | A ready build item held for a later batch. `reason`: overlaps another item, busy path held by an active assignment, unresolved assignment, or `capacity` (one item per configured worker per batch). |
+| `worker_reported` | A worker finished and reported its scoped commit (`commit`, `changedPaths`). |
+| `job_integrated` | The reported commit was cherry-picked onto the integration branch (`assignmentId`, `commit`). |
+| `integration_blocked` | A reported commit could not be integrated: the checkout has uncommitted changes outside `.agents/data/`, or the cherry-pick conflicted. The assignment is held; `message` names the dirty paths or the conflict. |
+| `build_partial` | Only some jobs of the batch integrated; `message` lists the failed items and reasons. |
 
 ## Use the web dashboard
 
@@ -219,6 +233,7 @@ The JSON output reports `status` (`gate`, `paused`, `blocked`, or `complete`) wi
 - [Dashboard live log or actions do nothing](./troubleshooting.md#dashboard-live-log-or-actions-do-nothing)
 - [Loop leases, locks and claims](./troubleshooting.md#loop-leases-locks-and-claims) — "already running", unapprovable gate, stuck claims
 - [Build items deferred](./troubleshooting.md#build-items-deferred-or-build-dispatch-failure-unresolved-assignment) — `build_deferred`, `build dispatch failure`
+- [Worker integration blocked (`integration_blocked`)](./troubleshooting.md#worker-integration-blocked-integration_blocked)
 
 ## Related
 

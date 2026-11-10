@@ -557,6 +557,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const counter = document.getElementById("new-task-count");
   const startBtn = document.getElementById("new-task-submit");
   const preview = document.getElementById("new-task-preview");
+  const titleField = document.getElementById("new-task-title-field");
   const DRAFT_KEY = "aidlc-new-task-draft";
   const saveDraft = () => { try { if (requirement.value) localStorage.setItem(DRAFT_KEY, requirement.value); else localStorage.removeItem(DRAFT_KEY); } catch (error) { /* storage disabled */ } };
   const updateCounter = () => {
@@ -648,12 +649,14 @@ document.addEventListener("DOMContentLoaded", () => {
   if (startBtn) startBtn.addEventListener("click", () => withLoading(startBtn, async () => {
     const value = requirement ? requirement.value : "";
     if (!value.trim()) { toast("Describe the requirement first", "warning"); setEditorTab("write"); return; }
-    const res = await post("/api/loop/start", { requirement: value });
+    const title = titleField && typeof titleField.value === "string" ? titleField.value.trim() : "";
+    const res = await post("/api/loop/start", { requirement: value, ...(title ? { title } : {}) });
     if (res.status >= 200 && res.status < 300) {
       const daemon = res.body.daemon || {};
       toast("Task " + res.body.taskId + " created", "success", daemon.started ? "Started the loop daemon (pid " + daemon.pid + ")" : "Picked up by the running daemon", "/tasks/" + encodeURIComponent(res.body.taskId));
       hideDrawer(document.getElementById("new-task-drawer"));
       if (requirement) { requirement.value = ""; updateCounter(); saveDraft(); setEditorTab("write"); }
+      if (titleField && typeof titleField.value === "string") titleField.value = "";
       await liveRefresh();
     } else failureToast(res, "Could not create the task");
   }));

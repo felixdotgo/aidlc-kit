@@ -16,6 +16,22 @@ const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const commitPattern = /^[0-9a-f]{7,64}$/;
 const commitFields = ["baseCommit", "finalCommit"];
 export const digest = (content) => createHash("sha256").update(content).digest("hex");
+/** Normalize a requirement's first non-empty line into a single-line task title:
+ * strips a leading markdown marker (heading/list/quote) and bold/code markers, then
+ * cuts at the last word boundary at or below `limit` characters. Never throws and
+ * never rejects: empty input, or text reduced to marker residue (only whitespace,
+ * `*`, `-`, `_` — e.g. a horizontal rule like `***`), falls back to "Loop task". */
+export const normalizeTitle = (text, limit = 100) => {
+  const line = typeof text === "string"
+    ? text.split(/\r?\n/).map((entry) => entry.trim()).find((entry) => entry.length > 0) ?? ""
+    : "";
+  const cleaned = line.replace(/^(?:#{1,6}(?:\s+|$)|[-*+]\s+|\d+[.)]\s+|>\s*)/, "").replace(/(\*\*|`)/g, "").trim();
+  if (!cleaned || /^[\s*_-]+$/.test(cleaned)) return "Loop task";
+  if (cleaned.length <= limit) return cleaned;
+  const cut = cleaned.slice(0, limit);
+  const boundary = cut.lastIndexOf(" ");
+  return boundary > 0 ? cut.slice(0, boundary) : cut;
+};
 const archiveRecordPath = (id) => `.agents/data/state/archive/${id}.json`;
 export const taskRecordContent = (task) => `${JSON.stringify(task, null, 2)}\n`;
 export const assertNoSymlinkPath = (root, relative) => { let cursor = resolve(root); for (const part of normalize(relative).split(/[\\/]/).filter(Boolean)) { cursor = join(cursor, part); if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) throw new Error(`State path crosses a symlink: ${relative}`); } };

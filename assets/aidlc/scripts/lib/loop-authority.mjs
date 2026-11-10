@@ -22,12 +22,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, rmdirSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { requireLocalAuthority } from "./authority.mjs";
-import { isLoopProvider } from "./loop-drivers.mjs";
+import { isLoopProvider, OPENCODE_MODEL } from "./loop-drivers.mjs";
 import { deriveTaskIdentity, prepareLoopIntake } from "./loop-intake.mjs";
+import { deriveLoopIdentity } from "./loop-identity-model.mjs";
 import { readLoopRecord, validateLimits } from "./loop-runtime.mjs";
 import { createIsolatedLocalSupervisor } from "./loop-supervisor-run-local.mjs";
 import { explainFleetConflict } from "./loop-holder.mjs";
-import { loadState, loadTask, nextAction } from "./store.mjs";
+import { loadState, loadTask, nextAction, normalizeTitle } from "./store.mjs";
 import { resolveTaskRuntimeRead, taskRuntimeDir } from "./task-runtime.mjs";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -56,6 +57,20 @@ const uniqueTaskId = (root, slug, takenIds) => {
   let taskId = slug;
   for (let suffix = 2; existing.has(taskId.toLowerCase()); suffix += 1) taskId = `${base}-${suffix}`;
   return taskId;
+};
+
+/** The model an opencode lead would use (AIDLC_OPENCODE_MODEL), or undefined — the
+ * only input `deriveLoopIdentity` accepts, so other leads always use the fallback. */
+const resolveModel = (agent, env) => {
+  if (agent !== "opencode") return undefined;
+  const value = (env ?? process.env).AIDLC_OPENCODE_MODEL ?? process.env.AIDLC_OPENCODE_MODEL;
+  return typeof value === "string" && OPENCODE_MODEL.test(value.trim()) ? value.trim() : undefined;
+};
+
+/** Identity for an intake: the model-derived one when requested and available, else the slugify derivation. */
+const intakeIdentity = async (requirement, { agent, env, deriveModel = false }) => {
+  const modeled = deriveModel ? await deriveLoopIdentity(requirement, { model: resolveModel(agent, env) }) : null;
+  return modeled ?? deriveTaskIdentity(requirement);
 };
 
 /** Run intake and roll back the intake files this call created when no task came into being. */
@@ -88,7 +103,7 @@ export function isLocalLoopOwned(root, taskId) {
   return readLoopRecord(root, taskId) !== null;
 }
 
-export function createLocalAuthority({ root, agent, workers = {}, workerImages = {}, limits, pollMs, supervisor = createIsolatedLocalSupervisor } = {}) {
+export function createLocalAuthority({ root, agent, workers = {}, workerImages = {}, limits, pollMs, supervisor = createIsolatedLocalSupervisor, env = process.env } = {}) {
   requireLocalAuthority();
   const stateScript = join(root, ".agents/aidlc/scripts/state.mjs");
   const owned = (id) => { try { return isLocalLoopOwned(root, id); } catch { return true; } };
@@ -103,13 +118,13 @@ export function createLocalAuthority({ root, agent, workers = {}, workerImages =
       return readLoopRecord(root, taskId) ? run.resume() : run.start();
     },
     /** Interactive work keeps priority: intake refuses while a non-loop task is actionable. */
-    async intake({ requirement, taskId: requested, title: requestedTitle }) {
+    async intake({ requirement, taskId: requested, title: requestedTitle, deriveModel = false }) {
       validRequirement(requirement);
-      const identity = deriveTaskIdentity(requirement);
+      const identity = await intakeIdentity(requirement, { agent, env, deriveModel });
       const state = loadState(root);
       const taskId = requested || uniqueTaskId(root, identity.slug, [...Object.keys(state.tasks), ...Object.keys(state.archive ?? {})]);
       if (!ID.test(taskId)) throw new Error("Valid task ID required");
-      const title = requestedTitle || identity.title;
+      const title = typeof requestedTitle === "string" && requestedTitle.trim() ? normalizeTitle(requestedTitle) : identity.title;
       const actionableIds = (current) => Object.values(current.tasks).filter((task) => task.id !== taskId && nextAction(task, root).classification === "run_phase").map((task) => task.id).sort();
       const interactive = actionableIds(state).filter((id) => !owned(id));
       if (interactive.length) throw new Error(`Task create is blocked while interactive work is actionable: ${interactive.join(", ")}. Finish or pause it before starting loop work`);
@@ -198,12 +213,12 @@ export async function createFleetAuthority({ root, agent, workers = {}, limits, 
       // The fleet supervisor already emitted its `gate` event through onEvent.
       return result && typeof result === "object" ? { ...result, gateEmitted: true } : result;
     },
-    async intake({ requirement, taskId: requested, title: requestedTitle }) {
+    async intake({ requirement, taskId: requested, title: requestedTitle, deriveModel = false }) {
       validRequirement(requirement);
-      const identity = deriveTaskIdentity(requirement);
+      const identity = await intakeIdentity(requirement, { agent, env, deriveModel });
       const taskId = requested || uniqueTaskId(root, identity.slug, (await repository.listTasks()).map((task) => task.id));
       if (!ID.test(taskId)) throw new Error("Valid task ID required");
-      const title = requestedTitle || identity.title;
+      const title = typeof requestedTitle === "string" && requestedTitle.trim() ? normalizeTitle(requestedTitle) : identity.title;
       await guardedIntake(root, taskId, readTask, () => prepareLoopIntake({ root, taskId, requirement, title, authority: "fleet", readTask, createTask: async ({ taskId: id, title: taskTitle }) => { await withLead(id, ["task", "create", id, "--title", taskTitle]); } }));
       return { ok: true, taskId, title, authority: "fleet" };
     },
@@ -254,7 +269,7 @@ export async function createLoopAuthority({ root, config, env = process.env, ...
   // Fail fast on a bad roster or `loop.limits` instead of failing every task run.
   if (!isLoopProvider(agent) || !workers || typeof workers !== "object" || Array.isArray(workers) || !Object.keys(workers).length || Object.entries(workers).some(([id, provider]) => !ID.test(id) || !isLoopProvider(provider))) throw new Error("Loop requires a configured lead and worker providers");
   if (config?.loop?.limits !== undefined) validateLimits(config.loop.limits);
-  const options = { root, agent, workers, workerImages: config?.loop?.workerImage ?? {}, limits: config?.loop?.limits, pollMs: config?.loop?.pollMs, ...overrides };
+  const options = { root, agent, workers, workerImages: config?.loop?.workerImage ?? {}, limits: config?.loop?.limits, pollMs: config?.loop?.pollMs, env, ...overrides };
   if (mode === "local") return createLocalAuthority(options);
   if (mode === "fleet") return createFleetAuthority({ ...options, env });
   throw new Error("Loop mode is off; configure an enabled loop mode first");

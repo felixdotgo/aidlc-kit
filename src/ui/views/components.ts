@@ -59,6 +59,15 @@ export const phaseSteps = (phase: string): string => {
   return `<div class="ad-steps${done ? " is-done" : ""}" role="img" aria-label="Phase ${current + 1} of ${PHASES.length}: ${escapeHtml(phase)}">${bars}</div>`;
 };
 
+/** Terminal-but-not-done statuses: the task keeps its canonical phase, only the
+ * presentation changes (last kanban column, closed-at hint). */
+export const CLOSED_STATUSES = new Set(["closed", "superseded"]);
+export const isClosedStatus = (status: string): boolean => CLOSED_STATUSES.has(status);
+
+/** Visible hint text for a closed/superseded task: "closed at <phase>" ("" otherwise). */
+export const closedAtText = (status: string, phase: string): string =>
+  isClosedStatus(status) ? `${status} at ${escapeHtml(phase)}` : "";
+
 /** Statuses whose current step shows the "radioactive" pulse: the task is moving
  * (`active`) or waiting for a human (`blocked_on_user`, pulsed in the warning tone). */
 const PULSE_STATUSES = new Set(["active", "blocked_on_user"]);

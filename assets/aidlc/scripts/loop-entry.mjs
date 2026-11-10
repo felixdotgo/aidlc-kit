@@ -24,6 +24,8 @@
  *   and never needs the reviewer credential)
  *
  * Positional arguments: [action, taskId, root, mode, provider, tag, title].
+ * `intake` also accepts `--derive-model` (model-derived title/id, fallback on any
+ * failure) and `--title <title>` (overrides the derived title) after the action.
  * Gate approval for local tasks stays on the trusted terminal (`loop-gate.mjs`).
  */
 import { readFileSync } from "node:fs";
@@ -42,7 +44,36 @@ import { migrateAllTaskRuntime } from "./lib/task-runtime-migrate.mjs";
 import { formatLoopEnvReport, loadLoopEnv, publicReport } from "./lib/loop-env.mjs";
 import { callRemoteTool } from "./lib/remote-state-client.mjs";
 
-const [action, taskArg, rootArg, modeArg, providerArg, tagArg, titleArg] = process.argv.slice(2);
+const rawArgv = process.argv.slice(2);
+/** `intake` option flags (the dashboard adds `--derive-model` and `--title`); the
+ * remaining tokens keep their positional meaning (`action taskId root mode ...`). */
+const parseIntakeOptions = (argv) => {
+  const rest = [];
+  let deriveModel = false;
+  let title;
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === "--derive-model") { deriveModel = true; continue; }
+    if (token === "--title") {
+      const value = argv[index + 1];
+      if (typeof value !== "string") throw new Error("--title requires a value");
+      title = value; index += 1; continue;
+    }
+    if (token.startsWith("--")) throw new Error(`Unknown intake option: ${token}`);
+    rest.push(token);
+  }
+  return { deriveModel, title, rest };
+};
+let intakeOptions = null;
+let positionalArgv = rawArgv;
+try {
+  intakeOptions = rawArgv[0] === "intake" ? parseIntakeOptions(rawArgv.slice(1)) : null;
+  positionalArgv = intakeOptions ? [rawArgv[0], ...intakeOptions.rest] : rawArgv;
+} catch (error) {
+  console.error(`loop: ${error.message}`);
+  process.exit(1);
+}
+const [action, taskArg, rootArg, modeArg, providerArg, tagArg, titleArg] = positionalArgv;
 const root = resolve(rootArg || ".");
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const ACTIONS = ["start", "resume", "status", "intake", "tasks", "task", "gate", "resume-task", "approve", "feedback"];
@@ -133,6 +164,11 @@ try {
       if (!loaded.ok) throw new Error("environment is incomplete; fix the errors above (check with: aidlc-kit loop env)");
       Object.assign(process.env, loaded.applied);
     }
+    if (mode === "local" && action === "intake" && intakeOptions?.deriveModel) {
+      // The optional model-derived title needs the configured lead model; load the
+      // env file like `start` does. Problems never block intake — the slugify fallback applies.
+      Object.assign(process.env, loadLoopEnv({ root, config }).applied);
+    }
     if (mode === "local" && action === "status") {
       const supervisor = await localSupervisor.createIsolatedLocalSupervisor({ root, taskId: requireTaskId(), agent, workers, workerImages: config.loop?.workerImage, onEvent: streamLog });
       print(await supervisor.status());
@@ -154,7 +190,7 @@ try {
         if (typeof authority.preflight === "function") await authority.preflight();
         print(await runLoopDaemon({ root, authority, pollMs: config.loop?.pollMs, signal: stop.signal, cancelSignal: cancel.signal, onEvent: streamLog }));
       } else if (action === "intake") {
-        print(await authority.intake({ requirement: await readStdin("Requirement: "), taskId: taskArg || undefined, title: titleArg || undefined }));
+        print(await authority.intake({ requirement: await readStdin("Requirement: "), taskId: taskArg || undefined, title: intakeOptions.title || titleArg || undefined, deriveModel: intakeOptions.deriveModel }));
       } else if (action === "resume-task") {
         print(await authority.resumeTask(requireTaskId()));
       } else if (mode !== "fleet") {
