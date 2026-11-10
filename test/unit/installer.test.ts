@@ -4,13 +4,39 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { adapters } from "../../src/adapters.js";
-import { applyPlan, detectedAgents, doctor, planInit, planUninstall, readManifest, status } from "../../src/installer.js";
+import { applyPlan, detectedAgents, doctor, formatPlan, planInit, planUninstall, readManifest, status } from "../../src/installer.js";
 import type { InitOptions } from "../../src/model.js";
 import { applyUpgrade, planUpgrade } from "../../src/upgrade.js";
 import { loadProjectConfig } from "../../src/profiles.js";
 
 const makeRoot = () => mkdtempSync(join(tmpdir(), "aidlc-v1-"));
 const options = (root: string): InitOptions => ({ root, agents: ["codex"], all: false, dryRun: false, yes: true, force: false });
+
+test("formatPlan summarizes the plan by group with per-action counts and verbose lists every file", () => {
+  const root = makeRoot();
+  try {
+    const plan = planInit({ ...options(root), agents: ["codex"] });
+    const summary = formatPlan(plan);
+    assert.match(summary, /\.agents\/ \(workflow runtime & config\) — \d+ files: /);
+    assert.match(summary, /\.codex\/ — \d+ files: /);
+    assert.match(summary, /project root files — \d+ files?: /);
+    assert.match(summary, /\d+ create/);
+    assert.doesNotMatch(summary, /sha=/);
+    const verbose = formatPlan(plan, { verbose: true });
+    assert.equal(verbose.split("\n").length, plan.length);
+    assert.match(verbose, /create\s+\.agents\/aidlc\/orchestrator\.md \(.*; sha=[0-9a-f]{12}\)/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("formatPlan keeps conflicts visible in the grouped summary", () => {
+  const plan = [
+    { path: ".agents/aidlc/manifest.json", owner: "aidlc-core", content: "", action: "update" as const, reason: "update manifest inventory" },
+    { path: "AGENTS.md", owner: "opencode", content: "", action: "conflict" as const, reason: "managed prompt block was modified" }
+  ];
+  const summary = formatPlan(plan);
+  assert.match(summary, /\.agents\/ \(workflow runtime & config\) — 1 file: 1 update/);
+  assert.match(summary, /project root files — 1 file: 1 conflict/);
+});
 
 test("init previews optional loop mode and validates provider assignments", () => {
   const root = makeRoot();

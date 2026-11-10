@@ -11,7 +11,7 @@ import { applyMcpSetup, planMcpSetup, type McpSetupOptions } from "../mcp-setup.
 import { loadProjectConfig, resolveProfiles } from "../profiles.js";
 import { assertKnownOptions, DOCTOR_FLAGS, flags, MCP_FLAGS, rootArg, STATUS_FLAGS, UI_FLAGS, value } from "./argv.js";
 import { loopDown, loopEnv, loopOverview, loopStop, loopUp, serveDashboard } from "./loop-launcher.js";
-import { confirmGeneral, mcpSetupSelections } from "./prompt.js";
+import { confirmPlan, mcpSetupSelections } from "./prompt.js";
 
 /** `loop leases [--task-id ID] [--root PATH] [--json] [--clear-stale]` and
  * `loop migrate-data [--root PATH] [--json] [--dry-run]`: forwarded to
@@ -102,7 +102,7 @@ export const runMcpSetup = async (args: string[]): Promise<void> => {
   console.log(`◆ MCP SETUP preview — ${options.dryRun ? "no files will be written" : "review before applying"}`);
   console.log(JSON.stringify(plan, null, 2));
   if (options.dryRun) return;
-  if (!await confirmGeneral({ dryRun: options.dryRun, yes: flags(args.slice(1)).has("--yes") }, "Apply MCP setup")) return;
+  if (!await confirmPlan({ dryRun: options.dryRun, yes: flags(args.slice(1)).has("--yes") }, "Apply MCP setup", true)) return;
   applyMcpSetup(options);
   console.log(`MCP setup written to ${plan.target}. MCP remains ${options.enable ? "enabled" : "disabled"}; start Docker explicitly with docker compose --env-file .env -f ${join(plan.target, "compose.yaml")} up -d.`);
 };

@@ -5,9 +5,9 @@
 import { LOOP_PROVIDERS } from "../model.js";
 
 export const usage = `Usage:
-  npx @felixdotgo/aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead ${LOOP_PROVIDERS.join("|")}] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
-  npx @felixdotgo/aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead ${LOOP_PROVIDERS.join("|")}] [--loop-workers <id=provider,...>] [--dry-run]
-  npx @felixdotgo/aidlc-kit uninstall [path] [--yes] [--dry-run]
+  npx @felixdotgo/aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead ${LOOP_PROVIDERS.join("|")}] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force] [--verbose]
+  npx @felixdotgo/aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead ${LOOP_PROVIDERS.join("|")}] [--loop-workers <id=provider,...>] [--dry-run] [--verbose]
+  npx @felixdotgo/aidlc-kit uninstall [path] [--yes] [--dry-run] [--verbose]
   npx @felixdotgo/aidlc-kit status [path] [--json]
   npx @felixdotgo/aidlc-kit doctor [path] [--strict] [--json]
   npx @felixdotgo/aidlc-kit profile validate [path]
@@ -48,9 +48,9 @@ const positional = (args: string[]): string[] => {
 
 export const rootArg = (args: string[], fallback = "."): string => positional(args).find((item) => !COMMAND_KEYWORDS.includes(item as never)) ?? fallback;
 
-export const INIT_FLAGS = new Set(["--agent", "--all", "--loop-mode", "--loop-lead", "--loop-workers", "--yes", "--dry-run", "--force"]);
-export const UPGRADE_FLAGS = new Set(["--loop-mode", "--loop-lead", "--loop-workers", "--dry-run"]);
-export const UNINSTALL_FLAGS = new Set(["--yes", "--dry-run"]);
+export const INIT_FLAGS = new Set(["--agent", "--all", "--loop-mode", "--loop-lead", "--loop-workers", "--yes", "--dry-run", "--force", "--verbose"]);
+export const UPGRADE_FLAGS = new Set(["--loop-mode", "--loop-lead", "--loop-workers", "--dry-run", "--verbose"]);
+export const UNINSTALL_FLAGS = new Set(["--yes", "--dry-run", "--verbose"]);
 export const STATUS_FLAGS = new Set(["--json"]);
 export const DOCTOR_FLAGS = new Set(["--strict", "--json"]);
 export const MCP_FLAGS = new Set(["--dry-run", "--yes", "--storage", "--deployment", "--bind", "--workspace", "--poll-ms", "--token-env", "--providers", "--enable"]);

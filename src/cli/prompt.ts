@@ -53,10 +53,27 @@ export const mcpSetupSelections = async (args: string[]): Promise<Partial<Omit<M
   return selected;
 };
 
-export const confirmGeneral = async (options: { dryRun: boolean; yes: boolean }, operation: string): Promise<boolean> => {
+/** Interactive Yes/No selection UI: arrows + Enter, no typed input. The default
+ * option is both preselected and labelled `(default)` in the choice list. */
+export const confirmYesNo = async (options: { message: string; default: boolean }): Promise<boolean> => {
+  const { select } = await prompts();
+  const label = (name: string, value: boolean): string => (value === options.default ? `${name} (default)` : name);
+  return select<boolean>({
+    message: options.message,
+    default: options.default,
+    choices: [
+      { name: label("Yes", true), value: true },
+      { name: label("No", false), value: false }
+    ]
+  });
+};
+
+/** Plan confirmation ladder shared by init/uninstall/mcp setup: non-interactive
+ * flags win (`--dry-run` → no, `--yes` → yes, no TTY → no), otherwise the
+ * interactive Yes/No selection UI runs with the command's approved default. */
+export const confirmPlan = async (options: { dryRun: boolean; yes: boolean }, operation: string, defaultYes: boolean): Promise<boolean> => {
   if (options.dryRun) return false;
   if (options.yes) return true;
   if (!interactive()) return false;
-  const { confirm } = await prompts();
-  return confirm({ message: `${operation} this plan?`, default: false });
+  return confirmYesNo({ message: `${operation} this plan?`, default: defaultYes });
 };

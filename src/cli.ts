@@ -4,8 +4,8 @@ import { assertKnownOptions, flags, INIT_FLAGS, rootArg, UNINSTALL_FLAGS, UPGRAD
 import { runDoctor, runLoopCommand, runMcp, runProfile, runStatus, runUi } from "./cli/commands.js";
 import { recordInstallerCli } from "./cli/loop-launcher.js";
 import { initOptions } from "./cli/options.js";
-import { chooseLoop, confirmGeneral, interactive } from "./cli/prompt.js";
-import { applyPlan, detectedAgents, formatPlan, planInit, planUninstall, selectAgents } from "./installer.js";
+import { chooseLoop, confirmPlan, confirmYesNo, interactive } from "./cli/prompt.js";
+import { applyPlan, detectedAgents, formatPlan, planInit, planUninstall, readManifest, selectAgents } from "./installer.js";
 import type { InitOptions } from "./model.js";
 import { applyUpgrade, planUpgrade } from "./upgrade.js";
 import { packageVersion } from "./workflow.js";
@@ -34,9 +34,9 @@ const chooseAgents = async (options: InitOptions): Promise<InitOptions> => {
   return { ...options, agents };
 };
 
-const preview = (operation: string, plan: ReturnType<typeof planInit>): void => {
+const preview = (operation: string, plan: ReturnType<typeof planInit>, verbose: boolean): void => {
   console.log(`◆ ${operation} preview — changes have NOT been applied`);
-  console.log(formatPlan(plan));
+  console.log(formatPlan(plan, { verbose }));
 };
 
 /* --- Command handlers that consume the pinned prompts above ----------------- */
@@ -45,9 +45,9 @@ const runInit = async (args: string[]): Promise<void> => {
   assertKnownOptions(args, INIT_FLAGS);
   const options = { ...await chooseAgents(initOptions(args)), loop: await chooseLoop(args, false) };
   const plan = planInit(options);
-  preview("INIT", plan);
+  preview("INIT", plan, flags(args).has("--verbose"));
   if (plan.some((item) => item.action === "conflict")) throw new Error("No files were written because the plan contains conflicts.");
-  if (!await confirmGeneral(options, "Apply")) return;
+  if (!await confirmPlan(options, "Apply", true)) return;
   if (plan.some((item) => item.action === "migrate" || item.action === "delete")) {
     const result = applyUpgrade(options.root, plan);
     console.log(`Installed local AI-DLC workflow assets and migrated legacy data. Backup: ${result.backup}; changed: ${result.changed}`);
@@ -62,8 +62,8 @@ const runUninstall = async (args: string[]): Promise<void> => {
   assertKnownOptions(args, UNINSTALL_FLAGS);
   const options = initOptions(args);
   const plan = planUninstall(options.root);
-  preview("UNINSTALL", plan);
-  if (!await confirmGeneral(options, "Remove")) return;
+  preview("UNINSTALL", plan, flags(args).has("--verbose"));
+  if (!await confirmPlan(options, "Remove", false)) return;
   applyPlan(options.root, plan);
   console.log("Removed eligible managed assets; project config and state were preserved.");
 };
@@ -73,13 +73,13 @@ const runUpgrade = async (args: string[]): Promise<void> => {
   if (flags(args).has("--yes") || flags(args).has("--force")) throw new Error("upgrade does not support --yes or --force; apply requires a human interactive TTY confirmation");
   const root = rootArg(args);
   const plan = planUpgrade(root, await chooseLoop(args, true));
-  preview("UPGRADE", plan);
+  preview("UPGRADE", plan, flags(args).has("--verbose"));
   if (plan.some((item) => item.action === "conflict")) throw new Error("Upgrade contains conflicts; no files were written.");
   if (flags(args).has("--dry-run")) return;
   if (!interactive()) throw new Error("Upgrade apply requires an interactive TTY. AI and non-interactive processes must not apply upgrades.");
-  const expected = packageVersion();
-  const { input } = await prompts();
-  if ((await input({ message: `Type ${expected} to apply this user-initiated upgrade` })).trim() !== expected) throw new Error("Upgrade confirmation did not match the target version");
+  const installed = readManifest(root);
+  const from = installed ? installed.packageVersion : "legacy install";
+  if (!await confirmYesNo({ message: `Upgrade AI-DLC ${from} → ${packageVersion()}?`, default: false })) return;
   const result = applyUpgrade(root, plan);
   console.log(`Upgrade complete. Backup: ${result.backup}; changed: ${result.changed}`);
   recordInstallerCli(root);

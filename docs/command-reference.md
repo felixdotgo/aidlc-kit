@@ -21,10 +21,12 @@ Contents:
 ## `init`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force]
+npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit init [path] [--agent <name[,name]> | --all] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--yes] [--dry-run] [--force] [--verbose]
 ```
 
 - Prints a preview and writes only after confirmation (or `--yes`); `--dry-run` prints the plan without writing.
+- The preview summarizes the plan by group with per-action counts (create/update/migrate/delete/preserve/skip/conflict); `--verbose` prints the full per-file detail instead.
+- Confirmation is an interactive Yes/No selection UI (arrow keys + Enter, no typing); the default option is preselected and labelled `(default)`. `init` defaults to **Yes**.
 - One detected agent is selected automatically. Interactive terminals get a checkbox prompt (arrows move, Space toggles, A toggles all, Enter confirms); scripts pass `--agent <name[,name]>` or `--all`.
 - Interactive setup asks for a loop mode and providers. Non-interactive: omit loop options to keep `off`, or pass `--loop-mode local|fleet` with `--loop-lead` and `--loop-workers` (for example `--loop-workers a=codex,b=opencode`). This only configures the loop; `aidlc-kit loop start` starts it.
 - Loop and coordination flags are experimental ([Status and stability](./loop-runbook.md#status-and-stability)).
@@ -60,10 +62,12 @@ npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit profile validate [path]
 ## `uninstall`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit uninstall [path] [--yes] [--dry-run]
+npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit uninstall [path] [--yes] [--dry-run] [--verbose]
 ```
 
 - Prints the removal plan, then removes eligible unchanged managed assets; project configuration and state are preserved. Run `--dry-run` first in an existing project.
+- The plan preview is grouped by directory with per-action counts; `--verbose` prints the full per-file detail.
+- Confirmation is an interactive Yes/No selection UI (no typing) with the default clearly labelled; `uninstall` defaults to **No**.
 
 ## `mcp setup`
 
@@ -72,6 +76,7 @@ npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit mcp setup [path] [--dry-run]
 ```
 
 - Previews the coordination service configuration and writes only after confirmation. Non-interactive use requires `--deployment`, `--storage`, `--bind`, and `--workspace`.
+- Confirmation is an interactive Yes/No selection UI (no typing) with the default clearly labelled; `mcp setup` defaults to **Yes**.
 - Never starts Docker; `--enable` is explicit; remote mode has no local fallback. Deployment and credentials: [AI-DLC Coordination service](./coordination-service.md).
 - `--token-env <name>` overrides the default `AIDLC_MCP_TOKEN` variable name in the generated compose file.
 - `--providers <p,...>` selects connectors non-interactively: `jira`, `trello`, `github-issues`.
@@ -79,10 +84,11 @@ npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit mcp setup [path] [--dry-run]
 ## `upgrade`
 
 ```sh
-npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--dry-run]
+npx --package @felixdotgo/aidlc-kit@0.4.0 aidlc-kit upgrade [path] [--loop-mode off|local|fleet] [--loop-lead codex|claude|opencode] [--loop-workers <id=provider,...>] [--dry-run] [--verbose]
 ```
 
-- Human-only: rejects `--yes` and `--force`, requires an interactive terminal and an exact typed confirmation of the package version (same styled prompt as `init`). Agents must never run, preview, detect, or suggest upgrades.
+- Human-only: rejects `--yes` and `--force`, requires an interactive terminal and an interactive Yes/No confirmation showing the installed → target versions (for example `Upgrade AI-DLC 0.3.2 → 0.4.0?`), default **No**, clearly marked in the selection UI — no version typing. Agents must never run, preview, detect, or suggest upgrades.
+- The plan preview is grouped by directory with per-action counts; `--verbose` prints the full per-file detail.
 - An omitted loop selection preserves the existing config; an explicit one appears in the preview and in the backup and rollback. Enabling a mode requires a lead and worker mapping.
 - Supported legacy `.aidlc/` data is handled transactionally: identical paths are deduplicated, differing content or unsafe entries stop the plan, and an audit backup supports rollback.
 

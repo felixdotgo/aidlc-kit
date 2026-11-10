@@ -17,7 +17,15 @@ test("CLI loads Inquirer checkbox prompts only for interactive terminals while r
 test("CLI preserves the human-only upgrade boundary", () => {
   assert.match(source, /upgrade does not support --yes or --force/);
   assert.match(source, /Upgrade apply requires an interactive TTY/);
-  assert.match(source, /Type \$\{expected\} to apply this user-initiated upgrade/);
+  assert.match(source, /Upgrade AI-DLC \$\{from\} → \$\{packageVersion\(\)\}\?/);
+});
+
+test("CLI confirmations use a Yes/No selection UI with a clearly labelled default", () => {
+  const promptSource = readFileSync(resolve("src/cli/prompt.ts"), "utf8");
+  assert.match(promptSource, /const confirmYesNo = async/);
+  assert.match(promptSource, /name: label\("Yes", true\)/);
+  assert.match(promptSource, /name: label\("No", false\)/);
+  assert.match(promptSource, /\$\{name\} \(default\)/);
 });
 
 test("loop facade fails closed on missing worker config or authority mismatch before reading a requirement", async () => {

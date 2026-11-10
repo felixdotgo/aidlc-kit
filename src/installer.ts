@@ -51,7 +51,35 @@ export const applyPlan = (root: string, plan: PlannedWrite[]): void => {
   }
 };
 
-export const formatPlan = (plan: PlannedWrite[]): string => plan.map((item) => `${item.action.padEnd(8)} ${item.path} (${item.reason}; sha=${shortHash(item.contentEncoding === "base64" ? Buffer.from(item.content, "base64") : item.content)})`).join("\n");
+/** Top-level groups used by the summarized plan preview; a bare filename at the
+ * project root has no directory segment and groups as "project root files". */
+const PLAN_GROUP_LABELS: Record<string, string> = { ".agents": ".agents/ (workflow runtime & config)" };
+const planGroupOf = (path: string): string => {
+  const top = path.split("/")[0] ?? "";
+  return path === top ? "project root files" : (PLAN_GROUP_LABELS[top] ?? `${top}/`);
+};
+
+const PLAN_ACTION_ORDER: PlannedWrite["action"][] = ["create", "update", "migrate", "delete", "preserve", "skip", "conflict"];
+
+/** Formats a planned transaction for the preview. Default: a meaningful summary
+ * grouped by top-level directory with per-action counts. `--verbose` keeps the
+ * full per-file detail (action, path, reason, sha) for debugging and rollback. */
+export const formatPlan = (plan: PlannedWrite[], options: { verbose?: boolean } = {}): string => {
+  if (options.verbose) return plan.map((item) => `${item.action.padEnd(8)} ${item.path} (${item.reason}; sha=${shortHash(item.contentEncoding === "base64" ? Buffer.from(item.content, "base64") : item.content)})`).join("\n");
+  const groups = new Map<string, PlannedWrite[]>();
+  for (const item of plan) {
+    const group = planGroupOf(item.path);
+    groups.set(group, [...(groups.get(group) ?? []), item]);
+  }
+  return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([group, items]) => {
+    const counts = PLAN_ACTION_ORDER
+      .map((action) => [action, items.filter((item) => item.action === action).length] as const)
+      .filter(([, count]) => count > 0)
+      .map(([action, count]) => `${count} ${action}`)
+      .join(" · ");
+    return `${group} — ${items.length} file${items.length === 1 ? "" : "s"}${counts ? `: ${counts}` : ""}`;
+  }).join("\n");
+};
 
 /** One manifest inventory record: the current spec to compare against plus the hash it was installed with. */
 interface InstalledEntry { spec: FileSpec; hash?: string }
